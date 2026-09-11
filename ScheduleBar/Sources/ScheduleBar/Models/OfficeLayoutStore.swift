@@ -201,6 +201,20 @@ final class OfficeLayoutStore: ObservableObject {
         }
     }
 
+    /// 清空所有办公室的姓名（保留办公室数量与行列结构，便于直接双击填写）
+    func clearSeats() {
+        var arr = offices
+        for i in arr.indices {
+            for r in arr[i].seats.indices {
+                for c in arr[i].seats[r].indices {
+                    arr[i].seats[r][c] = ""
+                }
+            }
+            arr[i].seatColors = [:]
+        }
+        offices = arr
+    }
+
     // MARK: 默认数据（已固化为当前填写的数据，见 DefaultData.swift）
     static func defaults() -> [OfficeBlock] {
         return DefaultData.offices

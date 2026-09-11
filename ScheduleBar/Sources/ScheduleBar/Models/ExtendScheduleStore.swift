@@ -55,6 +55,12 @@ final class ExtendScheduleStore: ObservableObject {
             .map { $0.withMigratedKind().removingEmptyRows() }
     }
 
+    /// 清空全部延时&监考子表（保留面板，仅清空内容）
+    func clearAll() {
+        blocks = []
+        save()
+    }
+
     func save() {
         do {
             let url = Self.fileURL()

@@ -52,6 +52,11 @@ final class ReminderStore: ObservableObject {
         }
     }
 
+    /// 清空全部提醒（保留设置，仅删除已配置的提醒项）
+    func clearAll() {
+        reminders = []
+    }
+
     // 便捷星期标签：1=周日
     static func weekdayLabel(_ w: Int) -> String {
         ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][w % 7]

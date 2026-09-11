@@ -64,53 +64,53 @@ struct OfficeLayoutView: View {
                     .buttonStyle(.bordered)
                 }
 
-                // 姓名查询：命中工位高亮闪烁
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("输入姓名查找工位", text: $keyword)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12))
-                        .onChange(of: keyword) { v in
-                            searchWork?.cancel()
-                            let w = DispatchWorkItem { appliedKeyword = v }
-                            searchWork = w
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: w)
+                // 姓名查询（左半行）+ 所有办公室人数之和（右半行）
+                HStack(spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.secondary)
+                        TextField("输入姓名查找工位", text: $keyword)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12))
+                            .onChange(of: keyword) { v in
+                                searchWork?.cancel()
+                                let w = DispatchWorkItem { appliedKeyword = v }
+                                searchWork = w
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: w)
+                            }
+                        if !keyword.isEmpty {
+                            Button {
+                                keyword = ""
+                                appliedKeyword = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
                         }
-                    if !keyword.isEmpty {
-                        Button {
-                            keyword = ""
-                            appliedKeyword = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
+                        if !appliedKeyword.trimmingCharacters(in: .whitespaces).isEmpty {
+                            Text("找到 \(hitCount) 个工位")
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        .buttonStyle(.plain)
                     }
-                    if !appliedKeyword.trimmingCharacters(in: .whitespaces).isEmpty {
-                        Text("找到 \(hitCount) 个工位")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+                    .frame(maxWidth: .infinity)
 
-                // 汇总行：不改变办公室卡片排布，同时让所有办公室人数一眼可见。
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        Text("办公室人数")
-                            .font(.system(size: 11, weight: .semibold))
+                    HStack(spacing: 6) {
+                        Image(systemName: "person.3.fill")
                             .foregroundStyle(.secondary)
-                        ForEach(store.offices) { office in
-                            Text("\(office.title)：\(headcount(of: office))人")
-                                .font(.system(size: 11))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(Capsule().fill(Color.accentColor.opacity(0.10)))
-                        }
+                        Text("办公室共 \(totalHeadcount) 人")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
                     }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+                    .frame(maxWidth: .infinity)
                 }
 
                 // 每间办公室独立决定是否占满一行：宽办公室单独占一行，
@@ -174,9 +174,13 @@ struct OfficeLayoutView: View {
         return $store.offices[index]
     }
 
+    /// 所有办公室人数之和（空白与「水池」不计入）。
+    private var totalHeadcount: Int {
+        store.offices.reduce(0) { $0 + headcount(of: $1) }
+    }
+
     /// 实际姓名人数：空白和固定设施不计入。
-    private func headcount(of office: OfficeBlock) -> Int {
-        office.seats.flatMap { $0 }
+    private func headcount(of office: OfficeBlock) -> Int {        office.seats.flatMap { $0 }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && $0 != "水池" }
             .count

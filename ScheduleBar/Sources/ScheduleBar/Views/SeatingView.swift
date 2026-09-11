@@ -9,8 +9,10 @@ struct SeatingView: View {
     /// 当前拖拽高亮的落点：格子 "r-c" 或 待用栏 "pool"
     @State private var highlight: String? = nil
     @State private var dragging: String? = nil
+    /// 正在编辑的格子（双击姓名进入编辑态，单击即时选中，互不等待）
+    @State private var editingKey: CellKey? = nil
 
-    private let cellHeight: CGFloat = 28
+    private let cellHeight: CGFloat = 34
     private let headerW: CGFloat = 20          // 行/列号表头宽度
     private let minCellWidth: CGFloat = 34     // 低于此宽才左右滑动
 
@@ -547,7 +549,15 @@ struct SeatingView: View {
         height: cellHeight,
         font: .system(size: max(8.5, min(11, cw / 6.2))),
         backgroundColor: bg,
-        textColor: SeatGenderStyle.color(g))
+        textColor: SeatGenderStyle.color(g),
+        externalEditing: Binding(
+            get: { editingKey == modelKey },
+            set: {
+                if $0 { editingKey = modelKey }
+                else if editingKey == modelKey { editingKey = nil }
+            }
+        ),
+        onTap: { handleSelectTap(modelKey: modelKey) })
         .overlay(
             RoundedRectangle(cornerRadius: 5)
                 .stroke(isSelected ? Color.accentColor :
@@ -560,7 +570,6 @@ struct SeatingView: View {
         )
         .opacity(isDragging ? 0.45 : 1)
         .contentShape(Rectangle())
-        .onTapGesture { handleSelectTap(modelKey: modelKey) }
         .onDrag {
             // ⌘ 拖组内格子 = 整组移动；普通拖 = 拖学生
             if let rg = region, NSEvent.modifierFlags.contains(.command) {

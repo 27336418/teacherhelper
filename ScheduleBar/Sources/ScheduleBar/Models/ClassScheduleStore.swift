@@ -537,6 +537,19 @@ final class ClassScheduleStore: ObservableObject {
         }
     }
 
+    /// 清空全部班级课表数据：所有班级与课表内容一并删除，仅保留「第1节…第N节 × 星期」的空表结构。
+    func clearAllData() {
+        loading = true
+        classes = []
+        defaultClass = ""
+        current = ""
+        bank = [:]
+        groups = ClassLayout.defaultGroups
+        cells = Self.emptyCells(for: ClassLayout.defaultGroups)
+        loading = false
+        save()
+    }
+
     // MARK: - 持久化（输入去抖）
     func scheduleSave() {
         guard !loading else { return }

@@ -219,6 +219,26 @@ final class ClassroomStore: ObservableObject {
         }
     }
 
+    /// 清空所有教室/办公室的名称与房号（保留楼层与格子结构，便于直接双击填写）
+    func clearRooms() {
+        var fs = floors
+        for i in fs.indices {
+            for j in fs[i].cells.indices {
+                fs[i].cells[j].klass = ""
+                fs[i].cells[j].room = ""
+                fs[i].cells[j].color = nil
+            }
+            for r in fs[i].extraRows.indices {
+                for j in fs[i].extraRows[r].cells.indices {
+                    fs[i].extraRows[r].cells[j].klass = ""
+                    fs[i].extraRows[r].cells[j].room = ""
+                    fs[i].extraRows[r].cells[j].color = nil
+                }
+            }
+        }
+        floors = fs
+    }
+
     /// 整表替换（导入用）
     func replaceAll(_ newFloors: [ClassroomFloor]) {
         let snap = floors

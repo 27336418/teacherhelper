@@ -116,6 +116,34 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
+    // MARK: 清空所有数据（保留表结构，便于他人直接双击填写）
+    /// 清空全部业务数据：个人/班级课表、年级师资、学生信息、工位、教室分布、座位安排、延时&监考、提醒。
+    /// 保留各表的行列结构（标题/节次/列名/办公室数/楼层等），仅删除已填内容；随后重启应用生效。
+    func clearAllData() {
+        let a = NSAlert()
+        a.messageText = "清空所有数据"
+        a.informativeText = "将清空：个人课表、班级课表、年级师资、学生信息、工位、教室分布、座位安排、延时&监考、提醒设置。\n操作会保留各表的行列结构（便于直接双击填写），但所有已填内容会被删除，且不可撤销。\n确认后应用会自动重启生效。"
+        a.alertStyle = .critical
+        a.addButton(withTitle: "清空并重启")
+        a.addButton(withTitle: "取消")
+        PanelHelper.prepare()
+        PanelHelper.bringFront(a)
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+
+        SeatingStore.shared.clearAll()
+        ClassScheduleStore.shared.clearAllData()
+        ScheduleStore.shared.clear()
+        OfficeLayoutStore.shared.clearSeats()
+        ClassroomStore.shared.clearRooms()
+        StudentStore.shared.clear()
+        StaffStore.shared.clear()
+        ExtendScheduleStore.shared.clearAll()
+        ReminderStore.shared.clearAll()
+
+        SeatingStore.seatLog("清空所有数据：已完成，即将重启生效")
+        BackupService.restartApp()
+    }
+
     // MARK: 自动检查的节流（同一版本每天最多自动提示一次）
     private let autoPromptVersionKey = "update.autoPrompt.version"
     private let autoPromptDayKey     = "update.autoPrompt.day"

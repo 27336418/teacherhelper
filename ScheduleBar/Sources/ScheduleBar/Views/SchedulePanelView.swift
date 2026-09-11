@@ -160,6 +160,14 @@ struct SchedulePanelView: View {
                 }
                 .help("从备份文件一键导入并恢复全部数据与设置（恢复后自动重启生效）")
                 Button {
+                    AppCoordinator.shared.clearAllData()
+                } label: {
+                    Label("清空所有数据", systemImage: "trash.slash")
+                        .frame(maxWidth: .infinity)
+                }
+                .foregroundStyle(.red)
+                .help("清空全部业务数据（课表/师资/学生/工位/教室/座位/延时监考/提醒），保留表结构，重启生效")
+                Button {
                     AppCoordinator.shared.checkForUpdate(manually: true)
                 } label: {
                     Label("检查更新", systemImage: "arrow.triangle.2.circlepath.circle")

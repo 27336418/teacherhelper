@@ -40,9 +40,17 @@ struct EditableGridCell: View {
     var textColor: Color? = nil             // 显示态文字色（校验红/绿等）；nil=默认
     var onSave: () -> Void = {}
 
-    @State private var editing = false
+    /// 外部接管编辑态（座位表用）：传入后不再自己判定双击，改由 onTap 回调决定。
+    /// 好处：单击可立即响应，不必等系统判定「是不是双击」而延迟。
+    var externalEditing: Binding<Bool>? = nil
+    /// 显示态被单击时回调（仅在接管编辑态时使用）
+    var onTap: (() -> Void)? = nil
+
+    @State private var editingInternal = false
     @State private var draft = ""
     @FocusState private var focused: Bool
+
+    private var editing: Bool { externalEditing?.wrappedValue ?? editingInternal }
 
     var body: some View {
         Group {
@@ -67,26 +75,39 @@ struct EditableGridCell: View {
                     }
                     .onSubmit { focused = false }
             } else {
-                Text(text.isEmpty ? " " : text)
-                    .font(bold ? font.weight(.semibold) : font)
-                    .foregroundStyle(text.isEmpty ? Color.clear : (textColor ?? Color.primary))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                    .frame(width: width, height: height)
-                    .background(RoundedRectangle(cornerRadius: 5)
-                        .fill(backgroundColor ?? Color.primary.opacity(0.01)))
-                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.primary.opacity(0.08), lineWidth: 0.5))
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) {
-                        editing = true
-                    }
+                displayCell
             }
         }
     }
 
+    /// 显示态：接管编辑态时只挂「单击」手势（点击即响应，无判定延迟）；
+    /// 未接管时保持原「双击进入编辑」。
+    @ViewBuilder
+    private var displayCell: some View {
+        let base = Text(text.isEmpty ? " " : text)
+            .font(bold ? font.weight(.semibold) : font)
+            .foregroundStyle(text.isEmpty ? Color.clear : (textColor ?? Color.primary))
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .frame(width: width, height: height)
+            .background(RoundedRectangle(cornerRadius: 5)
+                .fill(backgroundColor ?? Color.primary.opacity(0.01)))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.primary.opacity(0.08), lineWidth: 0.5))
+            .contentShape(Rectangle())
+
+        if externalEditing != nil {
+            // 单击立即响应（无双击判定延迟）；双击进入编辑。
+            // 单/双击都挂在同一视图上，避免父子手势竞争导致的单击滞后。
+            base.onTapGesture { onTap?() }
+                .onTapGesture(count: 2) { externalEditing?.wrappedValue = true }
+        } else {
+            base.onTapGesture(count: 2) { editingInternal = true }
+        }
+    }
+
     private func commit() {
-        editing = false
         text = draft
+        if let ext = externalEditing { ext.wrappedValue = false } else { editingInternal = false }
         onSave()
     }
 }

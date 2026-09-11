@@ -46,6 +46,10 @@ struct PoolGroup: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
     var title: String
     var names: [String]
+    /// 原小组的列数（拖回座位时按同样形状还原；旧数据无此字段）
+    var cols: Int? = nil
+    /// 原小组的色块色号（拖回座位时沿用同一色块；旧数据无此字段）
+    var colorIndex: Int? = nil
 }
 
 /// v2 持久化结构
@@ -505,43 +509,153 @@ final class SeatingStore: ObservableObject {
             grid[r][c] = ""
             if !names.contains(n) { names.append(n) }
         }
+        let bounds = rg.bounds
+        let cols = max(1, bounds.maxC - bounds.minC + 1)
         regions.removeAll { $0.id == id }   // 撤掉色块区域，腾空位置
-        if !names.isEmpty { poolGroups.append(PoolGroup(id: UUID(), title: rg.title, names: names)) }
+        if !names.isEmpty {
+            poolGroups.append(PoolGroup(id: UUID(), title: rg.title, names: names,
+                                       cols: cols, colorIndex: rg.colorIndex))
+        }
         loading = false
         save()
         seatLog("座位：「\(rg.title)」整体放入待用栏（\(names.count) 人 → 待用小组，区域已腾空）")
         registerUndo("「\(rg.title)」整体放入待用栏", snap)
     }
 
-    /// 待用小组整体拖回座位：落到某个格子时，按顺序填进该格子所在的小组区域；
-    /// 区域放不下的学生回到个人待用栏
+    // MARK: - 待用小组拖回座位
+
+    /// 待用小组整体拖回座位：
+    /// - 落到已有小组色块上 → 按顺序填进该区域（原有行为）
+    /// - 落到空白处 → 直接按原形状新建色块放好；位置被占则自动让到后面的空白，
+    ///   空间不够时整张表自动补行补列
     func poolGroupToRegion(groupID: UUID, anchor key: CellKey) {
         guard let gi = poolGroups.firstIndex(where: { $0.id == groupID }) else { return }
-        guard let rg = region(at: key) else {
-            setNotice("请拖到小组色块上（如还没有色块，先在座位表框选格子「组成小组」）")
+        guard let (ar, ac) = Self.parse(key) else { return }
+        let pg = poolGroups[gi]
+
+        // 1) 落在已有小组上：沿用该区域
+        if let rg = region(at: key) {
+            let snap = snapshot()
+            loading = true
+            for k in rg.cells {
+                guard let (r, c) = Self.parse(k) else { continue }
+                let old = grid[r][c].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !old.isEmpty { grid[r][c] = ""; if !pool.contains(old) { pool.append(old) } }
+            }
+            var carried = pg.names
+            for k in rg.cells {
+                guard !carried.isEmpty, let (r, c) = Self.parse(k) else { continue }
+                grid[r][c] = carried.removeFirst()
+            }
+            for n in carried where !pool.contains(n) { pool.append(n) }
+            poolGroups.remove(at: gi)
+            loading = false
+            save()
+            seatLog("座位：「\(rg.title)」整体从待用拖出（区域 \(rg.cells.count) 格，余 \(carried.count) 人回待用）")
+            registerUndo("「\(rg.title)」整体从待用拖出", snap)
             return
         }
+
+        // 2) 落在空白处：直接放回
+        placePoolGroupOnBlank(poolIndex: gi, anchor: (ar, ac))
+    }
+
+    /// 把待用小组按原形状放到空白处；放不下就自动往后找位置，必要时补行补列
+    private func placePoolGroupOnBlank(poolIndex gi: Int, anchor: (Int, Int)) {
+        let pg = poolGroups[gi]
+        let names = pg.names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !names.isEmpty else {
+            poolGroups.remove(at: gi)
+            save()
+            return
+        }
+        let w = max(1, min(pg.cols ?? Self.guessCols(count: names.count), names.count))
+        let h = (names.count + w - 1) / w
+        let title = pg.title.isEmpty ? "第\(regions.count + 1)小组" : pg.title
+        let colorIndex = pg.colorIndex ?? nextColorIndex()
+
         let snap = snapshot()
+
+        // 找一块完全空白的矩形（从落点开始按行主序往后找；表不够大就自动补行补列）
+        let origin = findBlankOrigin(anchor: anchor, height: h, width: w)
+
         loading = true
-        // 区域原有学生先撤到个人待用栏
-        for k in rg.cells {
-            guard let (r, c) = Self.parse(k) else { continue }
-            let old = grid[r][c].trimmingCharacters(in: .whitespacesAndNewlines)
-            if !old.isEmpty { grid[r][c] = ""; if !pool.contains(old) { pool.append(old) } }
+        // 姓名按行主序写入
+        var placed: [CellKey] = []
+        for (i, n) in names.enumerated() {
+            let r = origin.0 + i / w, c = origin.1 + i % w
+            grid[r][c] = n
+            placed.append(Self.key(r, c))
         }
-        // 按顺序填入待用小组的学生
-        var carried = poolGroups[gi].names
-        for k in rg.cells {
-            guard !carried.isEmpty, let (r, c) = Self.parse(k) else { continue }
-            grid[r][c] = carried.removeFirst()
-        }
-        // 放不下的回到个人待用栏
-        for n in carried where !pool.contains(n) { pool.append(n) }
+        regions.append(SeatRegion(id: UUID(), title: title,
+                                  cells: placed.sorted(), colorIndex: colorIndex))
         poolGroups.remove(at: gi)
         loading = false
         save()
-        seatLog("座位：「\(rg.title)」整体从待用拖出（区域 \(rg.cells.count) 格，余 \(carried.count) 人回待用）")
-        registerUndo("「\(rg.title)」整体从待用拖出", snap)
+        let moved = origin.0 > anchor.0 || origin.1 > anchor.1
+        seatLog("座位：「\(title)」从待用栏整体放回空白处 \(origin.0 + 1)行\(origin.1 + 1)列（\(names.count) 人\(moved ? "，原落点已被占用" : "")）")
+        registerUndo("「\(title)」放回座位", snap)
+    }
+
+    /// 自动挑选一个可用色号（用得最少的）
+    private func nextColorIndex() -> Int {
+        var usage: [Int: Int] = [:]
+        for rg in regions { usage[rg.colorIndex, default: 0] += 1 }
+        return (0..<RegionPalette.count).min { usage[$0, default: 0] < usage[$1, default: 0] } ?? 0
+    }
+
+    /// 旧数据没有记录列数时的兜底形状：2 人一行，最多 3 列
+    static func guessCols(count: Int) -> Int {
+        if count <= 2 { return max(1, count) }
+        if count % 3 == 0 { return 3 }
+        if count % 2 == 0 { return 2 }
+        return 3
+    }
+
+    /// 从 anchor 起按行主序找一块 height×width 的空白区域（会自动补行补列）
+    private func findBlankOrigin(anchor: (Int, Int), height: Int, width: Int) -> (Int, Int) {
+        var r = max(0, anchor.0)
+        while true {
+            var c = (r == anchor.0) ? max(0, anchor.1) : 0
+            while c + width <= cols {
+                if isBlankRect(row: r, col: c, height: height, width: width) { return (r, c) }
+                c += 1
+            }
+            r += 1
+            // 保证 (r, r+height) 与 c=0..width 都在表内
+            ensureCapacity(rows: r + height, cols: max(cols, width))
+        }
+    }
+
+    /// 该矩形是否完全空白（既不属于任何小组，也没有其他学生）
+    private func isBlankRect(row r0: Int, col c0: Int, height: Int, width: Int) -> Bool {
+        guard r0 >= 0, c0 >= 0, r0 + height <= rows, c0 + width <= cols else { return false }
+        let occupied = Set(regions.flatMap { $0.cells })
+        for r in r0..<(r0 + height) {
+            for c in c0..<(c0 + width) {
+                if occupied.contains(Self.key(r, c)) { return false }
+                if !grid[r][c].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
+            }
+        }
+        return true
+    }
+
+    /// 需要时补齐行列（只在右侧补列、在底部补行，已有坐标不受影响）
+    private func ensureCapacity(rows needRows: Int, cols needCols: Int) {
+        if needCols > cols {
+            loading = true
+            let add = needCols - cols
+            for r in grid.indices {
+                grid[r].append(contentsOf: Array(repeating: "", count: add))
+            }
+            loading = false
+        }
+        while rows < needRows {
+            loading = true
+            grid.append(Array(repeating: "", count: cols))
+            loading = false
+        }
     }
 
     /// 待用小组拆成个人（每个学生单独一条，便于逐个安排）
@@ -568,8 +682,7 @@ final class SeatingStore: ObservableObject {
     }
 
     /// 一键全部待用：把所有座位上的学生撤下来，全部放进待用栏（⌘Z 可撤销）
-    func allToPool() {
-        guard seatedCount > 0 else { return }
+    func allToPool() {        guard seatedCount > 0 else { return }
         let snap = snapshot()
         var names: [String] = []
         loading = true
@@ -592,6 +705,21 @@ final class SeatingStore: ObservableObject {
     // MARK: - 性别
 
     func gender(of name: String) -> String? { genders[name] }
+
+    /// 清空全部座位数据：保留一张空 8×8 大表（便于直接双击填写），
+    /// 同时清空分组色块 / 待用栏 / 待用小组 / 性别标注。
+    func clearAll() {
+        loading = true
+        grid = SeatingStore.emptyGrid(rows: SeatingStore.defaultSize, cols: SeatingStore.defaultSize)
+        regions = []
+        pool = []
+        poolGroups = []
+        genders = [:]
+        selection = []
+        loading = false
+        save()
+        seatLog("座位：已清空全部数据（保留 8×8 空表结构）")
+    }
 
     func setGender(_ name: String, _ g: String?) {
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
