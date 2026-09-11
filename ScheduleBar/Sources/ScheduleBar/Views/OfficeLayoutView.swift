@@ -51,11 +51,11 @@ struct OfficeLayoutView: View {
                     }
                     .pickerStyle(.segmented)
                     .fixedSize()
-                    .help("内部视角：工位从办公室内部看，左右门在上方；外部视角：从办公室外部看，整表镜像，左右门移到下方并互换")
+                    .help("内部视角：从办公室内部看，左右门在工位上方；外部视角：从办公室外部看，整张工位表 180° 镜像，左右门移到工位下方")
                     Toggle("显示左右门", isOn: $store.showDoors)
                         .toggleStyle(.checkbox)
                         .fixedSize()
-                        .help("隐藏或显示办公室顶部的左右门标识")
+                        .help("隐藏或显示办公室的左右门标识（内部视角在工位上方，外部视角在工位下方）")
                     Button {
                         store.addOffice()
                     } label: {
@@ -260,8 +260,8 @@ struct OfficeCard: View {
             .foregroundStyle(.secondary)
 
             if store.showDoors && store.studentView {
-                // 外部视角：门在工位下方，且左右门互换
-                doorRow(left: "右门", right: "左门")
+                // 外部视角：门移到工位下方，左门仍在左、右门仍在右（与内部视角的命名一致）
+                doorRow(left: "左门", right: "右门")
             }
         }
         .padding(8)
