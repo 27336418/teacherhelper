@@ -1,5 +1,26 @@
 import SwiftUI
 
+// MARK: - 工位拖动对换代理
+struct OfficeSeatSwapDelegate: DropDelegate {
+    let officeID: UUID
+    let row: Int
+    let col: Int
+    let store: OfficeLayoutStore
+
+    func dropEntered(info: DropInfo) {
+        store.swapSeatTo(officeID: officeID, row: row, col: col)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        store.finishSeatDrag()
+        return true
+    }
+}
+
 // MARK: - 办公室工位布局视图（双列卡片；座位/标题双击编辑，座位右键换色，可增删行/办公室）
 struct OfficeLayoutView: View {
     @EnvironmentObject var store: OfficeLayoutStore
@@ -217,6 +238,14 @@ struct OfficeCard: View {
                 cell
             }
         }
+        .contentShape(Rectangle())
+        .onDrag {
+            store.beginSeatDrag(officeID: office.id, row: r, col: c)
+            return NSItemProvider(object: "office-seat" as NSString)
+        }
+        .onDrop(of: [.text], delegate: OfficeSeatSwapDelegate(officeID: office.id,
+                                                               row: r, col: c, store: store))
+        .help("双击编辑文字，拖动可与其它工位对换，右键更换颜色")
         .zIndex(hit ? 1 : 0)
     }
 }

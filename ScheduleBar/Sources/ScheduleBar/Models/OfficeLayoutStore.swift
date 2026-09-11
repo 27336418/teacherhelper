@@ -49,8 +49,68 @@ final class OfficeLayoutStore: ObservableObject {
         didSet { save() }
     }
 
+    /// 拖动中的工位来源：支持同一办公室内、不同办公室之间互换
+    var dragSource: (officeID: UUID, row: Int, col: Int)?
+    private var dragSnapshot: [OfficeBlock]?
+
     init() {
         self.offices = OfficeLayoutStore.load() ?? OfficeLayoutStore.defaults()
+    }
+
+    // MARK: 工位拖动对换
+    func beginSeatDrag(officeID: UUID, row: Int, col: Int) {
+        guard let office = offices.first(where: { $0.id == officeID }),
+              office.seats.indices.contains(row), office.seats[row].indices.contains(col) else { return }
+        dragSnapshot = offices
+        dragSource = (officeID, row, col)
+    }
+
+    /// 将拖动来源工位与目标工位的姓名/颜色一起对换
+    func swapSeatTo(officeID: UUID, row: Int, col: Int) {
+        guard var source = dragSource,
+              let srcOffice = offices.firstIndex(where: { $0.id == source.officeID }),
+              let dstOffice = offices.firstIndex(where: { $0.id == officeID }),
+              offices[srcOffice].seats.indices.contains(source.row),
+              offices[srcOffice].seats[source.row].indices.contains(source.col),
+              offices[dstOffice].seats.indices.contains(row),
+              offices[dstOffice].seats[row].indices.contains(col),
+              !(source.officeID == officeID && source.row == row && source.col == col) else { return }
+
+        let srcKey = "\(source.row)-\(source.col)"
+        let dstKey = "\(row)-\(col)"
+        let srcText = offices[srcOffice].seats[source.row][source.col]
+        let dstText = offices[dstOffice].seats[row][col]
+        let srcColor = offices[srcOffice].seatColors[srcKey]
+        let dstColor = offices[dstOffice].seatColors[dstKey]
+
+        offices[srcOffice].seats[source.row][source.col] = dstText
+        offices[dstOffice].seats[row][col] = srcText
+        setColor(srcColor, officeIndex: dstOffice, key: dstKey)
+        setColor(dstColor, officeIndex: srcOffice, key: srcKey)
+
+        // 跨办公室换位后，来源位置跟着被拖动的内容走，避免 dropEntered 连续触发时来回抖动
+        source.officeID = officeID
+        source.row = row
+        source.col = col
+        dragSource = source
+    }
+
+    func finishSeatDrag() {
+        defer { dragSource = nil; dragSnapshot = nil }
+        guard let snap = dragSnapshot, snap != offices else { return }
+        UndoService.shared.register("调整工位位置") { [weak self] in
+            guard let self else { return }
+            self.offices = snap
+            self.save()
+        }
+    }
+
+    private func setColor(_ color: String?, officeIndex: Int, key: String) {
+        if let color, !color.isEmpty {
+            offices[officeIndex].seatColors[key] = color
+        } else {
+            offices[officeIndex].seatColors.removeValue(forKey: key)
+        }
     }
 
     static let seatColumns = 4
