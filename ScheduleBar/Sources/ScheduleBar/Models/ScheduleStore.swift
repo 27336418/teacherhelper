@@ -109,6 +109,42 @@ final class ScheduleStore: ObservableObject {
         grid[r][day] = value
     }
 
+    // MARK: 单元格拖动对换（同一张个人课表内）
+
+    /// 拖动中的单元格来源（普通 var，不进 @Published：拖动过程中不刷新视图）
+    var cellDragSource: ScheduleCellID?
+    private var cellDragSnapshot: [[String]]?
+
+    func beginCellDrag(_ period: String, _ day: Int) {
+        guard let r = flatIndex(of: period), r < grid.count, day < grid[r].count else { return }
+        cellDragSnapshot = grid
+        cellDragSource = ScheduleCellID(period: period, day: day)
+    }
+
+    /// 把拖动来源格与目标格的课表内容对换
+    func swapCellTo(_ period: String, _ day: Int) {
+        guard let src = cellDragSource,
+              let sr = flatIndex(of: src.period), let dr = flatIndex(of: period),
+              sr < grid.count, dr < grid.count,
+              grid[sr].indices.contains(src.day), grid[dr].indices.contains(day),
+              !(sr == dr && src.day == day) else { return }
+        let tmp = grid[sr][src.day]
+        grid[sr][src.day] = grid[dr][day]
+        grid[dr][day] = tmp
+        // 来源位置跟着被拖动的内容走，避免 dropEntered 连续触发时来回抖动
+        cellDragSource = ScheduleCellID(period: period, day: day)
+    }
+
+    func finishCellDrag() {
+        defer { cellDragSource = nil; cellDragSnapshot = nil }
+        guard let snap = cellDragSnapshot, snap != grid else { return }
+        UndoService.shared.register("调整课表位置") { [weak self] in
+            guard let self else { return }
+            self.grid = snap
+            self.save()
+        }
+    }
+
     // MARK: 节次增删（在某个时段内）
     func addPeriod(in groupIndex: Int) {
         guard groups.indices.contains(groupIndex) else { return }

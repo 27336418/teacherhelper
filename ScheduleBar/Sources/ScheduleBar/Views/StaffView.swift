@@ -11,10 +11,11 @@ struct StaffView: View {
     @State private var sortColumn: Int? = nil
     @State private var sortAscending: Bool = true
 
-    // 列宽：班级略窄，其余均分（合计 600，给标题行留足空间不溢出）
+    // 列宽：表头与数据行共用同一组宽度（列宽之和 604 + 列间距 40 ≈ 644），保证上下严格对齐。
+    // ⚠️ 表头「科目列」右侧要留 16pt 放删除按钮，所以表头单元格取 colWidths[i] - 16，外层再框成 colWidths[i]。
     private var colWidths: [CGFloat] {
-        let first: CGFloat = 40
-        let rest = max(36, (600 - first) / CGFloat(max(1, store.headers.count - 1)))
+        let first: CGFloat = 44
+        let rest = max(36, (604 - first) / CGFloat(max(1, store.headers.count - 1)))
         return [first] + Array(repeating: rest, count: max(0, store.headers.count - 1))
     }
 
@@ -52,39 +53,47 @@ struct StaffView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    // 表头：第一列为「班级」固定名，科目列可双击改名；右键删除科目列
+                    // 表头：第一列为「班级」固定名，科目列可双击改名；列右侧 ⊖ 删除该列
+                    // ⚠️ 每列总占用宽度必须等于 colWidths[i]（与数据行一致），否则上下会错位
                     HStack(spacing: 4) {
                         // 班级（第 0 列，表头固定不可改名，但可点击排序）
                         SortableHeaderCell(
                             title: "班级",
                             width: colWidths[0],
                             height: 24,
+                            hPadding: 3,
+                            iconSize: 7,
                             isSorted: sortColumn == 0,
                             ascending: sortAscending,
                             onToggleSort: { toggleSort(0) }
                         )
                         ForEach(Array(store.headers.enumerated()), id: \.offset) { i, h in
                             if i > 0 {
-                                HStack(spacing: 2) {
-                                    SortableHeaderCell(
-                                        title: h,
-                                        width: colWidths[i] - 14,
-                                        height: 24,
-                                        isSorted: sortColumn == i,
-                                        ascending: sortAscending,
-                                        isSortable: isSortableColumn(i),
-                                        onToggleSort: { toggleSort(i) },
-                                        onRename: { newName in store.renameColumn(i, newName) },
-                                        onDelete: { store.removeColumn(i) }
-                                    )
+                                SortableHeaderCell(
+                                    title: h,
+                                    width: max(30, colWidths[i] - 14),
+                                    height: 24,
+                                    hPadding: 3,
+                                    iconSize: 7,
+                                    isSorted: sortColumn == i,
+                                    ascending: sortAscending,
+                                    isSortable: isSortableColumn(i),
+                                    onToggleSort: { toggleSort(i) },
+                                    onRename: { newName in store.renameColumn(i, newName) },
+                                    onDelete: { store.removeColumn(i) }
+                                )
+                                .frame(width: colWidths[i], alignment: .leading)
+                                .overlay(alignment: .trailing) {
                                     Button {
                                         store.removeColumn(i)
                                     } label: {
-                                        Image(systemName: "minus.circle")
-                                            .font(.system(size: 10))
-                                            .foregroundStyle(.secondary)
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(Color.white, Color.secondary)
                                     }
                                     .buttonStyle(.plain)
+                                    .frame(width: 14, height: 24)
+                                    .contentShape(Rectangle())
                                     .help("删除「\(h)」列")
                                 }
                             }

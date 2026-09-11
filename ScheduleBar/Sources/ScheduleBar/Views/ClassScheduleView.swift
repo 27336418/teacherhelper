@@ -7,6 +7,17 @@ struct ScheduleCellID: Hashable {
     let day: Int
 }
 
+// MARK: - 课表单元格拖动对换代理（个人课表 & 班级课表共用）
+// 拖到哪个格子，就和那个格子对换内容；换位后来源索引由 store 内部更新，避免抖动
+struct ScheduleCellSwapDelegate: DropDelegate {
+    let onEnter: () -> Void
+    let onFinish: () -> Void
+
+    func dropEntered(info: DropInfo) { onEnter() }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool { onFinish(); return true }
+}
+
 // MARK: - 课表单元格（个人 & 班级共用）
 // 单击 → 选中（同一科目/同一内容的其他格子保持课程色高亮，其余变灰）
 // 双击 → 进入编辑模式（可修改文字，边输边存）
@@ -342,6 +353,15 @@ struct ClassScheduleView: View {
                                 onUpdate: { classStore.setCell(p, d, $0) },
                                 onEndEditing: { editing = nil }
                             )
+                            .onDrag {
+                                classStore.beginCellDrag(p, d)
+                                return NSItemProvider(object: "schedule-cell" as NSString)
+                            }
+                            .onDrop(of: [.text], delegate: ScheduleCellSwapDelegate(
+                                onEnter: { classStore.swapCellTo(p, d) },
+                                onFinish: { classStore.finishCellDrag() }
+                            ))
+                            .help("双击编辑；拖动可与其它格子对换")
                         }
                     }
                 }

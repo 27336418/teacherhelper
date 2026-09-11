@@ -99,6 +99,8 @@ struct SortableHeaderCell: View {
     let title: String
     let width: CGFloat
     var height: CGFloat = 26
+    var hPadding: CGFloat = 5            // 标题左右内边距（列窄时可减小，避免文字被压缩）
+    var iconSize: CGFloat = 8            // 排序箭头字号
     let isSorted: Bool
     let ascending: Bool
     var isSortable: Bool = true                // false = 该列不参与排序（不显示箭头、单击不排序）
@@ -146,21 +148,23 @@ struct SortableHeaderCell: View {
     }
 
     // MARK: 显示态：标题 + 排序箭头（高亮当前排序列；不可排序列不显示箭头）
+    // 标题优先占满可用宽度：箭头固定小尺寸，文字不足时才按 minimumScaleFactor 轻微缩放
     private var displayArea: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 2) {
             Text(title.isEmpty ? " " : title)
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(Color.primary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.6)
+                .minimumScaleFactor(0.75)
             Spacer(minLength: 1)
             if isSortable || isSorted {
                 Image(systemName: sortIcon)
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.system(size: iconSize, weight: .bold))
                     .foregroundStyle(isSorted ? Color.accentColor : Color.secondary.opacity(0.45))
+                    .layoutPriority(1)
             }
         }
-        .padding(.horizontal, 5)
+        .padding(.horizontal, hPadding)
         .frame(width: width, height: height)
         .background(RoundedRectangle(cornerRadius: 5)
             .fill(isSorted ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.04)))

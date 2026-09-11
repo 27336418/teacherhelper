@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 
 // MARK: - 班级配色图例项
 private struct ClassLegendItem: Identifiable {
@@ -174,5 +175,14 @@ struct PersonalScheduleView: View {
             onUpdate: { store.setCell(period, day, $0) },
             onEndEditing: { editing = nil }
         )
+        .onDrag {
+            store.beginCellDrag(period, day)
+            return NSItemProvider(object: "schedule-cell" as NSString)
+        }
+        .onDrop(of: [.text], delegate: ScheduleCellSwapDelegate(
+            onEnter: { store.swapCellTo(period, day) },
+            onFinish: { store.finishCellDrag() }
+        ))
+        .help("双击编辑；拖动可与其它格子对换")
     }
 }

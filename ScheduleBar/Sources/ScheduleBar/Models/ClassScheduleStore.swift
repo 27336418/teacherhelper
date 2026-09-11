@@ -419,6 +419,43 @@ final class ClassScheduleStore: ObservableObject {
         cells[period]?[day] = value
     }
 
+    // MARK: - 单元格拖动对换（当前班级内）
+
+    /// 拖动中的单元格来源（普通 var，不进 @Published：拖动过程中不刷新视图）
+    var cellDragSource: ScheduleCellID?
+    private var cellDragSnapshot: [String: [String]]?
+
+    func beginCellDrag(_ period: String, _ day: Int) {
+        guard let row = cells[period], row.indices.contains(day) else { return }
+        cellDragSnapshot = cells
+        cellDragSource = ScheduleCellID(period: period, day: day)
+    }
+
+    /// 把拖动来源格与目标格的课表内容对换
+    func swapCellTo(_ period: String, _ day: Int) {
+        guard let src = cellDragSource,
+              !(src.period == period && src.day == day),
+              var srcRow = cells[src.period], var dstRow = cells[period],
+              srcRow.indices.contains(src.day), dstRow.indices.contains(day) else { return }
+        let tmp = srcRow[src.day]
+        srcRow[src.day] = dstRow[day]
+        dstRow[day] = tmp
+        cells[src.period] = srcRow
+        cells[period] = dstRow
+        // 来源位置跟着被拖动的内容走，避免 dropEntered 连续触发时来回抖动
+        cellDragSource = ScheduleCellID(period: period, day: day)
+    }
+
+    func finishCellDrag() {
+        defer { cellDragSource = nil; cellDragSnapshot = nil }
+        guard let snap = cellDragSnapshot, snap != cells else { return }
+        UndoService.shared.register("调整课表位置") { [weak self] in
+            guard let self else { return }
+            self.cells = snap
+            self.save()
+        }
+    }
+
     /// 导出全校：行=节次、列=班级、按星期分块（与「定稿」文件同构，可再导回）
     func wholeSchoolRows() -> [[String]] {
         flushCurrent()
