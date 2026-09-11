@@ -97,30 +97,89 @@ struct OfficeLayoutView: View {
                 .padding(.vertical, 5)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
 
-                // 4 列以内保持双列；列数增加后改为单列纵向排列，
-                // 避免办公室卡片仍被固定在 324pt 内而发生横向重叠。
-                LazyVGrid(columns: officeGridColumns,
-                          alignment: .leading, spacing: 12) {
-                    ForEach($store.offices) { $office in
-                        OfficeCard(office: $office, keyword: appliedKeyword)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                // 汇总行：不改变办公室卡片排布，同时让所有办公室人数一眼可见。
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        Text("办公室人数")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(store.offices) { office in
+                            Text("\(office.title)：\(headcount(of: office))人")
+                                .font(.system(size: 11))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Color.accentColor.opacity(0.10)))
+                        }
                     }
                 }
+
+                // 每间办公室独立决定是否占满一行：宽办公室单独占一行，
+                // 其它办公室继续两列排列，后面的办公室自然向下移动。
+                officeRows
             }
             .padding(16)
         }
     }
 
-    /// 工位列较多的办公室需要整行占满，卡片改为纵向排列以保证宽度。
-    private var officeGridColumns: [GridItem] {
-        let hasWideOffice = store.offices.contains { office in
-            (office.seats.map(\.count).max() ?? OfficeLayoutStore.seatColumns) > 4
+    /// 把办公室按两列分组；超过 4 列的办公室单独占一行，
+    /// 但不会改变其它办公室的排列方式。
+    @ViewBuilder
+    private var officeRows: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(officeRowIDs.enumerated()), id: \.offset) { _, row in
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(row, id: \.self) { id in
+                        OfficeCard(office: binding(for: id), keyword: appliedKeyword)
+                            .frame(maxWidth: row.count == 1 ? .infinity : nil,
+                                   alignment: .leading)
+                    }
+                    if row.count == 1 && !isWide(id: row[0]) { Spacer(minLength: 0) }
+                }
+            }
         }
-        if hasWideOffice {
-            return [GridItem(.flexible(minimum: 0), spacing: 12)]
+    }
+
+    private var officeRowIDs: [[UUID]] {
+        var rows: [[UUID]] = []
+        var index = 0
+        while index < store.offices.count {
+            let office = store.offices[index]
+            if isWide(office) {
+                rows.append([office.id])
+                index += 1
+            } else if index + 1 < store.offices.count && !isWide(store.offices[index + 1]) {
+                rows.append([office.id, store.offices[index + 1].id])
+                index += 2
+            } else {
+                rows.append([office.id])
+                index += 1
+            }
         }
-        return [GridItem(.flexible(minimum: 324), spacing: 12),
-                GridItem(.flexible(minimum: 324), spacing: 12)]
+        return rows
+    }
+
+    private func isWide(id: UUID) -> Bool {
+        guard let office = store.offices.first(where: { $0.id == id }) else { return false }
+        return isWide(office)
+    }
+
+    private func isWide(_ office: OfficeBlock) -> Bool {
+        (office.seats.map(\.count).max() ?? OfficeLayoutStore.seatColumns) > 4
+    }
+
+    private func binding(for id: UUID) -> Binding<OfficeBlock> {
+        guard let index = store.offices.firstIndex(where: { $0.id == id }) else {
+            return .constant(OfficeBlock(title: "", seats: [[]]))
+        }
+        return $store.offices[index]
+    }
+
+    /// 实际姓名人数：空白和固定设施不计入。
+    private func headcount(of office: OfficeBlock) -> Int {
+        office.seats.flatMap { $0 }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "水池" }
+            .count
     }
 
     /// 命中的工位数（所有办公室合计）
@@ -146,7 +205,8 @@ struct OfficeCard: View {
     @State private var titleDraft = ""
     @FocusState private var titleFocused: Bool
 
-    private let seatWidth: CGFloat = 68
+    // 收紧姓名行宽度，让同一行能容纳更多办公室。
+    private let seatWidth: CGFloat = 60
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -178,6 +238,13 @@ struct OfficeCard: View {
                         .onTapGesture(count: 2) { titleEditing = true }
                         .help("双击重命名")
                 }
+                Text("\(headcount)人")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                    .help("当前办公室实际人数")
                 Button {
                     store.removeOffice(office.id)
                 } label: {
@@ -235,7 +302,7 @@ struct OfficeCard: View {
                         if office.seats.indices.contains(r), office.seats[r].indices.contains(c) {
                             seatCell(row: r, col: c)
                         } else {
-                            Color.clear.frame(width: seatWidth, height: 30)
+                            Color.clear.frame(width: seatWidth, height: 26)
                         }
                     }
                     Button {
@@ -284,6 +351,13 @@ struct OfficeCard: View {
             .background(RoundedRectangle(cornerRadius: 4).fill(Color.yellow.opacity(0.35)))
     }
 
+    private var headcount: Int {
+        office.seats.flatMap { $0 }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "水池" }
+            .count
+    }
+
     private var columnCount: Int {
         max(1, office.seats.map(\.count).max() ?? OfficeLayoutStore.seatColumns)
     }
@@ -313,7 +387,7 @@ struct OfficeCard: View {
         let hit = isHit(row: r, col: c)
         let cell = EditableGridCell(text: $office.seats[r][c],
                                     width: seatWidth,
-                                    height: 30,
+                                    height: 26,
                                     backgroundColor: hex.map { Color(hexString: $0).opacity(0.30) },
                                     onSave: {})
         .contextMenu {
