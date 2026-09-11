@@ -86,15 +86,30 @@ struct OfficeLayoutView: View {
                 .padding(.vertical, 5)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
 
-                LazyVGrid(columns: [GridItem(.fixed(324), spacing: 12), GridItem(.fixed(324), spacing: 12)],
+                // 4 列以内保持双列；列数增加后改为单列纵向排列，
+                // 避免办公室卡片仍被固定在 324pt 内而发生横向重叠。
+                LazyVGrid(columns: officeGridColumns,
                           alignment: .leading, spacing: 12) {
                     ForEach($store.offices) { $office in
                         OfficeCard(office: $office, keyword: appliedKeyword)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
             .padding(16)
         }
+    }
+
+    /// 工位列较多的办公室需要整行占满，卡片改为纵向排列以保证宽度。
+    private var officeGridColumns: [GridItem] {
+        let hasWideOffice = store.offices.contains { office in
+            (office.seats.map(\.count).max() ?? OfficeLayoutStore.seatColumns) > 4
+        }
+        if hasWideOffice {
+            return [GridItem(.flexible(minimum: 0), spacing: 12)]
+        }
+        return [GridItem(.flexible(minimum: 324), spacing: 12),
+                GridItem(.flexible(minimum: 324), spacing: 12)]
     }
 
     /// 命中的工位数（所有办公室合计）
