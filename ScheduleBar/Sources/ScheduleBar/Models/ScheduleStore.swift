@@ -48,14 +48,39 @@ final class ScheduleStore: ObservableObject {
 
     init() {
         let data = ScheduleStore.load()
-        self.groups = data?.groups ?? DefaultData.personalGroups
-        self.grid = data?.grid ?? DefaultData.personalGrid
+        // 兜底：没有本地数据、或本地数据节次为空（旧版清空过）→ 用默认布局，
+        // 保证个人课表任何情况下都「有节次的空表」，可以直接双击填写。
+        let gs: [PersonalGroup]
+        if let g = data?.groups, !g.isEmpty, !g.allSatisfy({ $0.periods.isEmpty }) {
+            gs = g
+        } else {
+            gs = ScheduleStore.defaultGroups
+        }
+        self.groups = gs
+        self.grid = ScheduleStore.normalizeGrid(data?.grid ?? [], periods: gs.flatMap { $0.periods })
         // 修正历史错位：保证「第N节」/「晚N」按显示顺序连续编号
         renumberPeriods()
     }
 
     static func emptyGrid(periods: [String]) -> [[String]] {
         Array(repeating: Array(repeating: "", count: days.count), count: periods.count)
+    }
+
+    /// 把任意行列数的网格归一到给定节次数量（列不足补空、超出截断；行同理）
+    static func normalizeGrid(_ grid: [[String]], periods: [String]) -> [[String]] {
+        var out: [[String]] = grid.map { row in
+            var r = Array(row.prefix(days.count))
+            if r.count < days.count {
+                r.append(contentsOf: Array(repeating: "", count: days.count - r.count))
+            }
+            return r
+        }
+        if out.count < periods.count {
+            out.append(contentsOf: Array(repeating: Array(repeating: "", count: days.count),
+                                         count: periods.count - out.count))
+        }
+        if out.count > periods.count { out = Array(out.prefix(periods.count)) }
+        return out
     }
 
     // MARK: 派生数据

@@ -638,9 +638,21 @@ final class AppCoordinator: ObservableObject {
         importFile("导入学生信息", grid: importStudent)
     }
 
+    /// 跳过模板顶部的「标题行」：整行只有 ≤1 个非空格（如「学生信息」「班级课表」）。
+    /// 真实数据首行总是多列的表头，不会被误删。
+    static func dropTitleRows(_ rows: [[String]]) -> [[String]] {
+        var out = rows
+        while out.count > 1 {
+            let nonEmpty = out[0].filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            if nonEmpty.count <= 1 { out.removeFirst() } else { break }
+        }
+        return out
+    }
+
     // 学生信息：首行=表头，其余行=学生数据（自动补齐列宽、跳过空行）
     private func importStudent(_ grid: [[String]]) {
         var rows = grid.filter { !$0.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } }
+        rows = AppCoordinator.dropTitleRows(rows)
         guard let header = rows.first else { return }
         rows.removeFirst()
 
@@ -689,7 +701,7 @@ final class AppCoordinator: ObservableObject {
     private func importPersonal(_ grid: [[String]]) {
         let store = ScheduleStore.shared
         var newGrid = ScheduleStore.emptyGrid(periods: store.periods)
-        for row in grid.dropFirst() {
+        for row in AppCoordinator.dropTitleRows(grid).dropFirst() {
             guard row.count > 0 else { continue }
             let label = row[0].trimmingCharacters(in: .whitespaces)
             if let pIdx = store.periods.firstIndex(of: label) {
@@ -717,7 +729,7 @@ final class AppCoordinator: ObservableObject {
         for p in ordered {
             newCells[p] = Array(repeating: "", count: ClassLayout.days.count)
         }
-        for row in grid.dropFirst() {
+        for row in AppCoordinator.dropTitleRows(grid).dropFirst() {
             guard row.count > 0 else { continue }
             let raw = row[0].trimmingCharacters(in: .whitespaces)
             // 文件里的节次标签（1 / 五 / 第5节 / 晚1 …）→ 全表连续序号 → 对应节次
@@ -753,6 +765,7 @@ final class AppCoordinator: ObservableObject {
     // 师资：首行=表头（第 1 列「班级」固定），其余行=班级数据
     private func importStaff(_ grid: [[String]]) {
         var rows = grid.filter { !$0.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } }
+        rows = AppCoordinator.dropTitleRows(rows)
         guard let header = rows.first else { return }
         rows.removeFirst()
 
@@ -855,30 +868,55 @@ final class AppCoordinator: ObservableObject {
     }
 
     // MARK: 下载填写模板（新机器数据为空：下载模板 → 填写 → 从对应「导入」导入）
+    // 每个模板都带结构锚点，空机器上也能看懂怎么填：
+    //   个人/班级课表 → 标题行 +「节次」；学生/师资 → 标题行 + 列名；
+    //   工位 →「办公室」；座位 →「小组」；延时监考 →「子表」+「第几周」。
+    // ⚠️ 标题行统一为「整行只有 1 个非空格」，导入侧用 dropTitleRows 跳过（见下方）。
     enum ImportTemplate { case personal, classSheet, student, staff, office, seating, extend }
 
     func downloadTemplate(_ kind: ImportTemplate) {
+        let (rows, name) = AppCoordinator.templateRows(kind)
+        let panel = makeSavePanel("下载模板", defaultName: "\(name).xlsx")
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                try XLSX.write(rows, to: url)
+            } catch {
+                showAlert("下载失败", error.localizedDescription)
+            }
+        }
+    }
+
+    /// 生成模板内容（纯函数，便于自检）：返回 (行数据, 文件名)
+    static func templateRows(_ kind: ImportTemplate) -> ([[String]], String) {
         let rows: [[String]]
         let name: String
         switch kind {
         case .personal:
-            rows = [["节次"] + ScheduleStore.days]
-                + ScheduleStore.shared.periods.map { [$0] + Array(repeating: "", count: ScheduleStore.days.count) }
+            // 没有任何节次时回落到默认布局（上午5/下午4/晚自习4），模板永远是完整空表
+            let periods = ScheduleStore.shared.periods.isEmpty
+                ? ScheduleStore.defaultGroups.flatMap { $0.periods }
+                : ScheduleStore.shared.periods
+            rows = [["个人课表"],
+                    ["节次"] + ScheduleStore.days]
+                + periods.map { [$0] + Array(repeating: "", count: ScheduleStore.days.count) }
             name = "个人课表模板"
         case .classSheet:
             let store = ClassScheduleStore.shared
             let blocks = store.groups.isEmpty ? ClassLayout.defaultGroups : store.groups
-            rows = [["节次"] + ClassLayout.days]
+            rows = [["班级课表"],
+                    ["节次"] + ClassLayout.days]
                 + blocks.flatMap { g in
                     [[g.title] + Array(repeating: "", count: ClassLayout.days.count)]
                         + g.periods.map { [$0] + Array(repeating: "", count: ClassLayout.days.count) }
                 }
             name = "班级课表模板"
         case .student:
-            rows = [StudentDefaultData.headers]
+            rows = [["学生信息"],
+                    StudentDefaultData.headers]
             name = "学生信息模板"
         case .staff:
-            rows = [StaffStore.defaultHeaders]
+            rows = [["年级师资安排"],
+                    StaffStore.defaultHeaders]
             name = "年级师资安排模板"
         case .office:
             let cols = OfficeLayoutStore.seatColumns
@@ -905,14 +943,7 @@ final class AppCoordinator: ObservableObject {
                     ["7", "5", "语文+历史", "李老师"]]
             name = "延时监考模板"
         }
-        let panel = makeSavePanel("下载模板", defaultName: "\(name).xlsx")
-        if panel.runModal() == .OK, let url = panel.url {
-            do {
-                try XLSX.write(rows, to: url)
-            } catch {
-                showAlert("下载失败", error.localizedDescription)
-            }
-        }
+        return (rows, name)
     }
 
     private func showAlert(_ title: String, _ msg: String) {

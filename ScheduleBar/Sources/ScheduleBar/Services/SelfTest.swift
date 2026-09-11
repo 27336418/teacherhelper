@@ -140,6 +140,77 @@ enum SelfTest {
         print("  内容迁移：\(moved.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value[0])" }.joined(separator: " "))")
     }
 
+    /// 下载模板自检（只读）：生成全部 7 个模板并检查结构锚点，同时验证导入侧会跳过标题行
+    /// 用法：ScheduleBar --selftest-templates
+    static func runTemplateCheck() {
+        let tmpDir = URL(fileURLWithPath: "/tmp/selftest-templates", isDirectory: true)
+        try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        // 新机器默认值：个人课表必须自带节次、内容全空
+        let dGroups = DefaultData.personalGroups
+        let dPeriods = dGroups.flatMap { $0.periods }
+        let dGridEmpty = DefaultData.personalGrid.allSatisfy { $0.allSatisfy { $0.isEmpty } }
+        let dOk = !dGroups.isEmpty && dPeriods.count == 13 && DefaultData.personalGrid.count == 13 && dGridEmpty
+        print("--- 新机器默认个人课表 ---")
+        print("  分组: " + dGroups.map { "\($0.title)[\($0.periods.joined(separator: ","))]" }.joined(separator: " "))
+        print("  节次=\(dPeriods.count)  网格=\(DefaultData.personalGrid.count)行×\(DefaultData.personalGrid.first?.count ?? 0)列  内容全空=\(dGridEmpty)  判定=\(dOk ? "✓" : "✗")")
+        var bad: [String] = dOk ? [] : ["新机器默认个人课表"]
+
+        let kinds: [(String, AppCoordinator.ImportTemplate)] = [
+            ("个人课表", .personal), ("班级课表", .classSheet), ("学生信息", .student),
+            ("年级师资", .staff), ("办公室工位", .office), ("班级座位", .seating), ("延时监考", .extend),
+        ]
+        for (label, kind) in kinds {
+            let (rows, name) = AppCoordinator.templateRows(kind)
+            let flat = rows.flatMap { $0 }.map { $0.trimmingCharacters(in: .whitespaces) }
+            let firstCell = rows.first?.first?.trimmingCharacters(in: .whitespaces) ?? ""
+            // 锚点：标题 / 节次 / 第几周 / 办公室 / 小组 / 子表
+            let anchors = ["节次", "第几周", "办公室", "小组", "子表"]
+            let hasAnchor = anchors.contains { flat.contains($0) }
+            let hasTitle = !firstCell.isEmpty
+            let nonEmptyRows = rows.filter { !$0.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } }.count
+            // 要求：有标题（首格非空）或结构锚点，且不止一行（说明有可填写的骨架）
+            let ok = (hasAnchor || hasTitle) && nonEmptyRows >= 2
+            if !ok { bad.append(label) }
+            print("【\(label)】\(name).xlsx  行=\(rows.count) 有内容行=\(nonEmptyRows) 列≈\(rows.map { $0.count }.max() ?? 0)")
+            print("   标题/首格=\(firstCell)   锚点=\(hasAnchor ? "有" : "无")   判定=\(ok ? "✓" : "✗")")
+            print("   前 3 行: " + rows.prefix(3).map { $0.joined(separator: "|") }.joined(separator: "  //  "))
+        }
+        print("--- dropTitleRows 用例（导入侧跳过标题行）---")
+        let cases: [(String, [[String]], Int)] = [
+            ("有标题行", [["学生信息"], ["序号", "姓名"], ["1", "张三"]], 2),
+            ("无标题行", [["序号", "姓名"], ["1", "张三"]], 2),
+            ("节次表带标题", [["个人课表"], ["节次", "周一"], ["第1节", "7"]], 2),
+        ]
+        for (label, input, expect) in cases {
+            let out = AppCoordinator.dropTitleRows(input)
+            print("  \(label): \(input.count) 行 → \(out.count) 行（期望 \(expect)）")
+            if out.count != expect { bad.append("dropTitleRows/\(label)") }
+        }
+
+        // 落盘 → 读回：验证标题行在真实 xlsx 里也能被导入侧识别并跳过
+        print("--- xlsx 落盘并读回（\(tmpDir.path)）---")
+        let withTitle: Set<String> = ["个人课表", "班级课表", "学生信息", "年级师资"]
+        for (label, kind) in kinds {
+            let (rows, name) = AppCoordinator.templateRows(kind)
+            let url = tmpDir.appendingPathComponent("\(name).xlsx")
+            do {
+                try XLSX.write(rows, to: url)
+                let back = try XLSX.read(url)
+                let dropped = AppCoordinator.dropTitleRows(back)
+                let removedTitle = dropped.count == back.count - 1
+                let wantTitle = withTitle.contains(label)
+                let ok = removedTitle == wantTitle
+                if !ok { bad.append("读回/\(label)") }
+                print("  \(label): 写 \(rows.count) 行 → 读回 \(back.count) 行，去标题后 \(dropped.count) 行"
+                      + "  首格=\(back.first?.first ?? "")  应跳过标题=\(wantTitle)  判定=\(ok ? "✓" : "✗")")
+            } catch {
+                print("  \(label): ERROR \(error.localizedDescription)")
+                bad.append("读回/\(label)")
+            }
+        }
+        print(bad.isEmpty ? "全部通过 ✓" : "异常：\(bad.joined(separator: ", "))")
+    }
+
     static func runImport(path: String) {
         do {
             let grid = try XLSX.read(URL(fileURLWithPath: path))

@@ -21,6 +21,11 @@ struct ScheduleBarApp {
             SelfTest.runPeriodCheck()
             return
         }
+        // 下载模板结构自检（只读）：--selftest-templates
+        if args.contains("--selftest-templates") {
+            SelfTest.runTemplateCheck()
+            return
+        }
         if let i = args.firstIndex(of: "--selftest-update") {
             let repo = (i + 1 < args.count && !args[i + 1].hasPrefix("--")) ? args[i + 1] : nil
             SelfTest.runUpdateCheck(override: repo)

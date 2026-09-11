@@ -6,8 +6,11 @@ import SwiftUI
 enum DefaultData {
 
     // MARK: 个人课表（上午 / 下午 / 晚自习）
-    static let personalGroups: [PersonalGroup] = []
-    static let personalGrid: [[String]] = []
+    // 新机器默认就带节次（上午第1-5节 / 下午第6-9节 / 晚自习晚1-晚4），格子内容为空，
+    // 装好即可双击空格直接填写。
+    static let personalGroups: [PersonalGroup] = ScheduleStore.defaultGroups
+    static let personalGrid: [[String]] =
+        ScheduleStore.emptyGrid(periods: ScheduleStore.defaultGroups.flatMap { $0.periods })
 
     // MARK: 班级课表（key 为组名，例 "1"/"一"/"七"；空表示不显示任何预填内容）
     static let classCells: [String: [String]] = [:]
