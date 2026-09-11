@@ -28,7 +28,7 @@ final class AppCoordinator: ObservableObject {
                 PanelHelper.prepare()
                 let a = NSAlert()
                 a.messageText = "检查更新不可用"
-                a.informativeText = "尚未内置 GitHub 仓库地址，请把 GitHubUpdateService 顶部的 owner / repo 改成您的仓库后重新打包。"
+                a.informativeText = "尚未内置有效的 GitHub 仓库地址，请把 GitHubUpdateService 顶部的 owner / repo 改成您的公开仓库后重新打包。当前地址：\(GitHubUpdateService.shared.repoIdentifier)"
                 PanelHelper.bringFront(a)
                 a.runModal()
             }

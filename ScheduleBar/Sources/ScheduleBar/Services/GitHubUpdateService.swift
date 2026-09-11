@@ -10,7 +10,7 @@ import AppKit
 // 应用不再提供「设置仓库」界面，仓库地址直接内置。改完重新打包即可。
 enum GitHubRepoConfig {
     static let owner = "27336418"
-    static let repo  = "teacher-helper"
+    static let repo  = "teacherhelper"
     /// 可选：GitHub 个人访问令牌（public_repo 只读即可），填了可把 API 限额提到 5000 次/小时。
     /// 留空 = 不带认证（限额 60 次/小时，个人使用通常够用）。
     static let token = ""
@@ -53,7 +53,7 @@ final class GitHubUpdateService {
     /// result: .latest / .update(version, body, url, assetName) / .error(msg) / .notConfigured
     func checkForUpdates(auto: Bool, _ completion: @escaping (Result) -> Void) {
         guard isConfigured, let url = apiURL() else {
-            SeatingStore.seatLog("升级：未配置仓库，前往前去「教师助手 → 设置仓库」")
+            SeatingStore.seatLog("升级：未配置有效仓库地址")
             completion(.notConfigured)
             return
         }
@@ -84,8 +84,8 @@ final class GitHubUpdateService {
                     return
                 }
                 if code == 404 {
-                    let msg = "仓库或 release 不存在（请确认仓库已公开、且已创建过 release）。"
-                    SeatingStore.seatLog("升级：404 \(self.repoIdentifier)")
+                    let msg = "当前内置仓库「\(self.repoIdentifier)」不存在，或尚未发布 GitHub Release。请确认仓库地址正确，并至少发布一个 Release（不是仅上传代码）。"
+                    SeatingStore.seatLog("升级：404 \(self.repoIdentifier)，请检查 owner/repo 与 Release")
                     completion(.error(msg))
                     return
                 }

@@ -46,12 +46,12 @@ struct OfficeLayoutView: View {
                     .help("导入工位布局；可先下载模板（办公室分段 + 每排座位）填写")
                     Button("下载") { coordinator.exportOffice() }
                     Picker("视角", selection: $store.studentView) {
-                        Text("教师视角").tag(false)
-                        Text("学生视角").tag(true)
+                        Text("内部视角").tag(false)
+                        Text("外部视角").tag(true)
                     }
                     .pickerStyle(.segmented)
                     .fixedSize()
-                    .help("教师视角：左门在左、右门在右；学生视角：整张工位表 180° 镜像")
+                    .help("内部视角：工位从办公室内部看，左右门在上方；外部视角：从办公室外部看，整表镜像，左右门移到下方并互换")
                     Toggle("显示左右门", isOn: $store.showDoors)
                         .toggleStyle(.checkbox)
                         .fixedSize()
@@ -189,16 +189,12 @@ struct OfficeCard: View {
                 .help("删除此办公室")
             }
 
-            if store.showDoors {
-                // 门向表头：学生视角整表 180° 镜像
-                HStack(spacing: 4) {
-                    doorLabel(store.studentView ? "右门" : "左门")
-                    Spacer()
-                    doorLabel(store.studentView ? "左门" : "右门")
-                }
+            if store.showDoors && !store.studentView {
+                // 内部视角：从办公室内部看，门在工位上方
+                doorRow(left: "左门", right: "右门")
             }
 
-            // 列管理：每列可删除，末尾可增加一列（学生视角下显示列号镜像）
+            // 列管理：每列可删除，末尾可增加一列（外部视角下显示列号镜像）
             HStack(spacing: 4) {
                 ForEach(0..<columnCount, id: \.self) { displayCol in
                     let c = modelCol(displayCol)
@@ -262,9 +258,22 @@ struct OfficeCard: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
+
+            if store.showDoors && store.studentView {
+                // 外部视角：门在工位下方，且左右门互换
+                doorRow(left: "右门", right: "左门")
+            }
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
+    }
+
+    private func doorRow(left: String, right: String) -> some View {
+        HStack(spacing: 4) {
+            doorLabel(left)
+            Spacer()
+            doorLabel(right)
+        }
     }
 
     private func doorLabel(_ title: String) -> some View {
