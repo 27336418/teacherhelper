@@ -68,6 +68,78 @@ enum SelfTest {
         print("数据文件=\(SeatingStore.fileURL().path)")
     }
 
+    /// 节次规整自检：只读预演，不改动任何数据文件
+    /// 用法：ScheduleBar --selftest-periods
+    static func runPeriodCheck() {
+        print("--- 用例1：历史命名（上午4/下午5/晚自习4）→ 应变为 上午5/下午4/晚自习4、第1-13节 ---")
+        var legacy = ClassData(groups: [
+            ClassGroup(title: "上午", periods: ["一", "二", "三", "四"]),
+            ClassGroup(title: "下午", periods: ["五", "六", "七", "八", "九"]),
+            ClassGroup(title: "晚自习", periods: ["晚1", "晚2", "晚3", "晚4"]),
+        ], cells: [:])
+        for p in legacy.groups.flatMap({ $0.periods }) {
+            legacy.cells[p] = ["\(p)的内容"] + Array(repeating: "", count: ClassLayout.days.count - 1)
+        }
+        dump(ClassLayout.canonicalize(groups: legacy.groups, cells: legacy.cells), label: "用例1")
+
+        print("--- 用例2：带多余节次（上午含节次13、下午含节次14、晚自习含节次15）---")
+        var messy = ClassData(groups: [
+            ClassGroup(title: "上午", periods: ["一", "二", "三", "四", "节次13"]),
+            ClassGroup(title: "下午", periods: ["五", "六", "七", "八", "九", "节次14"]),
+            ClassGroup(title: "晚自习", periods: ["晚1", "晚2", "晚3", "晚4", "节次15"]),
+        ], cells: [:])
+        for p in messy.groups.flatMap({ $0.periods }) {
+            messy.cells[p] = [p] + Array(repeating: "", count: ClassLayout.days.count - 1)
+        }
+        dump(ClassLayout.canonicalize(groups: messy.groups, cells: messy.cells), label: "用例2")
+
+        print("--- 用例3：已是「第N节」体系 → 保持分组，只按序重编号 ---")
+        let numbered = ClassData(groups: [
+            ClassGroup(title: "上午", periods: ["第1节", "第2节"]),
+            ClassGroup(title: "下午", periods: ["第3节"]),
+            ClassGroup(title: "晚自习", periods: ["第4节"]),
+        ], cells: [:])
+        dump(ClassLayout.canonicalize(groups: numbered.groups, cells: numbered.cells), label: "用例3")
+
+        print("--- 用例4：新增节次（占位符）应被编成最后一个序号 ---")
+        let withNew = ClassLayout.canonicalize(
+            groups: [ClassGroup(title: "上午", periods: ["第1节", "第2节", "＿新节＿"]),
+                     ClassGroup(title: "下午", periods: ["第3节"])],
+            cells: ["第1节": Array(repeating: "", count: ClassLayout.days.count)],
+            placeholders: ["＿新节＿"])
+        dump(withNew, label: "用例4")
+
+        print("--- 用例5：真实数据只读预演（\(ClassScheduleStore.fileURL().path)）---")
+        guard let raw = try? Data(contentsOf: ClassScheduleStore.fileURL()),
+              let bank = try? JSONDecoder().decode(ClassBankData.self, from: raw) else {
+            print("（读不到 classes.json，跳过）")
+            return
+        }
+        print("班级数 = \(bank.classes.count)，默认班 = \(bank.defaultClass)")
+        var changed = 0
+        for (name, d) in bank.bank.sorted(by: { $0.key < $1.key }) {
+            let r = ClassLayout.canonicalize(groups: d.groups, cells: d.cells)
+            let before = d.groups.flatMap { $0.periods }
+            let after = r.groups.flatMap { $0.periods }
+            if before != after { changed += 1 }
+            if ["初1-1", "初3-7", bank.defaultClass].contains(name) {
+                print("【\(name)】")
+                print("  改前: " + d.groups.map { "\($0.title)[\($0.periods.joined(separator: ","))]" }.joined(separator: " "))
+                print("  改后: " + r.groups.map { "\($0.title)[\($0.periods.joined(separator: ","))]" }.joined(separator: " "))
+            }
+        }
+        print("需要改动的班级数 = \(changed) / \(bank.bank.count)")
+        print("（本自检只读，不会写盘）")
+    }
+
+    private static func dump(_ r: (groups: [ClassGroup], cells: [String: [String]]), label: String) {
+        for g in r.groups {
+            print("  \(g.title): \(g.periods.joined(separator: ","))")
+        }
+        let moved = r.cells.filter { !$0.value.allSatisfy { $0.isEmpty } }
+        print("  内容迁移：\(moved.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value[0])" }.joined(separator: " "))")
+    }
+
     static func runImport(path: String) {
         do {
             let grid = try XLSX.read(URL(fileURLWithPath: path))

@@ -223,20 +223,29 @@ final class AppCoordinator: ObservableObject {
         return out
     }
 
-    /// 依据文件里出现的节次顺序生成分组（白天前 4 节为上午，其余白天为下午，晚X 为晚自习）
+    /// 依据文件里出现的节次顺序生成分组（上午前 5 节 / 下午第 6-9 节 / 其余白天与「晚X」归晚自习）
     static func makeGroups(from periodOrder: [String]) -> [ClassGroup] {
         let dayLabels = periodOrder.filter { !$0.hasPrefix("晚") }
         let eveLabels = periodOrder.filter { $0.hasPrefix("晚") }
         var groups: [ClassGroup] = []
+
         if !dayLabels.isEmpty {
-            let cut = min(4, dayLabels.count)
-            groups.append(ClassGroup(title: "上午", periods: Array(dayLabels[0..<cut])))
-            if dayLabels.count > cut {
-                groups.append(ClassGroup(title: "下午", periods: Array(dayLabels[cut...])))
+            let am = min(ClassLayout.morningCount, dayLabels.count)
+            groups.append(ClassGroup(title: "上午", periods: Array(dayLabels[0..<am])))
+            let pmEnd = min(ClassLayout.dayPeriodCount, dayLabels.count)
+            if dayLabels.count > am {
+                groups.append(ClassGroup(title: "下午", periods: Array(dayLabels[am..<pmEnd])))
+            }
+            if dayLabels.count > pmEnd {
+                groups.append(ClassGroup(title: "晚自习", periods: Array(dayLabels[pmEnd...])))
             }
         }
         if !eveLabels.isEmpty {
-            groups.append(ClassGroup(title: "晚自习", periods: eveLabels))
+            if let i = groups.firstIndex(where: { $0.title == "晚自习" }) {
+                groups[i].periods.append(contentsOf: eveLabels)
+            } else {
+                groups.append(ClassGroup(title: "晚自习", periods: eveLabels))
+            }
         }
         return groups.isEmpty ? ClassLayout.defaultGroups : groups
     }
@@ -710,8 +719,10 @@ final class AppCoordinator: ObservableObject {
         }
         for row in grid.dropFirst() {
             guard row.count > 0 else { continue }
-            let label = row[0].trimmingCharacters(in: .whitespaces)
-            guard ordered.contains(label) else { continue }
+            let raw = row[0].trimmingCharacters(in: .whitespaces)
+            // 文件里的节次标签（1 / 五 / 第5节 / 晚1 …）→ 全表连续序号 → 对应节次
+            guard let ord = ClassLayout.periodOrdinal(raw), ord >= 1, ord <= ordered.count else { continue }
+            let label = ordered[ord - 1]
             var dayVals = Array(repeating: "", count: ClassLayout.days.count)
             for d in 0..<ClassLayout.days.count {
                 let col = d + 1

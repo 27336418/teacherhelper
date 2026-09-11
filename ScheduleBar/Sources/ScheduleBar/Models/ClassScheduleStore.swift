@@ -3,17 +3,25 @@ import SwiftUI
 
 // MARK: - 全校班级课表：布局与数据（节次分组可增删，支持多班级切换）
 
-/// 默认布局：上午(1-4) / 下午(5-9) / 晚自习(晚1-晚4)
+/// 默认布局：上午 5 节 / 下午 4 节 / 晚自习 4 节
 struct ClassGroup: Codable, Equatable {
     var title: String
     var periods: [String]
 }
 
 enum ClassLayout {
+    /// 上午节数（默认 5 节）
+    static let morningCount = 5
+    /// 下午节数（默认 4 节）
+    static let afternoonCount = 4
+    /// 白天（上午+下午）总节数；晚自习的序号从这里往后顺延
+    static var dayPeriodCount: Int { morningCount + afternoonCount }
+
+    /// 默认布局：全表连续编号「第1节…第13节」（晚自习 = 第10~13节）
     static let defaultGroups: [ClassGroup] = [
-        ClassGroup(title: "上午", periods: ["一", "二", "三", "四"]),
-        ClassGroup(title: "下午", periods: ["五", "六", "七", "八", "九"]),
-        ClassGroup(title: "晚自习", periods: ["晚1", "晚2", "晚3", "晚4"]),
+        ClassGroup(title: "上午", periods: ["第1节", "第2节", "第3节", "第4节", "第5节"]),
+        ClassGroup(title: "下午", periods: ["第6节", "第7节", "第8节", "第9节"]),
+        ClassGroup(title: "晚自习", periods: ["第10节", "第11节", "第12节", "第13节"]),
     ]
     static let days = ["星期1", "星期2", "星期3", "星期4", "星期5", "周日"]
 
@@ -29,37 +37,135 @@ enum ClassLayout {
            .replacingOccurrences(of: "　", with: "")   // 全角空格
     }
 
-    /// 文件里的节次标签 → 应用内标签（1..9 → 一..九；晚1..晚4 原样）
-    static func periodLabel(from raw: String) -> String {
-        let s = compact(raw)
-        switch s {
-        case "1": return "一"
-        case "2": return "二"
-        case "3": return "三"
-        case "4": return "四"
-        case "5": return "五"
-        case "6": return "六"
-        case "7": return "七"
-        case "8": return "八"
-        case "9": return "九"
-        default:  return s
-        }
+    // MARK: 节次标签识别（统一「第N节」体系）
+
+    /// "第3节" → 3；不匹配返回 nil
+    static func numberedValue(_ s: String) -> Int? {
+        guard s.hasPrefix("第"), s.hasSuffix("节"), s.count > 2 else { return nil }
+        let mid = String(s.dropFirst().dropLast())
+        return mid.allSatisfy { $0.isNumber } ? Int(mid) : nil
     }
 
-    /// 应用内节次标签 → 文件标签（一..九 → 1..9）
+    /// "晚1"/"晚12" → 1/12；"晚自习" 等含汉字的返回 nil
+    static func eveningValue(_ s: String) -> Int? {
+        guard s.hasPrefix("晚"), s.count > 1 else { return nil }
+        let tail = String(s.dropFirst())
+        return tail.allSatisfy { $0.isNumber } ? Int(tail) : nil
+    }
+
+    /// 中文数字 → 阿拉伯数字（一…十）
+    static func chineseNumber(_ s: String) -> Int? {
+        ["一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+         "六": 6, "七": 7, "八": 8, "九": 9, "十": 10][s]
+    }
+
+    /// 文件/历史里的节次标签 → 全表连续序号（1-based）；认不出返回 nil
+    /// 支持："第5节" / "5" / "五" / "晚1"（晚自习按白天节数顺延）
+    static func periodOrdinal(_ raw: String, dayPeriods: Int = ClassLayout.dayPeriodCount) -> Int? {
+        let s = compact(raw)
+        if let n = numberedValue(s) { return n }
+        if !s.isEmpty, s.allSatisfy({ $0.isNumber }), let n = Int(s) { return n }
+        if let n = chineseNumber(s) { return n }
+        if let n = eveningValue(s) { return dayPeriods + n }
+        return nil
+    }
+
+    /// 文件里的节次标签 → 应用内节次标签（统一「第N节」）
+    static func periodLabel(from raw: String) -> String {
+        let s = compact(raw)
+        if numberedValue(s) != nil { return s }
+        if let n = periodOrdinal(s) { return "第\(n)节" }
+        return s
+    }
+
+    /// 应用内节次标签 → 文件标签（「第N节」→ N，与学校定稿文件一致）
     static func fileLabel(from label: String) -> String {
-        switch label {
-        case "一": return "1"
-        case "二": return "2"
-        case "三": return "3"
-        case "四": return "4"
-        case "五": return "5"
-        case "六": return "6"
-        case "七": return "7"
-        case "八": return "8"
-        case "九": return "9"
-        default:  return label
+        if let n = numberedValue(label) { return "\(n)" }
+        return label
+    }
+
+    /// 统一节次：把历史命名（一 / 1 / 晚1 …）规整为「全表连续 第1节…第N节」，并同步迁移 cells 内容。
+    /// · 已是「第N节」体系（含 placeholders）：保持分组结构，仅按显示顺序重新编号（压平跳号/重号）
+    /// · 历史命名：按 上午5节 / 下午其余白天 / 晚自习 重新分组后再编号
+    static func canonicalize(groups: [ClassGroup],
+                             cells: [String: [String]],
+                             placeholders: Set<String> = [])
+        -> (groups: [ClassGroup], cells: [String: [String]]) {
+
+        let all = groups.flatMap { $0.periods }
+        guard !all.isEmpty else {
+            var d: [String: [String]] = [:]
+            for p in defaultGroups.flatMap({ $0.periods }) {
+                d[p] = Array(repeating: "", count: days.count)
+            }
+            return (defaultGroups, d)
         }
+
+        let alreadyNumbered = all.allSatisfy { numberedValue($0) != nil || placeholders.contains($0) }
+        var newGroups: [ClassGroup]
+
+        if alreadyNumbered {
+            newGroups = groups.filter { !$0.periods.isEmpty }
+        } else {
+            // 按原分组标题归类（历史数据的 上午/下午/晚自习）
+            func periods(of title: String) -> [String] {
+                groups.first(where: { $0.title.contains(title) })?.periods ?? []
+            }
+            var am = periods(of: "上午")
+            var pm = periods(of: "下午")
+            var eve = groups.filter { $0.title.contains("晚") }.flatMap { $0.periods }
+            var rest = groups.filter {
+                !$0.title.contains("上午") && !$0.title.contains("下午") && !$0.title.contains("晚")
+            }.flatMap { $0.periods }
+
+            // 没有分组信息的老数据：按顺序前 5 节为上午
+            if am.isEmpty && pm.isEmpty {
+                let day = rest
+                rest = []
+                am = Array(day.prefix(morningCount))
+                pm = Array(day.dropFirst(morningCount))
+            }
+            // 上午不足默认节数 → 从下午开头补足（例如旧默认 上午4/下午5 → 上午5/下午4）
+            if am.count < morningCount && !pm.isEmpty {
+                let need = min(morningCount - am.count, pm.count)
+                am.append(contentsOf: pm.prefix(need))
+                pm.removeFirst(need)
+            }
+            // 兜底：白天里以「晚X」命名的也归晚自习
+            let stray = am.filter { eveningValue($0) != nil } + pm.filter { eveningValue($0) != nil }
+            if !stray.isEmpty {
+                am.removeAll { eveningValue($0) != nil }
+                pm.removeAll { eveningValue($0) != nil }
+                eve.insert(contentsOf: stray, at: 0)
+            }
+            pm.append(contentsOf: rest)
+
+            var gs: [ClassGroup] = []
+            if !am.isEmpty { gs.append(ClassGroup(title: "上午", periods: am)) }
+            if !pm.isEmpty { gs.append(ClassGroup(title: "下午", periods: pm)) }
+            if !eve.isEmpty { gs.append(ClassGroup(title: "晚自习", periods: eve)) }
+            newGroups = gs.isEmpty ? defaultGroups : gs
+        }
+
+        // 重新编号（第1节…第N节）并迁移单元格内容
+        var newCells: [String: [String]] = [:]
+        var usedOld = Set<String>()
+        var n = 0
+        for i in newGroups.indices {
+            for j in newGroups[i].periods.indices {
+                let old = newGroups[i].periods[j]
+                n += 1
+                let label = "第\(n)节"
+                newGroups[i].periods[j] = label
+                if usedOld.contains(old) {
+                    newCells[label] = Array(repeating: "", count: days.count)
+                } else {
+                    usedOld.insert(old)
+                    newCells[label] = cells[old] ?? Array(repeating: "", count: days.count)
+                }
+            }
+        }
+        return (newGroups, newCells)
     }
 
     /// 导出用的星期名（与列下标对应：0~4 = 周一~周五，5 = 周日）
@@ -124,24 +230,34 @@ final class ClassScheduleStore: ObservableObject {
         if let d = Self.loadBank() {
             classes = d.classes
             defaultClass = d.defaultClass
-            bank = d.bank
+            // 迁移：历史节次命名（一/五/晚1…）→「全表连续 第N节」，并修正 上午/下午 分组（上午 5 节）
+            var migrated = false
+            var fixed: [String: ClassData] = [:]
+            for (k, v) in d.bank {
+                let m = Self.canonicalData(v)
+                if m.groups != v.groups { migrated = true }
+                fixed[k] = m
+            }
+            bank = fixed
             let pick: String = {
-                if !d.defaultClass.isEmpty, d.bank[d.defaultClass] != nil { return d.defaultClass }
+                if !d.defaultClass.isEmpty, fixed[d.defaultClass] != nil { return d.defaultClass }
                 return d.classes.first ?? ""
             }()
-            let cd = d.bank[pick]
+            let cd = fixed[pick]
             current = pick
             groups = cd?.groups ?? ClassLayout.defaultGroups
             cells = cd?.cells ?? Self.emptyCells(for: ClassLayout.defaultGroups)
+            if migrated { save() }   // 迁移结果立即落盘
         } else if let legacy = Self.loadLegacy() {
             // 老版本只有一个班级（class7.json）→ 迁移成一个班
             let name = "7班"
+            let m = Self.canonicalData(legacy)
             classes = [name]
             defaultClass = name
             current = name
-            bank = [name: legacy]
-            groups = legacy.groups
-            cells = legacy.cells
+            bank = [name: m]
+            groups = m.groups
+            cells = m.cells
             save()
         } else {
             classes = []
@@ -150,6 +266,12 @@ final class ClassScheduleStore: ObservableObject {
             groups = ClassLayout.defaultGroups
             cells = Self.emptyCells(for: ClassLayout.defaultGroups)
         }
+    }
+
+    /// 把一份班级数据规整成标准节次体系（历史命名 → 第1节…第N节）
+    static func canonicalData(_ d: ClassData) -> ClassData {
+        let r = ClassLayout.canonicalize(groups: d.groups, cells: d.cells)
+        return ClassData(groups: r.groups, cells: r.cells)
     }
 
     // MARK: - 班级切换 / 管理
@@ -219,7 +341,7 @@ final class ClassScheduleStore: ObservableObject {
             let n = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !n.isEmpty else { continue }
             if map[n] == nil { order.append(n) }
-            map[n] = data
+            map[n] = Self.canonicalData(data)   // 导入即规整为「第1节…第N节」
         }
         guard !order.isEmpty else { return }
 
@@ -317,28 +439,42 @@ final class ClassScheduleStore: ObservableObject {
     }
 
     // MARK: 节次增删
-    /// 在某分组末尾添加节次（自动生成不重复标签）
+    /// 在某分组末尾添加节次：先占位，再统一重编号（全表连续「第1节…第N节」）
     func addPeriod(in groupIndex: Int) {
         guard groups.indices.contains(groupIndex) else { return }
         ensureClass()
-        var n = orderedPeriods.count
-        var label = "节次\(n)"
-        while orderedPeriods.contains(label) {
-            n += 1
-            label = "节次\(n)"
+        let snapGroups = groups, snapCells = cells
+        let placeholder = "＿新节＿"
+        var gs = groups
+        gs[groupIndex].periods.append(placeholder)
+        var cs = cells
+        cs[placeholder] = Array(repeating: "", count: ClassLayout.days.count)
+
+        let r = ClassLayout.canonicalize(groups: gs, cells: cs, placeholders: [placeholder])
+        groups = r.groups
+        cells = r.cells
+
+        UndoService.shared.register("添加节次") { [weak self] in
+            guard let self else { return }
+            self.groups = snapGroups
+            self.cells = snapCells
+            self.save()
         }
-        groups[groupIndex].periods.append(label)
-        cells[label] = Array(repeating: "", count: ClassLayout.days.count)
     }
 
-    /// 删除节次（连同其课表内容）
+    /// 删除节次（连同其课表内容），随后统一重编号
     func removePeriod(_ label: String) {
         guard orderedPeriods.count > 1 else { return }
         let snapGroups = groups, snapCells = cells
-        for i in groups.indices {
-            groups[i].periods.removeAll { $0 == label }
-        }
-        cells.removeValue(forKey: label)
+        var gs = groups
+        for i in gs.indices { gs[i].periods.removeAll { $0 == label } }
+        var cs = cells
+        cs.removeValue(forKey: label)
+
+        let r = ClassLayout.canonicalize(groups: gs, cells: cs)
+        groups = r.groups
+        cells = r.cells
+
         UndoService.shared.register("删除节次「\(label)」") { [weak self] in
             guard let self else { return }
             self.groups = snapGroups

@@ -16,6 +16,11 @@ struct ScheduleBarApp {
             SelfTest.runSeatingCheck()
             return
         }
+        // 节次规整自检（只读预演，不改数据）：--selftest-periods
+        if args.contains("--selftest-periods") {
+            SelfTest.runPeriodCheck()
+            return
+        }
         if let i = args.firstIndex(of: "--selftest-update") {
             let repo = (i + 1 < args.count && !args[i + 1].hasPrefix("--")) ? args[i + 1] : nil
             SelfTest.runUpdateCheck(override: repo)
