@@ -178,11 +178,46 @@ struct OfficeCard: View {
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.yellow.opacity(0.35)))
             }
 
-            // 座位（4 列 × N 行；右键可换座位颜色）
+            // 列管理：每列可删除，末尾可增加一列
+            HStack(spacing: 4) {
+                ForEach(0..<columnCount, id: \.self) { c in
+                    HStack(spacing: 2) {
+                        Text("列\(c + 1)")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .frame(width: seatWidth - 16)
+                        Button {
+                            store.removeColumn(office.id, c)
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("删除第\(c + 1)列")
+                    }
+                    .frame(width: seatWidth)
+                }
+                Button {
+                    store.addColumn(office.id)
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .help("增加一列")
+            }
+
+            // 座位（动态列数 × N 行；右键可换座位颜色）
             ForEach(office.seats.indices, id: \.self) { r in
                 HStack(spacing: 4) {
-                    ForEach(0..<OfficeLayoutStore.seatColumns, id: \.self) { c in
-                        seatCell(row: r, col: c)
+                    ForEach(0..<columnCount, id: \.self) { c in
+                        if office.seats[r].indices.contains(c) {
+                            seatCell(row: r, col: c)
+                        } else {
+                            Color.clear.frame(width: seatWidth, height: 30)
+                        }
                     }
                     Button {
                         store.removeRow(office.id, r)
@@ -207,6 +242,10 @@ struct OfficeCard: View {
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
+    }
+
+    private var columnCount: Int {
+        max(1, office.seats.map(\.count).max() ?? OfficeLayoutStore.seatColumns)
     }
 
     /// 该座位是否命中查询（忽略大小写、忽略首尾空格）

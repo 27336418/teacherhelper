@@ -471,7 +471,8 @@ final class AppCoordinator: ObservableObject {
         return out
 
         func padded(_ arr: [String], _ n: Int) -> [String] {
-            var a = Array(arr.prefix(n))
+            // 导入不再截断超过默认 4 列的办公室；短行仍补齐到默认宽度。
+            var a = Array(arr.prefix(max(n, arr.count)))
             while a.count < n { a.append("") }
             return a
         }

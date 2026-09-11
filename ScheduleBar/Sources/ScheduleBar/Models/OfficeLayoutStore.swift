@@ -7,7 +7,7 @@ import SwiftUI
 struct OfficeBlock: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
     var title: String
-    var seats: [[String]]        // 行 × 4 列座位
+    var seats: [[String]]        // 行 × 动态列数座位（旧数据默认 4 列）
     var seatColors: [String: String] = [:]   // "行-列" → 自定义颜色 hex（如 "2-3" → "3498DB"）
 
     init(id: UUID = UUID(), title: String, seats: [[String]],
@@ -130,8 +130,52 @@ final class OfficeLayoutStore: ObservableObject {
     }
     func addRow(_ officeID: UUID) {
         guard let i = offices.firstIndex(where: { $0.id == officeID }) else { return }
-        offices[i].seats.append(Array(repeating: "", count: Self.seatColumns))
+        let columns = max(1, offices[i].seats.map(\.count).max() ?? Self.seatColumns)
+        offices[i].seats.append(Array(repeating: "", count: columns))
     }
+
+    /// 在办公室右侧增加一列，并保留既有座位颜色。
+    func addColumn(_ officeID: UUID) {
+        guard let i = offices.firstIndex(where: { $0.id == officeID }) else { return }
+        let columns = max(1, offices[i].seats.map(\.count).max() ?? Self.seatColumns)
+        let snap = offices
+        for r in offices[i].seats.indices {
+            while offices[i].seats[r].count < columns { offices[i].seats[r].append("") }
+            offices[i].seats[r].append("")
+        }
+        UndoService.shared.register("增加工位列") { [weak self] in
+            guard let self else { return }
+            self.offices = snap
+            self.save()
+        }
+    }
+
+    /// 删除指定列；至少保留一列，删除后重排颜色坐标。
+    func removeColumn(_ officeID: UUID, _ c: Int) {
+        guard let i = offices.firstIndex(where: { $0.id == officeID }) else { return }
+        let columns = offices[i].seats.map(\.count).max() ?? 0
+        guard columns > 1, c >= 0, c < columns else { return }
+        let snap = offices
+        for r in offices[i].seats.indices {
+            while offices[i].seats[r].count < columns { offices[i].seats[r].append("") }
+            offices[i].seats[r].remove(at: c)
+        }
+        var colors: [String: String] = [:]
+        for (key, hex) in offices[i].seatColors {
+            let parts = key.split(separator: "-").compactMap { Int($0) }
+            guard parts.count == 2 else { continue }
+            let row = parts[0], col = parts[1]
+            if col < c { colors[key] = hex }
+            else if col > c { colors["\(row)-\(col - 1)"] = hex }
+        }
+        offices[i].seatColors = colors
+        UndoService.shared.register("删除工位列") { [weak self] in
+            guard let self else { return }
+            self.offices = snap
+            self.save()
+        }
+    }
+
     func removeRow(_ officeID: UUID, _ r: Int) {
         guard let i = offices.firstIndex(where: { $0.id == officeID }),
               offices[i].seats.count > 1 else { return }
