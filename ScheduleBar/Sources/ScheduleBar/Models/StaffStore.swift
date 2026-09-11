@@ -32,7 +32,8 @@ final class StaffStore: ObservableObject {
     init() {
         let data = StaffStore.load()
         self.headers = data?.headers ?? StaffStore.defaultHeaders
-        self.rows = data?.rows ?? StaffStore.defaults()
+        // 发布版本默认空：若开发者临时开启 `includeSampleData` 才预填示例。
+        self.rows = data?.rows ?? StaffStore.resolveDefaultRows()
     }
 
     // MARK: 行增删
@@ -84,10 +85,11 @@ final class StaffStore: ObservableObject {
 
     func clear() {
         let snapHeaders = headers, snapRows = rows
+        // 「清空」= 移除全部行（保留表头），便于他人直接双击编辑填写
         headers = StaffStore.defaultHeaders
-        rows = StaffStore.defaults()
+        rows = []
         save()
-        UndoService.shared.register("重置师资安排") { [weak self] in
+        UndoService.shared.register("清空师资安排") { [weak self] in
             guard let self else { return }
             self.headers = snapHeaders
             self.rows = snapRows
@@ -95,8 +97,15 @@ final class StaffStore: ObservableObject {
         }
     }
 
-    // MARK: 默认数据（按「师资安排.xlsx」预填）
-    static func defaults() -> [StaffRow] {
+    // MARK: 默认数据（已清空：发布给其他人时默认不预填任何行，仅保留表头，
+    // 对方点击工具栏「加行」即可填写；本地已有 staff.json 的仍以本地为准）
+    static func defaults() -> [StaffRow] { []
+    }
+
+    // 仅供开发期使用的「示例数据」开关。默认 false；true 时恢复 30 条师资示例，
+    // 方便开发者本地体验，不参与发布。
+    static let includeSampleData: Bool = false
+    static func sampleData() -> [StaffRow] {
         let data: [[String]] = [
             ["1", "陈永珍", "联招班", "陈永珍", "毛瑶瑶", "王顺娜", "宁和平", "喻子格", "柳叶", "王路曦", "王加鹏"],
             ["2", "易海燕", "联招班", "陈永珍", "陈雯雯", "周伟", "宁和平", "易海燕", "柳叶", "曹人予", "王加鹏"],
@@ -130,6 +139,11 @@ final class StaffStore: ObservableObject {
             ["30", "李诗语", "联招班", "王倩", "季富容", "谭超", "张钊然", "李诗语", "巫松", "蒋颖", "吴博"],
         ]
         return data.map { StaffRow(cells: $0) }
+    }
+
+    // dev 入口：本机调试时若需要 30 行示例数据，可改 includeSampleData = true
+    private static func resolveDefaultRows() -> [StaffRow] {
+        includeSampleData ? sampleData() : []
     }
 
     // MARK: 持久化（输入去抖）

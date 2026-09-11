@@ -6,6 +6,16 @@ import SwiftUI
 @main
 struct ScheduleBarApp {
     static func main() {
+        // 1) 进入 main() 第一件事：关掉 AppKit 的「AutoFill 启发式扫描」。
+        // 我们的菜单栏浮层里一旦含几个文本框，macOS 就会在窗口成为 key 时走 `nextValidKeyView`
+        // 遍历整个 SwiftUI 视图树寻找密码 / 联系人候选键。在快速打开面板时
+        // 这条 walk 常常阻塞主线程 1-2 秒（用户能在 M1 Mac 上拿到 hang 报告）。
+        // 关闭它是 Alacritty/VSCode 等同样做法：写一个本进程默认值即可，零侵入。
+        // 入口越早越好（必须在 NSApplication.shared 创建之前/同期）。
+        UserDefaults.standard.register(defaults: [
+            "NSAutoFillHeuristicControllerEnabled": false
+        ])
+
         // 隐藏自检入口（不启动 UI）：--selftest-import <xlsx 路径>
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--selftest-import"), i + 1 < args.count {

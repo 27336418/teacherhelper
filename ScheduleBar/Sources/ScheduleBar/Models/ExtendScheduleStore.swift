@@ -51,14 +51,21 @@ final class ExtendScheduleStore: ObservableObject {
 
     init() {
         // 加载已保存数据；没有则用默认示例。随后剔除「空周次」占位行，并为旧数据补 kind 分组标记
-        self.blocks = (ExtendScheduleStore.load() ?? ExtendScheduleStore.defaultBlocks())
+        self.blocks = (ExtendScheduleStore.load() ?? ExtendScheduleStore.resolveDefaultBlocks())
             .map { $0.withMigratedKind().removingEmptyRows() }
     }
 
-    /// 清空全部延时&监考子表（保留面板，仅清空内容）
+    /// 清空全部延时&监考子表：保留「周二延时 / 周四延时 / 周五延时 / 周日监考」
+    /// 四张面板骨架（表头保留），行内容全部清空，便于他人直接双击填写。
     func clearAll() {
-        blocks = []
+        let snap = blocks
+        blocks = ExtendScheduleStore.defaultBlocks()
         save()
+        UndoService.shared.register("清空延时&监考数据") { [weak self] in
+            guard let self else { return }
+            self.blocks = snap
+            self.save()
+        }
     }
 
     func save() {
@@ -86,9 +93,25 @@ final class ExtendScheduleStore: ObservableObject {
                   .appendingPathComponent("extend.json")
     }
 
-    /// 预填示例数据（延时去姓名；周二/周四/周五并列；可 App 内编辑）
-    /// 只保留「有安排」的周次；没有课/监考的周不生成空占位行（空周次由 removingEmptyRows 兜底剔除）
+    // MARK: - 预填示例开关（默认关闭，发布给其他人时不应预填真实数据）
+    // true = 沿用旧的「周二延时/周四延时/周五延时/周日监考」4 张示例表
+    // false = 仍保留这 4 张空骨架（标题+表头，行数为 0），便于对方双击编辑填写
+    static let includeSampleData: Bool = false
+
+    /// 发布版默认：4 张空骨架（标题+表头，0 行）；本地已有 extend.json 的仍以本地为准
     static func defaultBlocks() -> [ExtendBlock] {
+        let delayHeader = ["第几周", "班级", "节次"]
+        let 监考Header = ["第几周", "班级", "考试科目", "姓名"]
+        return [
+            ExtendBlock(title: "周二延时", kind: "delay", header: delayHeader, rows: []),
+            ExtendBlock(title: "周四延时", kind: "delay", header: delayHeader, rows: []),
+            ExtendBlock(title: "周五延时", kind: "delay", header: delayHeader, rows: []),
+            ExtendBlock(title: "周日监考", kind: "exam", header: 监考Header, rows: []),
+        ]
+    }
+
+    // 开发期：true 时恢复 4 张示例数据（含真实姓名）
+    static func sampleBlocks() -> [ExtendBlock] {
         let delayHeader = ["第几周", "班级", "节次"]
         let 监考Header = ["第几周", "班级", "考试科目", "姓名"]
 
@@ -122,6 +145,11 @@ final class ExtendScheduleStore: ObservableObject {
         ])
 
         return [延时周二, 延时周四, 延时周五, 监考]
+    }
+
+    // dev 入口：本机调试若需要示例数据，改 includeSampleData = true
+    private static func resolveDefaultBlocks() -> [ExtendBlock] {
+        includeSampleData ? sampleBlocks() : defaultBlocks()
     }
 }
 

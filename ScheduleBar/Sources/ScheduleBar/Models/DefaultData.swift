@@ -28,7 +28,8 @@ enum DefaultData {
     static let titles: [String: String] = [:]
 
     // MARK: 第 1 周开始日期（yyyy-MM-dd；空字符串表示未设置，今天所在周为第 1 周）
-    static let firstWeekStart = ""
+    /// 发布版默认第 1 周周一：2026-08-31
+    static let firstWeekStart = "2026-08-31"
 
     // MARK: 校历备注（week-N → 备注）
     static let calendarRemarks: [String: String] = [:]
