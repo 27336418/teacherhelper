@@ -1,0 +1,24 @@
+# OS
+.DS_Store
+._*
+
+# 助手内部记忆/工作目录（不属于项目源码）
+.workbuddy/
+
+# Swift / Xcode / SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+*.xcodeproj
+*.xcworkspace
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# 本机产物（只把源码与 Info.plist 模板提交；.app 体积大且会随构建重新生成）
+教师助手.app/
+教师助手_v*.dmg
+.dmg-stage-*/
+
+# 本机数据目录（不应进仓库；备份导出文件落在此处）
+*.bak

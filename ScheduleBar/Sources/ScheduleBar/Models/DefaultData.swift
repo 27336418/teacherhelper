@@ -1,0 +1,39 @@
+import Foundation
+import SwiftUI
+
+// MARK: - 内置默认数据（已清空，发给别人安装时让对方自己填写）
+// 各 Store 在没有本地 JSON 时加载这里的默认值；已有 JSON 仍以本地数据为准。
+enum DefaultData {
+
+    // MARK: 个人课表（上午 / 下午 / 晚自习）
+    static let personalGroups: [PersonalGroup] = []
+    static let personalGrid: [[String]] = []
+
+    // MARK: 班级课表（key 为组名，例 "1"/"一"/"七"；空表示不显示任何预填内容）
+    static let classCells: [String: [String]] = [:]
+
+    // MARK: 教室分布
+    static let classrooms: [ClassroomFloor] = []
+
+    // MARK: 办公室工位布局
+    static let offices: [OfficeBlock] = []
+
+    // MARK: 定时提醒
+    static let reminders: [Reminder] = []
+
+    // MARK: 卡片 / 导航标题（空：UI 自行用 key 兜底）
+    static let titles: [String: String] = [:]
+
+    // MARK: 第 1 周开始日期（yyyy-MM-dd；空字符串表示未设置，今天所在周为第 1 周）
+    static let firstWeekStart = ""
+
+    // MARK: 校历备注（week-N → 备注）
+    static let calendarRemarks: [String: String] = [:]
+
+    // MARK: 校历单日自定义颜色（yyyy-MM-dd → hex）
+    static let calendarDayColors: [String: String] = [:]
+
+    // MARK: 左侧导航默认顺序（空：UI 用代码内置兜底顺序）
+    static let navOrder: [String] = []
+    static let navHidden: [String] = []
+}

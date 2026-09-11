@@ -1,0 +1,252 @@
+import SwiftUI
+
+// MARK: - 办公室工位布局视图（双列卡片；座位/标题双击编辑，座位右键换色，可增删行/办公室）
+struct OfficeLayoutView: View {
+    @EnvironmentObject var store: OfficeLayoutStore
+    @EnvironmentObject var coordinator: AppCoordinator
+
+    @State private var keyword = ""
+    @State private var appliedKeyword = ""     // 去抖后的关键字（避免每次键入都重算）
+    @State private var searchWork: DispatchWorkItem?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    EditableCardTitle(icon: "person.3.fill", key: "office")
+                    Spacer()
+                    UndoButton()
+                    Menu {
+                        Button("导入 xlsx") { coordinator.importOffice() }
+                        Button("下载填写模板") { coordinator.downloadTemplate(.office) }
+                    } label: {
+                        Label("导入", systemImage: "square.and.arrow.down")
+                    }
+                    .help("导入工位布局；可先下载模板（办公室分段 + 每排座位）填写")
+                    Button("下载") { coordinator.exportOffice() }
+                    Button {
+                        store.addOffice()
+                    } label: {
+                        Label("添加办公室", systemImage: "plus")
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                // 姓名查询：命中工位高亮闪烁
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("输入姓名查找工位", text: $keyword)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .onChange(of: keyword) { v in
+                            searchWork?.cancel()
+                            let w = DispatchWorkItem { appliedKeyword = v }
+                            searchWork = w
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: w)
+                        }
+                    if !keyword.isEmpty {
+                        Button {
+                            keyword = ""
+                            appliedKeyword = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if !appliedKeyword.trimmingCharacters(in: .whitespaces).isEmpty {
+                        Text("找到 \(hitCount) 个工位")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+
+                LazyVGrid(columns: [GridItem(.fixed(324), spacing: 12), GridItem(.fixed(324), spacing: 12)],
+                          alignment: .leading, spacing: 12) {
+                    ForEach($store.offices) { $office in
+                        OfficeCard(office: $office, keyword: appliedKeyword)
+                    }
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    /// 命中的工位数（所有办公室合计）
+    private var hitCount: Int {
+        let k = appliedKeyword.trimmingCharacters(in: .whitespaces)
+        guard !k.isEmpty else { return 0 }
+        var n = 0
+        for o in store.offices {
+            for row in o.seats {
+                for s in row where s.localizedCaseInsensitiveContains(k) { n += 1 }
+            }
+        }
+        return n
+    }
+}
+
+// 单间办公室卡片
+struct OfficeCard: View {
+    @Binding var office: OfficeBlock
+    @EnvironmentObject var store: OfficeLayoutStore
+    var keyword: String = ""                 // 查询姓名（已去抖）；命中的工位高亮闪烁
+    @State private var titleEditing = false
+    @State private var titleDraft = ""
+    @FocusState private var titleFocused: Bool
+
+    private let seatWidth: CGFloat = 68
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // 标题行：双击改名 + 删除办公室
+            HStack(spacing: 6) {
+                if titleEditing {
+                    TextField("", text: $titleDraft)
+                        .focused($titleFocused)
+                        .textFieldStyle(.plain)
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .onAppear {
+                            titleDraft = office.title
+                            DispatchQueue.main.async { titleFocused = true }
+                        }
+                        .onChange(of: titleFocused) { f in
+                            if !f {
+                                titleEditing = false
+                                office.title = titleDraft
+                            }
+                        }
+                        .onSubmit { titleFocused = false }
+                } else {
+                    Text(office.title)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { titleEditing = true }
+                        .help("双击重命名")
+                }
+                Button {
+                    store.removeOffice(office.id)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("删除此办公室")
+            }
+
+            // 门向表头
+            HStack(spacing: 4) {
+                Text("左门")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: seatWidth, height: 20)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.yellow.opacity(0.35)))
+                Spacer()
+                Text("右门")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: seatWidth, height: 20)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.yellow.opacity(0.35)))
+            }
+
+            // 座位（4 列 × N 行；右键可换座位颜色）
+            ForEach(office.seats.indices, id: \.self) { r in
+                HStack(spacing: 4) {
+                    ForEach(0..<OfficeLayoutStore.seatColumns, id: \.self) { c in
+                        seatCell(row: r, col: c)
+                    }
+                    Button {
+                        store.removeRow(office.id, r)
+                    } label: {
+                        Image(systemName: "minus.circle")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("删除此行")
+                }
+            }
+
+            Button {
+                store.addRow(office.id)
+            } label: {
+                Label("添加一行", systemImage: "plus")
+                    .font(.system(size: 11))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
+    }
+
+    /// 该座位是否命中查询（忽略大小写、忽略首尾空格）
+    private func isHit(row r: Int, col c: Int) -> Bool {
+        let k = keyword.trimmingCharacters(in: .whitespaces)
+        guard !k.isEmpty, r < office.seats.count, c < office.seats[r].count else { return false }
+        return office.seats[r][c].localizedCaseInsensitiveContains(k)
+    }
+
+    // 单个座位格：自定义底色 + 右键调色板；命中查询时包进 BreathingWrap 播放独立的呼吸动画
+    private func seatCell(row r: Int, col c: Int) -> some View {
+        let hex = office.seatColor(row: r, col: c)
+        let hit = isHit(row: r, col: c)
+        let cell = EditableGridCell(text: $office.seats[r][c],
+                                    width: seatWidth,
+                                    height: 30,
+                                    backgroundColor: hex.map { Color(hexString: $0).opacity(0.30) },
+                                    onSave: {})
+        .contextMenu {
+            ColorPaletteMenu(current: hex) { office.setSeatColor($0, row: r, col: c) }
+        }
+        .help("双击编辑文字，右键更换颜色")
+
+        return Group {
+            if hit {
+                // 每个命中格独享动画：子视图销毁时动画随之消失，互不干扰
+                BreathingWrap { cell }
+            } else {
+                cell
+            }
+        }
+        .zIndex(hit ? 1 : 0)
+    }
+}
+
+// MARK: - 命中工位的呼吸动画包装（放大缩小 + 橙色高亮，动画生命周期与本视图绑定）
+private struct BreathingWrap<Content: View>: View {
+    let content: () -> Content
+    @State private var on = false
+
+    init(@ViewBuilder content: @escaping () -> Content) {
+        self.content = content
+    }
+
+    var body: some View {
+        content()
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.orange.opacity(on ? 0.75 : 0.35))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.orange, lineWidth: on ? 3 : 2)
+                    .opacity(on ? 1 : 0.5)
+            )
+            .shadow(color: Color.orange.opacity(on ? 0.5 : 0.15), radius: on ? 7 : 3)
+            .scaleEffect(on ? 1.15 : 0.85)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.45).repeatForever(autoreverses: true)) {
+                    on = true
+                }
+            }
+    }
+}

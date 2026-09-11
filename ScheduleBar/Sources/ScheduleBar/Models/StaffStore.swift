@@ -1,0 +1,187 @@
+import Foundation
+import SwiftUI
+
+// MARK: - 年级师资安排（班级 × 科目矩阵；行/列可增删、单元格与表头可编辑）
+// 数据来自「师资安排.xlsx」；持久化 staff.json。
+
+struct StaffRow: Identifiable, Codable, Equatable {
+    var id: UUID = UUID()
+    var cells: [String]     // 与 store.headers 一一对应
+}
+
+/// 存储格式：{"headers": [...], "rows": [...]}；旧版纯 [StaffRow] 自动迁移
+struct StaffData: Codable {
+    var headers: [String]
+    var rows: [StaffRow]
+}
+
+final class StaffStore: ObservableObject {
+    static let shared = StaffStore()
+
+    static let defaultHeaders = ["班级", "班主任", "班型", "语文", "英语", "政治", "历史", "数学", "物理", "化学", "体育"]
+
+    @Published var headers: [String] {
+        didSet { scheduleSave() }
+    }
+    @Published var rows: [StaffRow] {
+        didSet { scheduleSave() }
+    }
+
+    private let saver = Debouncer()
+
+    init() {
+        let data = StaffStore.load()
+        self.headers = data?.headers ?? StaffStore.defaultHeaders
+        self.rows = data?.rows ?? StaffStore.defaults()
+    }
+
+    // MARK: 行增删
+    func addRow() {
+        rows.append(StaffRow(cells: Array(repeating: "", count: headers.count)))
+    }
+    func removeRow(_ id: UUID) {
+        let snap = rows
+        let name = rows.first(where: { $0.id == id })?.cells.first ?? ""
+        rows.removeAll { $0.id == id }
+        UndoService.shared.register("删除班级行\(name.isEmpty ? "" : "「\(name)」")") { [weak self] in
+            guard let self else { return }
+            self.rows = snap
+            self.save()
+        }
+    }
+
+    // MARK: 列增删
+    func addColumn() {
+        var n = headers.count
+        var name = "科目\(n)"
+        while headers.contains(name) {
+            n += 1
+            name = "科目\(n)"
+        }
+        headers.append(name)
+        for i in rows.indices { rows[i].cells.append("") }
+    }
+    func removeColumn(_ index: Int) {
+        guard headers.count > 1, index < headers.count else { return }
+        let snapHeaders = headers, snapRows = rows
+        let removed = headers[index]
+        headers.remove(at: index)
+        for i in rows.indices where index < rows[i].cells.count {
+            rows[i].cells.remove(at: index)
+        }
+        UndoService.shared.register("删除列「\(removed)」") { [weak self] in
+            guard let self else { return }
+            self.headers = snapHeaders
+            self.rows = snapRows
+            self.save()
+        }
+    }
+
+    func renameColumn(_ index: Int, _ name: String) {
+        guard headers.indices.contains(index) else { return }
+        headers[index] = name
+    }
+
+    func clear() {
+        let snapHeaders = headers, snapRows = rows
+        headers = StaffStore.defaultHeaders
+        rows = StaffStore.defaults()
+        save()
+        UndoService.shared.register("重置师资安排") { [weak self] in
+            guard let self else { return }
+            self.headers = snapHeaders
+            self.rows = snapRows
+            self.save()
+        }
+    }
+
+    // MARK: 默认数据（按「师资安排.xlsx」预填）
+    static func defaults() -> [StaffRow] {
+        let data: [[String]] = [
+            ["1", "陈永珍", "联招班", "陈永珍", "毛瑶瑶", "王顺娜", "宁和平", "喻子格", "柳叶", "王路曦", "王加鹏"],
+            ["2", "易海燕", "联招班", "陈永珍", "陈雯雯", "周伟", "宁和平", "易海燕", "柳叶", "曹人予", "王加鹏"],
+            ["3", "谭海连", "冲刺1", "王欢欢", "官连浇", "谭超", "张钊然", "谭海连", "柳叶", "蒙真真", "熊文超"],
+            ["4", "潘桃", "联招班", "王欢欢", "李增红", "余燕", "赖炳霖", "潘桃", "高兴", "于冰凌", "王加鹏"],
+            ["5", "陈雯雯", "联招班", "柯娜娜", "陈雯雯", "余燕", "赖炳霖", "罗鑫", "高兴", "蒙真真", "梁雪峰"],
+            ["6", "余燕", "联招班", "李炎鸿", "李圆圆", "余燕", "高筱杰", "刘庆超", "陈坤权", "罗勇", "熊文超"],
+            ["7", "林科", "冲刺3", "于理想", "邓雨蒙", "余燕", "赖炳霖", "林科", "陈乐怡", "蒙真真", "王加鹏"],
+            ["8", "邓雨蒙", "联招班", "刘璐", "邓雨蒙", "王顺娜", "高筱杰", "林科", "王淑慧", "李晨曦", "熊文超"],
+            ["9", "罗鑫", "体育班", "赵悦婷", "蔡亚男", "周伟", "赖炳霖", "罗鑫", "鞠在东", "于冰凌", "熊文超"],
+            ["10", "赵悦婷", "联招班", "赵悦婷", "官连浇", "陈婷", "张钊然", "鲍思敏", "王淑慧", "李晨曦", "吴博"],
+            ["11", "李琳", "冲刺1", "李炎鸿", "李雨阳", "王顺娜", "詹道亮", "李琳", "高兴", "王雪梅", "吴博"],
+            ["12", "魏静宜", "联招班", "魏静宜", "黄小桐", "范镔玲", "宁和平", "李琳", "鞠在东", "顾军", "梁雪峰"],
+            ["13", "詹道亮", "冲刺1", "石玉霞", "刘莉名", "陈婷", "詹道亮", "易海燕", "陈坤权", "蒋颖", "梁雪峰"],
+            ["14", "石玉霞", "联招班", "石玉霞", "蔡亚男", "张强", "高筱杰", "孙正", "陈乐怡", "顾军", "郑静洋"],
+            ["15", "鲍思敏", "联招班", "骆金辉", "李圆圆", "张强", "詹道亮", "鲍思敏", "陈乐怡", "王路曦", "郑静洋"],
+            ["16", "刘莉名", "联招班", "魏静宜", "刘莉名", "谭超", "詹道亮", "刘庆超", "刘东梅", "罗勇", "郑静洋"],
+            ["17", "李记", "冲刺2", "刘璐", "袁欣茹", "范镔玲", "詹道亮", "李记", "王淑慧", "张苑林", "任杰"],
+            ["18", "于理想", "联招班", "于理想", "李雨阳", "王顺娜", "宁和平", "李记", "刘东梅", "王雪梅", "刘露"],
+            ["19", "柯娜娜", "冲刺3", "柯娜娜", "毛瑶瑶", "陈婷", "赖炳霖", "王丹虹", "鞠在东", "张苑林", "郑静洋"],
+            ["20", "张静", "冲刺1", "张竞丹", "张静", "周伟", "高筱杰", "潘桃", "刘东梅", "李晨曦", "熊文超"],
+            ["21", "石桃", "冲刺2", "罗宇婷", "石桃", "王顺娜", "张钊然", "孙正", "聂思源", "曹人予", "王加鹏"],
+            ["22", "罗宇婷", "联招班", "罗宇婷", "石桃", "周伟", "宁和平", "李丹", "聂思源", "王雪梅", "梁雪峰"],
+            ["23", "朱先明", "冲刺3", "骆金辉", "黄小桐", "张强", "高筱杰", "朱先明", "李毅", "于冰凌", "刘露"],
+            ["24", "聂思源", "冲刺3", "王倩", "季富容", "张强", "张钊然", "李诗语", "聂思源", "曹人予", "梁雪峰"],
+            ["25", "周伟", "冲刺3", "杜著洋", "周濛", "周伟", "刘梦涵", "喻子格", "李毅", "王路曦", "任杰"],
+            ["26", "巫松", "联招班", "杜著洋", "袁欣茹", "陈婷", "刘梦涵", "谭海连", "巫松", "张苑林", "任杰"],
+            ["27", "谭超", "冲刺1", "冯鑫", "陆遥", "谭超", "刘梦涵", "李丹", "巫松", "顾军", "郑静洋"],
+            ["28", "陆遥", "联招班", "冯鑫", "陆遥", "谭超", "刘梦涵", "王丹虹", "李毅", "蒋颖", "任杰"],
+            ["29", "张竞丹", "联招班", "张竞丹", "张静", "陈婷", "刘梦涵", "朱先明", "陈坤权", "张勇", "任杰"],
+            ["30", "李诗语", "联招班", "王倩", "季富容", "谭超", "张钊然", "李诗语", "巫松", "蒋颖", "吴博"],
+        ]
+        return data.map { StaffRow(cells: $0) }
+    }
+
+    // MARK: 持久化（输入去抖）
+    func scheduleSave() {
+        saver.schedule { self.save() }
+    }
+
+    func save() {
+        do {
+            let url = Self.fileURL()
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(StaffData(headers: headers, rows: rows))
+            try data.write(to: url, options: .atomic)
+        } catch {
+            print("[ScheduleBar] 师资保存失败: \(error)")
+        }
+    }
+
+    /// 加载并迁移：新格式 {"headers","rows"}；旧格式纯 [StaffRow]
+    static func load() -> StaffData? {
+        let url = fileURL()
+        guard let raw = try? Data(contentsOf: url) else { return nil }
+
+        if let d = try? JSONDecoder().decode(StaffData.self, from: raw) {
+            return normalize(d)
+        }
+        if let rows = try? JSONDecoder().decode([StaffRow].self, from: raw) {
+            return normalize(StaffData(headers: defaultHeaders, rows: rows))
+        }
+        return nil
+    }
+
+    /// 行单元格数与表头对齐
+    private static func normalize(_ d: StaffData) -> StaffData {
+        var out = d
+        if out.headers.isEmpty { out.headers = defaultHeaders }
+        for i in out.rows.indices {
+            var c = out.rows[i].cells
+            if c.count < out.headers.count {
+                c.append(contentsOf: Array(repeating: "", count: out.headers.count - c.count))
+            }
+            if c.count > out.headers.count { c = Array(c.prefix(out.headers.count)) }
+            out.rows[i].cells = c
+        }
+        return out
+    }
+
+    static func fileURL() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask)[0]
+        return base.appendingPathComponent("ScheduleBar", isDirectory: true)
+                  .appendingPathComponent("staff.json")
+    }
+}
