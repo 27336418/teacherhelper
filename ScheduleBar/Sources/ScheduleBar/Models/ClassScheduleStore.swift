@@ -417,6 +417,8 @@ final class ClassScheduleStore: ObservableObject {
             cells[period] = Array(repeating: "", count: ClassLayout.days.count)
         }
         cells[period]?[day] = value
+        // 班级课表的每次编辑都立即写入当前班级数据，避免切换班级或退出前丢失。
+        save()
     }
 
     // MARK: - 单元格拖动对换（当前班级内）
@@ -442,6 +444,8 @@ final class ClassScheduleStore: ObservableObject {
         dstRow[day] = tmp
         cells[src.period] = srcRow
         cells[period] = dstRow
+        // 交换后立即落盘：拖拽结束前即使窗口被关闭，也不会丢失位置调整。
+        save()
         // 来源位置跟着被拖动的内容走，避免 dropEntered 连续触发时来回抖动
         cellDragSource = ScheduleCellID(period: period, day: day)
     }

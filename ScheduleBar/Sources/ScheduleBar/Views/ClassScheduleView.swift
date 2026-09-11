@@ -13,8 +13,14 @@ struct ScheduleCellSwapDelegate: DropDelegate {
     let onEnter: () -> Void
     let onFinish: () -> Void
 
+    func validateDrop(info: DropInfo) -> Bool { true }
     func dropEntered(info: DropInfo) { onEnter() }
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    // 某些 macOS 版本在嵌套 HStack 的格子上不会回调 dropEntered，
+    // dropUpdated 仍会稳定触发；两处都调用同一幂等换位逻辑，确保拖到目标格必定对换。
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        onEnter()
+        return DropProposal(operation: .move)
+    }
     func performDrop(info: DropInfo) -> Bool { onFinish(); return true }
 }
 
