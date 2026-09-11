@@ -37,7 +37,10 @@ enum DefaultData {
     // MARK: 校历单日自定义颜色（yyyy-MM-dd → hex）
     static let calendarDayColors: [String: String] = [:]
 
-    // MARK: 左侧导航默认顺序（空：UI 用代码内置兜底顺序）
-    static let navOrder: [String] = []
+    // MARK: 左侧导航默认顺序
+    static let navOrder: [String] = [
+        "个人课表", "班级课表", "延时监考", "学生信息", "学生座位",
+        "日程提醒", "校历日历", "年级师资", "教师工位", "教室布局"
+    ]
     static let navHidden: [String] = []
 }

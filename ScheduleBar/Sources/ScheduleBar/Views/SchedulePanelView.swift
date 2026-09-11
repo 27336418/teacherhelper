@@ -7,14 +7,14 @@ import SwiftUI
 enum PanelTab: String, CaseIterable, Identifiable {
     case personal  = "个人课表"
     case class7    = "班级课表"
-    case extend    = "延时 & 监考"
-    case office    = "办公室工位布局"
-    case classroom = "教室分布"
-    case staff     = "年级师资安排"
+    case extend    = "延时监考"
+    case office    = "教师工位"
+    case classroom = "教室布局"
+    case staff     = "年级师资"
     case student   = "学生信息"
-    case seating   = "班级学生座位安排"
-    case calendar  = "重庆校历"
-    case reminder  = "提醒设置"
+    case seating   = "学生座位"
+    case calendar  = "校历日历"
+    case reminder  = "日程提醒"
 
     var id: String { rawValue }
 

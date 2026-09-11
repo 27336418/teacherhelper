@@ -23,11 +23,26 @@ final class NavPrefsStore: ObservableObject {
         let all = PanelTab.allCases.map { $0.rawValue }
         let loaded = NavPrefsStore.load()
 
-        var ord = (loaded?.order ?? DefaultData.navOrder).filter { all.contains($0) }
+        // 旧版本保存的是旧标题；若旧顺序无法匹配新标题，则直接采用本版规定的默认顺序。
+        // 这样升级后不会按 enum 声明顺序错排，也不会丢失新板块。
+        let renameMap: [String: String] = [
+            "延时 & 监考": "延时监考",
+            "办公室工位布局": "教师工位",
+            "教室分布": "教室布局",
+            "年级师资安排": "年级师资",
+            "班级学生座位安排": "学生座位",
+            "重庆校历": "校历日历",
+            "提醒设置": "日程提醒"
+        ]
+        let loadedOrder = (loaded?.order ?? []).map { renameMap[$0] ?? $0 }
+        var ord = loadedOrder.filter { all.contains($0) }
+        if ord.isEmpty {
+            ord = DefaultData.navOrder.filter { all.contains($0) }
+        }
         for t in all where !ord.contains(t) { ord.append(t) }   // 新增板块补到末尾
-
         self.order = ord
-        self.hidden = Set((loaded?.hidden ?? DefaultData.navHidden).filter { all.contains($0) })
+        let loadedHidden = (loaded?.hidden ?? []).map { renameMap[$0] ?? $0 }
+        self.hidden = Set(loadedHidden.filter { all.contains($0) })
     }
 
     // MARK: 查询
