@@ -41,27 +41,62 @@ final class AppCoordinator: ObservableObject {
                 PanelHelper.bringFront(a)
                 a.runModal()
             }
-        case .update(let ver, _, let page, let assetName, let assetURL):
+        case .update(let info):
             // 自动检查时：同一版本每天只自动提示/下载一次，避免重复下载。
-            if !manual, !shouldAutoPrompt(version: ver) { return }
-            if !manual { markAutoPrompted(version: ver) }
-            guard !assetURL.isEmpty else {
-                if let u = URL(string: page) { NSWorkspace.shared.open(u) }
+            if !manual, !shouldAutoPrompt(version: info.version) { return }
+            if !manual { markAutoPrompted(version: info.version) }
+            guard !info.assetURL.isEmpty else {
+                if let u = URL(string: info.page) { NSWorkspace.shared.open(u) }
                 return
             }
-            GitHubUpdateService.shared.downloadUpdate(from: assetURL, suggestedName: assetName) { result in
+            let ver = info.version
+            GitHubUpdateService.shared.downloadUpdate(from: info.assetURL,
+                                                      fallbacks: info.fallbackURLs,
+                                                      suggestedName: info.assetName) { result in
                 switch result {
                 case .success(let url):
+                    // 下载完成 → 直接打开 dmg，用户把 App 拖进「应用程序」即完成更新
                     NSWorkspace.shared.open(url)
                 case .failure(let error):
                     if manual {
                         PanelHelper.prepare()
                         let a = NSAlert()
                         a.messageText = "更新下载失败"
-                        a.informativeText = error.localizedDescription
+                        a.informativeText = "v\(ver) 的安装包没能下载下来：\(error.localizedDescription)\n\n可点「打开下载页面」手动下载。"
+                        a.addButton(withTitle: "好")
+                        a.addButton(withTitle: "打开下载页面")
                         PanelHelper.bringFront(a)
-                        a.runModal()
+                        if a.runModal() == .alertSecondButtonReturn {
+                            let target = info.assetURL.isEmpty ? info.page : info.assetURL
+                            if let u = URL(string: target) { NSWorkspace.shared.open(u) }
+                        }
                     }
+                }
+            }
+        case .noSource(let hint):
+            // 仓库可达，但既没有 Release 也没有 version.json：
+            // 这不是网络故障，给一份「怎么发布更新」的可执行说明，而不是吓人的报错。
+            if manual {
+                PanelHelper.prepare()
+                let a = NSAlert()
+                a.messageText = "暂时没有可用的更新信息"
+                a.informativeText = """
+                \(hint)
+
+                发布一次更新只需要两步（浏览器里即可完成，不用 git，也不用创建 Release）：
+                1. 打开仓库 www.github.com/\(GitHubUpdateService.shared.repoIdentifier)
+                2. 用「Add file → Upload files」上传两个文件：
+                   · version.json（版本号与安装包文件名）
+                   · 教师助手_v\(GitHubUpdateService.shared.currentVersion).dmg
+
+                文件模板就在教师助手所在的项目文件夹里，直接拖进去即可。
+                """
+                a.addButton(withTitle: "打开仓库页面")
+                a.addButton(withTitle: "好")
+                PanelHelper.bringFront(a)
+                if a.runModal() == .alertFirstButtonReturn,
+                   let u = URL(string: GitHubUpdateService.shared.repoPageURL) {
+                    NSWorkspace.shared.open(u)
                 }
             }
         case .error(let msg):
@@ -69,9 +104,14 @@ final class AppCoordinator: ObservableObject {
                 PanelHelper.prepare()
                 let a = NSAlert()
                 a.messageText = "检查更新失败"
-                a.informativeText = msg
+                a.informativeText = "\(msg)\n\n仓库：www.github.com/\(GitHubUpdateService.shared.repoIdentifier)\n（若网络无法访问 GitHub，可稍后重试）"
+                a.addButton(withTitle: "好")
+                a.addButton(withTitle: "打开仓库页面")
                 PanelHelper.bringFront(a)
-                a.runModal()
+                if a.runModal() == .alertSecondButtonReturn,
+                   let u = URL(string: GitHubUpdateService.shared.repoPageURL) {
+                    NSWorkspace.shared.open(u)
+                }
             }
         }
     }

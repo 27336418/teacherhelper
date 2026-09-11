@@ -52,6 +52,98 @@ enum SelfTest {
             let bv = b.hasPrefix("v") ? String(b.dropFirst()) : b
             print("\(a) vs \(b) -> \(GitHubUpdateService.compare(av, bv).rawValue)")
         }
+
+        // ---- version.json 通道（没发布 Release 也能用） ----
+        print("--- version.json 通道自测 ---")
+        let owner = GitHubRepoConfig.owner
+        let repoName = GitHubRepoConfig.repo
+        let branch = GitHubRepoConfig.branch
+
+        // 1) 三条读取通道的真实连通性（仓库还没上传时预期 404）
+        let probes: [(String, String, String)] = [
+            ("GitHub 内容接口", "https://api.github.com/repos/\(owner)/\(repoName)/contents/version.json?ref=\(branch)", "application/vnd.github.raw"),
+            ("jsDelivr CDN", GitHubUpdateService.cdnURL(owner: owner, repo: repoName, branch: branch, path: "version.json"), "application/json"),
+            ("raw.githubusercontent", GitHubUpdateService.rawURL(owner: owner, repo: repoName, branch: branch, path: "version.json"), "application/json"),
+        ]
+        for (label, url, accept) in probes {
+            let (code, data) = syncGet(url, accept: accept)
+            var extra = ""
+            if code == 200, let data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let info = GitHubUpdateService.infoFromFeed(json, owner: owner, repo: repoName,
+                                                               branch: branch, page: url) {
+                    extra = "  → 清单版本 \(info.version)，安装包 \(info.assetName)"
+                } else {
+                    extra = "  → 200 但不是合法清单（缺 version）"
+                }
+            } else if code == 404 {
+                extra = "  → 清单还没上传（预期）"
+            } else if code < 0 {
+                extra = "  → 该通道在当前网络不可用"
+            }
+            print("\(label): HTTP \(code)\(extra)")
+        }
+
+        // 2) 用真实公开 JSON 验证「解析 + 比较」链路（jsDelivr 上的 jquery/package.json 带 version 字段）
+        print("-- 解析链路（真实 JSON：jquery/package.json）--")
+        let (jcode, jdata) = syncGet("https://cdn.jsdelivr.net/gh/jquery/jquery@3.7.1/package.json",
+                                     accept: "application/json")
+        if jcode == 200, let jdata,
+           let json = try? JSONSerialization.jsonObject(with: jdata) as? [String: Any],
+           let info = GitHubUpdateService.infoFromFeed(json, owner: owner, repo: repoName,
+                                                      branch: branch, page: "selftest") {
+            let newer = GitHubUpdateService.compare(info.version, svc.currentVersion) == .orderedDescending
+            print("解析成功：version=\(info.version) 比本地(\(svc.currentVersion))新=\(newer)")
+        } else {
+            print("解析链路测试跳过（HTTP \(jcode)，可能网络受限）")
+        }
+
+        // 3) 下载地址候选（含国内加速镜像）
+        let sample = GitHubUpdateService.infoFromFeed(
+            ["version": "9.9.9", "download": "教师助手_v9.9.9.dmg"],
+            owner: owner, repo: repoName, branch: branch, page: "selftest")
+        if let sample {
+            print("-- 下载地址候选（示例 v9.9.9）--")
+            let attempts = GitHubUpdateService.downloadAttempts(primary: sample.assetURL,
+                                                               fallbacks: sample.fallbackURLs)
+            for (i, u) in attempts.enumerated() { print("  \(i + 1). \(u)") }
+        }
+
+        // 4) 纯解析用例（不依赖网络）
+        let samples: [([String: Any], String)] = [
+            (["version": "1.9.0", "download": "教师助手_v1.9.0.dmg", "notes": "新增视角"], "相对文件名（中文）"),
+            (["version": "v2.0.0", "download_url": "https://example.com/a.dmg"], "完整 URL + v 前缀"),
+            (["tag_name": "1.9.1"], "只有 tag_name / 没有安装包"),
+            (["notes": "缺少 version"], "缺 version（应判为无效）"),
+        ]
+        print("-- 纯解析用例 --")
+        for (json, label) in samples {
+            if let info = GitHubUpdateService.infoFromFeed(json, owner: owner, repo: repoName,
+                                                           branch: branch, page: "page") {
+                let newer = GitHubUpdateService.compare(info.version, svc.currentVersion) == .orderedDescending
+                print("\(label): version=\(info.version) 比本地新=\(newer) 安装包=\(info.assetName)")
+                print("    → \(info.assetURL)")
+            } else {
+                print("\(label): 无效（按预期跳过）")
+            }
+        }
+    }
+
+    /// 同步 GET（自检用；返回 HTTP 状态码与响应体）
+    private static func syncGet(_ urlString: String, accept: String) -> (Int, Data?) {
+        guard let url = URL(string: urlString) else { return (-1, nil) }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 15
+        req.setValue(accept, forHTTPHeaderField: "Accept")
+        req.setValue("TeacherHelper/selftest", forHTTPHeaderField: "User-Agent")
+        var out: (Int, Data?) = (-1, nil)
+        let sem = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { data, resp, _ in
+            out = ((resp as? HTTPURLResponse)?.statusCode ?? -1, data)
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 25)
+        return out
     }
 
     /// 座位安排自检：模拟应用启动（创建 store → 触发加载与 normalize），打印前后状态

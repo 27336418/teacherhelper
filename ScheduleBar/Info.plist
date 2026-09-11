@@ -19,16 +19,16 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.6.0</string>
+	<string>1.7.0</string>
 	<key>CFBundleVersion</key>
-	<string>32</string>
+	<string>33</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>12.0</string>
 	<key>LSUIElement</key>
 	<true/>
-	<key>NSCalendarsUsageDescription</key>
-	<string>教师助手需要把您在校历上写的备注同步为系统日历中的全天事件。</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>教师助手需要把您在校历上写的备注同步为系统日历中的全天事件。</string>
+	<key>NSCalendarsUsageDescription</key>
 	<string>教师助手需要把您在校历上写的备注同步为系统日历中的全天事件。</string>
 	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
 	<string>教师助手需要把您在校历上写的备注同步为系统日历中的全天事件。</string>
