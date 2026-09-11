@@ -25,15 +25,24 @@ final class CardTitleStore: ObservableObject {
             "nav_班级学生座位安排": "班级学生座位安排",
             "nav_calendar": "重庆校历",
             "nav_reminder": "提醒设置",
-            "nav_个人课表": "个人课表",
-            "nav_班级课表": "全校班级课表",
             "nav_延时 & 监考": "延时 & 监考",
             "nav_办公室工位布局": "办公室工位布局",
             "nav_教室分布": "教室分布",
             "nav_年级师资安排": "年级师资安排",
-            "nav_学生信息": "学生信息",
             "nav_重庆校历": "重庆校历",
             "nav_提醒设置": "提醒设置",
+            // 当前导航使用 PanelTab.rawValue 作为 key；这些键必须有默认标题，
+            // 否则找不到旧数据时会把完整 key（例如 nav_延时监考）直接显示出来。
+            "nav_个人课表": "个人课表",
+            "nav_班级课表": "班级课表",
+            "nav_延时监考": "延时监考",
+            "nav_学生信息": "学生信息",
+            "nav_学生座位": "学生座位",
+            "nav_日程提醒": "日程提醒",
+            "nav_校历日历": "校历日历",
+            "nav_年级师资": "年级师资",
+            "nav_教师工位": "教师工位",
+            "nav_教室布局": "教室布局",
             // 新增卡片标题
             "office": "办公室工位布局",
             "classroom": "教室分布",
@@ -55,7 +64,12 @@ final class CardTitleStore: ObservableObject {
     /// 取标题；未改名/为空时回退默认名
     func title(for key: String) -> String {
         guard let t = titles[key], !t.isEmpty else {
-            return Self.defaults[key] ?? key
+            return Self.defaults[key] ?? key.replacingOccurrences(of: "nav_", with: "")
+        }
+        // 兼容早期版本误把导航键本身保存/显示出来的情况：
+        // nav_个人课表 → 个人课表，避免升级后左侧出现 nav_ 前缀。
+        if t.hasPrefix("nav_") {
+            return String(t.dropFirst(4))
         }
         return t
     }
