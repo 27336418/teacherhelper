@@ -439,11 +439,19 @@ final class ClassScheduleStore: ObservableObject {
               !(src.period == period && src.day == day),
               var srcRow = cells[src.period], var dstRow = cells[period],
               srcRow.indices.contains(src.day), dstRow.indices.contains(day) else { return }
-        let tmp = srcRow[src.day]
-        srcRow[src.day] = dstRow[day]
-        dstRow[day] = tmp
-        cells[src.period] = srcRow
-        cells[period] = dstRow
+        if src.period == period {
+            // ⚠️ 同一节次（同一行内不同星期）必须就地 swapAt：
+            //    若沿用下面「两份拷贝互写再分别写回」的写法，两次赋值会落到同一个
+            //    cells key 上，后一次把前一次覆盖，表现为「同排拖动变成覆盖而非对调」。
+            srcRow.swapAt(src.day, day)
+            cells[period] = srcRow
+        } else {
+            let tmp = srcRow[src.day]
+            srcRow[src.day] = dstRow[day]
+            dstRow[day] = tmp
+            cells[src.period] = srcRow
+            cells[period] = dstRow
+        }
         // 交换后立即落盘：拖拽结束前即使窗口被关闭，也不会丢失位置调整。
         save()
         // 来源位置跟着被拖动的内容走，避免 dropEntered 连续触发时来回抖动

@@ -1,5 +1,18 @@
 import SwiftUI
 
+// MARK: - 通用格子尺寸：fixed=固定宽高；flexible=等分撑满可用宽度
+// 办公室工位铺满「半行」卡片时用 flexible，避免右侧留下大片空白。
+private extension View {
+    @ViewBuilder
+    func gridCellFrame(width: CGFloat, height: CGFloat, flexible: Bool) -> some View {
+        if flexible {
+            self.frame(maxWidth: .infinity, minHeight: height, maxHeight: height)
+        } else {
+            self.frame(width: width, height: height)
+        }
+    }
+}
+
 // MARK: - 通用右键调色板菜单（教室/工位/校历单日换色共用）
 // current = 当前 hex（nil=默认）；onPick 回传选中的 hex（nil=恢复默认）
 struct ColorPaletteMenu: View {
@@ -33,6 +46,8 @@ struct EditableGridCell: View {
     @Binding var text: String
     var width: CGFloat
     var height: CGFloat = 30
+    /// true = 不用固定宽度，改为等分撑满可用宽度（办公室工位铺满半行时用）
+    var flexible: Bool = false
     var font: Font = .system(size: 12)
     var bold: Bool = false
     var tint: Color = .accentColor          // 编辑态描边色
@@ -62,7 +77,7 @@ struct EditableGridCell: View {
                     .font(font)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
-                    .frame(width: width, height: height)
+                    .gridCellFrame(width: width, height: height, flexible: flexible)
                     .background(RoundedRectangle(cornerRadius: 5)
                         .fill(backgroundColor ?? Color.primary.opacity(0.01)))
                     .overlay(RoundedRectangle(cornerRadius: 5).stroke(tint.opacity(0.9), lineWidth: 1.5))
@@ -89,7 +104,7 @@ struct EditableGridCell: View {
             .foregroundStyle(text.isEmpty ? Color.clear : (textColor ?? Color.primary))
             .lineLimit(1)
             .minimumScaleFactor(0.6)
-            .frame(width: width, height: height)
+            .gridCellFrame(width: width, height: height, flexible: flexible)
             .background(RoundedRectangle(cornerRadius: 5)
                 .fill(backgroundColor ?? Color.primary.opacity(0.01)))
             .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.primary.opacity(0.08), lineWidth: 0.5))

@@ -152,12 +152,17 @@ struct OfficeLayoutView: View {
             ForEach(Array(officeRowIDs.enumerated()), id: \.offset) { _, row in
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(row, id: \.self) { id in
-                        // 单间办公室保持自身宽度（默认 4×4 约占半行），不要被拉伸到整行，
-                        // 避免右侧出现大片空白；超过 4 列的宽办公室仍独占一行。
+                        // 宽度交给外层 HStack 等分：一行两间 → 各占半行（宽度相等的两列网格）；
+                        // 超过 4 列的宽办公室独占一行。卡片内部列宽也会等分撑满，
+                        // 因此不会出现「卡片被撑开、右侧留大片空白」的情况。
                         OfficeCard(office: binding(for: id), keyword: appliedKeyword)
-                            .frame(alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    if row.count == 1 && !isWide(id: row[0]) { Spacer(minLength: 0) }
+                    // 一行只有一间普通办公室时补一个等宽占位，让它恰好占半行，
+                    // 右半行留给下一间（而不是被自己撑满整行留出内部空白）。
+                    if row.count == 1 && !isWide(id: row[0]) {
+                        Color.clear.frame(maxWidth: .infinity, minHeight: 1)
+                    }
                 }
             }
         }
@@ -234,8 +239,11 @@ struct OfficeCard: View {
     @State private var titleDraft = ""
     @FocusState private var titleFocused: Bool
 
-    // 收紧姓名行宽度，让同一行能容纳更多办公室。
+    // 座位宽度仅作为「列宽上限参考」：卡片内的列已改为等分撑满，
+    // 这里保留常量供门牌等固定元素使用。
     private let seatWidth: CGFloat = 60
+    /// 行尾「删除本行/本列」按钮统一占位，保证表头行与座位行栅格对齐
+    private let trailingButtonWidth: CGFloat = 18
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -291,6 +299,7 @@ struct OfficeCard: View {
             }
 
             // 列管理：每列可删除，末尾可增加一列（外部视角下显示列号镜像）
+            // 列宽等分撑满卡片，避免 4 列只占左侧、右侧留白
             HStack(spacing: 4) {
                 ForEach(0..<columnCount, id: \.self) { displayCol in
                     let c = modelCol(displayCol)
@@ -298,7 +307,9 @@ struct OfficeCard: View {
                         Text("列\(c + 1)")
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)
-                            .frame(width: seatWidth - 16)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .frame(maxWidth: .infinity)
                         Button {
                             store.removeColumn(office.id, c)
                         } label: {
@@ -309,7 +320,7 @@ struct OfficeCard: View {
                         .buttonStyle(.plain)
                         .help("删除第\(c + 1)列")
                     }
-                    .frame(width: seatWidth)
+                    .frame(maxWidth: .infinity)
                 }
                 Button {
                     store.addColumn(office.id)
@@ -320,6 +331,7 @@ struct OfficeCard: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.accentColor)
                 .help("增加一列")
+                .frame(width: trailingButtonWidth)
             }
 
             // 座位（动态列数 × N 行；右键可换座位颜色）
@@ -331,7 +343,7 @@ struct OfficeCard: View {
                         if office.seats.indices.contains(r), office.seats[r].indices.contains(c) {
                             seatCell(row: r, col: c)
                         } else {
-                            Color.clear.frame(width: seatWidth, height: 26)
+                            Color.clear.frame(maxWidth: .infinity, minHeight: 26, maxHeight: 26)
                         }
                     }
                     Button {
@@ -343,6 +355,7 @@ struct OfficeCard: View {
                     }
                     .buttonStyle(.plain)
                     .help("删除此行")
+                    .frame(width: trailingButtonWidth)
                 }
             }
 
@@ -364,11 +377,21 @@ struct OfficeCard: View {
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
     }
 
+    /// 门牌行：与座位栅格对齐——左门落在第一列、右门落在最后一列，中间留空列。
     private func doorRow(left: String, right: String) -> some View {
         HStack(spacing: 4) {
-            doorLabel(left)
-            Spacer()
-            doorLabel(right)
+            if columnCount >= 2 {
+                doorLabel(left)
+                ForEach(1..<max(1, columnCount - 1), id: \.self) { _ in
+                    Color.clear.frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
+                }
+                doorLabel(right)
+            } else {
+                doorLabel(left)
+                Spacer(minLength: 8)
+                doorLabel(right)
+            }
+            Color.clear.frame(width: trailingButtonWidth, height: 20)
         }
     }
 
@@ -376,7 +399,9 @@ struct OfficeCard: View {
         Text(title)
             .font(.system(size: 11, weight: .bold))
             .foregroundStyle(.secondary)
-            .frame(width: seatWidth, height: 20)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
             .background(RoundedRectangle(cornerRadius: 4).fill(Color.yellow.opacity(0.35)))
     }
 
@@ -417,6 +442,7 @@ struct OfficeCard: View {
         let cell = EditableGridCell(text: $office.seats[r][c],
                                     width: seatWidth,
                                     height: 26,
+                                    flexible: true,
                                     backgroundColor: hex.map { Color(hexString: $0).opacity(0.30) },
                                     onSave: {})
         .contextMenu {
