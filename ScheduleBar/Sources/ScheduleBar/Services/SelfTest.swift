@@ -343,6 +343,67 @@ enum SelfTest {
         print(bad.isEmpty ? "全部通过 ✓" : "异常：\(bad.joined(separator: ", "))")
     }
 
+    // MARK: 定时提醒 → 系统日历 自检（只读：不碰 EventKit / 通知中心，仅打印将要写入的内容）
+    // 注意：命令行下创建 EKEventStore 或 UNUserNotificationCenter 会直接 abort 掉进程，
+    // 所以这里不初始化任何 Store，直接读 JSON 文件做纯逻辑校验。
+    static func runCalendarSyncCheck() {
+        print("--- 定时提醒 → 系统「日历」自检（只读，不写入日历）---")
+        let enabled = (UserDefaults.standard.object(forKey: "calendarSyncReminders") as? Bool) ?? true
+        print("同步开关 = \(enabled ? "开启（默认）" : "关闭")")
+        print("写入日历 = 「\(CalendarSyncService.calendarName)」（不存在时自动创建，创建失败则退回系统默认日历）")
+
+        let remindersURL = Self.supportDir.appendingPathComponent("reminders.json")
+        let reminders = (try? Data(contentsOf: remindersURL))
+            .flatMap { try? JSONDecoder().decode([Reminder].self, from: $0) } ?? []
+        print("本地提醒条数 = \(reminders.count)")
+
+        let cal = Calendar.current
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        f.locale = Locale(identifier: "zh_CN")
+        let weekNames = ["", "周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+
+        for r in reminders {
+            let days = CalendarSyncService.orderedWeekdays(r.weekdays)
+            let labels = days.map { weekNames[$0] }.joined(separator: " ")
+            let start = CalendarSyncService.firstStart(from: r, calendar: cal)
+            print("「\(r.title)」 \(String(format: "%02d:%02d", r.hour, r.minute)) [\(labels)] 每周重复 首次=\(f.string(from: start)) 时长=30 分钟")
+        }
+
+        print("--- 星期映射用例（1=周日 … 7=周六，与 Calendar.weekday 一致）---")
+        let cases: [Set<Int>] = [[1, 2, 3, 4, 5, 6], [2, 4, 6, 7], [7], [1, 7], []]
+        for set in cases {
+            let ordered = CalendarSyncService.orderedWeekdays(set)
+            let labels = ordered.map { weekNames[$0] }.joined(separator: " ")
+            print("\(set.sorted()) -> \(ordered) -> \(labels.isEmpty ? "（无，跳过不写日历）" : labels)")
+        }
+
+        print("--- 「首次发生日期」用例（纯函数，用固定提醒）---")
+        let probes: [Reminder] = [
+            Reminder(title: "A", hour: 7, minute: 52, weekdays: [2, 3, 4, 5, 6], url: ""),
+            Reminder(title: "B", hour: 20, minute: 5, weekdays: [1], url: ""),
+            Reminder(title: "C", hour: 0, minute: 0, weekdays: [1, 2, 3, 4, 5, 6, 7], url: ""),
+        ]
+        for p in probes {
+            let s = CalendarSyncService.firstStart(from: p, calendar: cal)
+            let wd = cal.component(.weekday, from: s)
+            let hit = p.weekdays.contains(wd)
+            print("\(weekNames[wd]) \(f.string(from: s)) 命中勾选星期=\(hit ? "✓" : "✗") 时:分=\(cal.component(.hour, from: s)):\(cal.component(.minute, from: s))")
+        }
+
+        if let d = try? Data(contentsOf: Self.supportDir.appendingPathComponent("calendar_events.json")),
+           let m = try? JSONDecoder().decode([String: String].self, from: d) {
+            print("已同步事件映射 = \(m.count) 条（calendar_events.json）")
+        } else {
+            print("已同步事件映射 = 无（尚未同步过）")
+        }
+    }
+
+    private static var supportDir: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ScheduleBar", isDirectory: true)
+    }
+
     static func runImport(path: String) {
         do {
             let grid = try XLSX.read(URL(fileURLWithPath: path))

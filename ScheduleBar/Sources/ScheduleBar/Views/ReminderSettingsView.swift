@@ -1,8 +1,10 @@
 import SwiftUI
+import AppKit
 
-// MARK: - 定时提醒设置（增删改提醒；启动即默认申请系统通知权限，到点弹窗+系统通知）
+// MARK: - 定时提醒设置（增删改提醒；启动即默认申请系统通知权限，到点弹窗+系统通知+系统日历日程）
 struct ReminderSettingsView: View {
     @EnvironmentObject var reminderStore: ReminderStore
+    @ObservedObject private var calendarSync = CalendarSyncService.shared
 
     @State private var editing: Reminder?
 
@@ -19,6 +21,8 @@ struct ReminderSettingsView: View {
                 Text("到点会弹窗提醒，可点「等会处理」选择稍后再提醒；文字与网址可自定义并自动保存。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                calendarSyncCard
 
                 // 提醒列表
                 ForEach(reminderStore.reminders) { r in
@@ -44,6 +48,47 @@ struct ReminderSettingsView: View {
         .sheet(item: $editing) { r in
             ReminderEditSheet(reminder: binding(for: r))
         }
+        .onAppear { calendarSync.syncAllReminders(reason: "打开提醒设置") }
+    }
+
+    // MARK: 系统日历同步卡片
+    private var calendarSyncCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: $calendarSync.syncReminders) {
+                Label("同步到系统「日历」", systemImage: "calendar.badge.plus")
+                    .font(.subheadline.weight(.medium))
+            }
+            .toggleStyle(.switch)
+
+            Text("开启后，每条提醒会在 Mac 自带「日历」里生成一条每周重复的日程（时间、文字与提醒一致），改提醒或删提醒会同步更新；日程位于「\(CalendarSyncService.calendarName)」日历中，可随时在系统日历里整体隐藏。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Text(calendarSync.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                if calendarSync.permissionDenied {
+                    Button("去系统设置授权") {
+                        CalendarSyncService.openCalendarPrivacySettings()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                Button("立即同步") {
+                    calendarSync.syncAllReminders(reason: "手动")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!calendarSync.syncReminders)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.3)))
     }
 
     private func binding(for r: Reminder) -> Binding<Reminder> {

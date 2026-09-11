@@ -70,6 +70,8 @@ final class ReminderStore: ObservableObject {
         }
         // 提醒列表变化后重建系统通知
         NotificationScheduler.shared.scheduleAll()
+        // 同步到系统自带日历（去抖，避免编辑文字时每敲一个字都写一次）
+        CalendarSyncService.shared.scheduleSyncAllReminders()
     }
 
     static func load() -> [Reminder]? {

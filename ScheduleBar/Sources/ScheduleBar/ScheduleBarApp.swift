@@ -31,6 +31,11 @@ struct ScheduleBarApp {
             SelfTest.runUpdateCheck(override: repo)
             return
         }
+        // 定时提醒 → 系统日历 链路自检（只读，不写入日历）：--selftest-calendar
+        if args.contains("--selftest-calendar") {
+            SelfTest.runCalendarSyncCheck()
+            return
+        }
 
         let app = NSApplication.shared
         let delegate = AppDelegate()
@@ -211,6 +216,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NotificationScheduler.shared.scheduleAll()
         // 应用内弹窗轮询（到点必弹，不依赖系统通知权限）
         ReminderFirer.shared.start()
+        // 启动 3 秒后把「定时提醒」同步到 Mac 自带日历（首次会弹一次日历授权）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            CalendarSyncService.shared.syncAllReminders(reason: "启动")
+        }
         writeLaunchLog("面板/服务初始化完成")
 
         // 启动后自动展开面板，让用户立即看到界面（点其他位置自动关闭）
