@@ -11,17 +11,24 @@ struct ScheduleCellID: Hashable {
 // 拖到哪个格子，就和那个格子对换内容；换位后来源索引由 store 内部更新，避免抖动
 struct ScheduleCellSwapDelegate: DropDelegate {
     let onEnter: () -> Void
+    let onPerform: () -> Void
     let onFinish: () -> Void
 
     func validateDrop(info: DropInfo) -> Bool { true }
     func dropEntered(info: DropInfo) { onEnter() }
     // 某些 macOS 版本在嵌套 HStack 的格子上不会回调 dropEntered，
-    // dropUpdated 仍会稳定触发；两处都调用同一幂等换位逻辑，确保拖到目标格必定对换。
+    // dropUpdated 仍会稳定触发；两处都调用同一幂等换位逻辑。
     func dropUpdated(info: DropInfo) -> DropProposal? {
         onEnter()
         return DropProposal(operation: .move)
     }
-    func performDrop(info: DropInfo) -> Bool { onFinish(); return true }
+    // 最终落点以 performDrop 为准。即使上面两个回调都没有触发，
+    // 这里也会执行一次真正的交换，避免出现“拖了但原数据没变”。
+    func performDrop(info: DropInfo) -> Bool {
+        onPerform()
+        onFinish()
+        return true
+    }
 }
 
 // MARK: - 课表单元格（个人 & 班级共用）
@@ -365,6 +372,7 @@ struct ClassScheduleView: View {
                             }
                             .onDrop(of: [.text], delegate: ScheduleCellSwapDelegate(
                                 onEnter: { classStore.swapCellTo(p, d) },
+                                onPerform: { classStore.swapCellTo(p, d) },
                                 onFinish: { classStore.finishCellDrag() }
                             ))
                             .help("双击编辑；拖动可与其它格子对换")

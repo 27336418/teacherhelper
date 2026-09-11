@@ -181,6 +181,7 @@ struct PersonalScheduleView: View {
         }
         .onDrop(of: [.text], delegate: ScheduleCellSwapDelegate(
             onEnter: { store.swapCellTo(period, day) },
+            onPerform: { store.swapCellTo(period, day) },
             onFinish: { store.finishCellDrag() }
         ))
         .help("双击编辑；拖动可与其它格子对换")

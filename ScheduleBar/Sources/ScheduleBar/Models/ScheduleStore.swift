@@ -107,6 +107,7 @@ final class ScheduleStore: ObservableObject {
     func setCell(_ period: String, _ day: Int, _ value: String) {
         guard let r = flatIndex(of: period), r < grid.count, day < grid[r].count else { return }
         grid[r][day] = value
+        save()
     }
 
     // MARK: 单元格拖动对换（同一张个人课表内）
@@ -131,6 +132,7 @@ final class ScheduleStore: ObservableObject {
         let tmp = grid[sr][src.day]
         grid[sr][src.day] = grid[dr][day]
         grid[dr][day] = tmp
+        save()
         // 来源位置跟着被拖动的内容走，避免 dropEntered 连续触发时来回抖动
         cellDragSource = ScheduleCellID(period: period, day: day)
     }
