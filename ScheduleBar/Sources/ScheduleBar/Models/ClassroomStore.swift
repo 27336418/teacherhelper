@@ -51,6 +51,13 @@ struct ClassroomSide: Codable, Equatable {
     var color: String?
 }
 
+/// 拖动经过的目标格子（仅用于高亮提示，不代表任何数据变化）
+struct ClassroomDropTarget: Equatable {
+    var floorID: UUID
+    var rowID: UUID?      // nil = 主行
+    var index: Int
+}
+
 /// 楼层内附加的一排（走廊另一侧 / 额外一排），格子与主行同构
 struct ClassroomRow: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
@@ -150,10 +157,22 @@ final class ClassroomStore: ObservableObject {
         didSet { save() }
     }
 
-    /// 拖动中的来源位置（用于实时对换）；非 @Published，不触发视图刷新
+    /// 拖动中的来源位置（松手时一次性提交对换）；非 @Published，不触发视图刷新
     var dragSource: (floorID: UUID, rowID: UUID?, index: Int)?
     /// 拖动开始时的快照（用于撤销）
     private var dragSnapshot: [ClassroomFloor]?
+
+    // MARK: 拖动经过的目标（只用于高亮，绝不改数据）
+    @Published var dropTarget: ClassroomDropTarget?
+
+    func setDropTarget(floorID: UUID, rowID: UUID?, index: Int) {
+        let t = ClassroomDropTarget(floorID: floorID, rowID: rowID, index: index)
+        if dropTarget != t { dropTarget = t }
+    }
+
+    func clearDropTarget() {
+        if dropTarget != nil { dropTarget = nil }
+    }
 
     init() {
         let loaded = ClassroomStore.load()

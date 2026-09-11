@@ -42,21 +42,43 @@ struct ClassroomMapView: View {
     }
 }
 
-// MARK: - 拖动对换：拖到哪个格子上，就和那个格子换位置
+// MARK: - 拖动对换（与学生座位同一套做法）
+// 拖动经过格子只做高亮，不改任何数据；松手（performDrop）时才读取拖拽载荷，
+// 确认来源属于本模块后执行一次对换并登记撤销。
 struct ClassroomSwapDelegate: DropDelegate {
     let floorID: UUID
     let rowID: UUID?          // nil = 主行
     let index: Int
     let store: ClassroomStore
 
+    func validateDrop(info: DropInfo) -> Bool { true }
+
     func dropEntered(info: DropInfo) {
-        store.swapTo(floorID: floorID, rowID: rowID, index: index)
+        store.setDropTarget(floorID: floorID, rowID: rowID, index: index)
     }
+
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
+        store.setDropTarget(floorID: floorID, rowID: rowID, index: index)
+        return DropProposal(operation: .move)
     }
+
+    /// 唯一提交点：读载荷 → 对换一次 → 登记撤销、清理状态
     func performDrop(info: DropInfo) -> Bool {
-        store.finishDrag()
+        store.clearDropTarget()
+        guard let provider = info.itemProviders(for: [.text]).first else {
+            store.swapTo(floorID: floorID, rowID: rowID, index: index)
+            store.finishDrag()
+            return true
+        }
+        provider.loadObject(ofClass: NSString.self) { obj, _ in
+            DispatchQueue.main.async {
+                let raw = obj as? String ?? ""
+                if raw.isEmpty || DragPayload.belongs(raw, to: DragPayload.classroomCell) {
+                    store.swapTo(floorID: floorID, rowID: rowID, index: index)
+                }
+                store.finishDrag()
+            }
+        }
         return true
     }
 }
@@ -194,10 +216,17 @@ struct FloorCard: View {
         }
         .padding(2)
         .background(RoundedRectangle(cornerRadius: 5).fill(cellFill(for: value)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(Color.accentColor.opacity(isDropTarget(rowID: rowID, index: index) ? 0.95 : 0),
+                        lineWidth: 2)
+                .allowsHitTesting(false)
+        )
         .contentShape(Rectangle())
         .onDrag {
             store.beginDrag(floorID: floor.id, rowID: rowID, index: index)
-            return NSItemProvider(object: "classroom-cell" as NSString)
+            return NSItemProvider(object: DragPayload.classroom(floor: floor.id, row: rowID,
+                                                               index: index) as NSString)
         }
         .onDrop(of: [.text], delegate: ClassroomSwapDelegate(floorID: floor.id, rowID: rowID,
                                                             index: index, store: store))
@@ -239,5 +268,11 @@ struct FloorCard: View {
             return AnyShapeStyle(.quaternary.opacity(0.55))
         }
         return AnyShapeStyle(.quaternary.opacity(0.3))
+    }
+
+    /// 当前格子是否为拖动经过的目标（仅用于高亮描边）
+    private func isDropTarget(rowID: UUID?, index: Int) -> Bool {
+        guard let t = store.dropTarget else { return false }
+        return t.floorID == floor.id && t.rowID == rowID && t.index == index
     }
 }

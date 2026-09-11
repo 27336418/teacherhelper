@@ -21,11 +21,24 @@ struct OfficeSeatSwapDelegate: DropDelegate {
         return DropProposal(operation: .move)
     }
 
-    // 唯一提交点：执行一次交换并登记撤销，随后清除高亮。
+    // 唯一提交点：读取拖拽载荷确认来源本模块后，执行一次交换并登记撤销，随后清除高亮。
     func performDrop(info: DropInfo) -> Bool {
-        store.swapSeatTo(officeID: officeID, row: row, col: col)
-        store.clearDropHighlight()
-        store.finishSeatDrag()
+        guard let provider = info.itemProviders(for: [.text]).first else {
+            store.swapSeatTo(officeID: officeID, row: row, col: col)
+            store.clearDropHighlight()
+            store.finishSeatDrag()
+            return true
+        }
+        provider.loadObject(ofClass: NSString.self) { obj, _ in
+            DispatchQueue.main.async {
+                let raw = obj as? String ?? ""
+                if raw.isEmpty || DragPayload.belongs(raw, to: DragPayload.officeSeat) {
+                    store.swapSeatTo(officeID: officeID, row: row, col: col)
+                }
+                store.clearDropHighlight()
+                store.finishSeatDrag()
+            }
+        }
         return true
     }
 }
@@ -139,9 +152,10 @@ struct OfficeLayoutView: View {
             ForEach(Array(officeRowIDs.enumerated()), id: \.offset) { _, row in
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(row, id: \.self) { id in
+                        // 单间办公室保持自身宽度（默认 4×4 约占半行），不要被拉伸到整行，
+                        // 避免右侧出现大片空白；超过 4 列的宽办公室仍独占一行。
                         OfficeCard(office: binding(for: id), keyword: appliedKeyword)
-                            .frame(maxWidth: row.count == 1 ? .infinity : nil,
-                                   alignment: .leading)
+                            .frame(alignment: .leading)
                     }
                     if row.count == 1 && !isWide(id: row[0]) { Spacer(minLength: 0) }
                 }
@@ -430,7 +444,7 @@ struct OfficeCard: View {
         .contentShape(Rectangle())
         .onDrag {
             store.beginSeatDrag(officeID: office.id, row: r, col: c)
-            return NSItemProvider(object: "office-seat" as NSString)
+            return NSItemProvider(object: DragPayload.office(office.id, row: r, col: c) as NSString)
         }
         .onDrop(of: [.text], delegate: OfficeSeatSwapDelegate(officeID: office.id,
                                                                row: r, col: c, store: store))

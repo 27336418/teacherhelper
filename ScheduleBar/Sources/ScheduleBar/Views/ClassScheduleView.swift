@@ -7,30 +7,6 @@ struct ScheduleCellID: Hashable {
     let day: Int
 }
 
-// MARK: - 课表单元格拖动对换代理（个人课表 & 班级课表共用）
-// 拖到哪个格子，就和那个格子对换内容；换位后来源索引由 store 内部更新，避免抖动
-struct ScheduleCellSwapDelegate: DropDelegate {
-    let onEnter: () -> Void
-    let onPerform: () -> Void
-    let onFinish: () -> Void
-
-    func validateDrop(info: DropInfo) -> Bool { true }
-    func dropEntered(info: DropInfo) { onEnter() }
-    // 某些 macOS 版本在嵌套 HStack 的格子上不会回调 dropEntered，
-    // dropUpdated 仍会稳定触发；两处都调用同一幂等换位逻辑。
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        onEnter()
-        return DropProposal(operation: .move)
-    }
-    // 最终落点以 performDrop 为准。即使上面两个回调都没有触发，
-    // 这里也会执行一次真正的交换，避免出现“拖了但原数据没变”。
-    func performDrop(info: DropInfo) -> Bool {
-        onPerform()
-        onFinish()
-        return true
-    }
-}
-
 // MARK: - 课表单元格（个人 & 班级共用）
 // 单击 → 选中（同一科目/同一内容的其他格子保持课程色高亮，其余变灰）
 // 双击 → 进入编辑模式（可修改文字，边输边存）
@@ -368,10 +344,10 @@ struct ClassScheduleView: View {
                             )
                             .onDrag {
                                 classStore.beginCellDrag(p, d)
-                                return NSItemProvider(object: "schedule-cell" as NSString)
+                                return NSItemProvider(object: DragPayload.cell(DragPayload.classCell, p, d) as NSString)
                             }
                             .onDrop(of: [.text], delegate: ScheduleCellSwapDelegate(
-                                onEnter: { classStore.swapCellTo(p, d) },
+                                table: DragPayload.classCell,
                                 onPerform: { classStore.swapCellTo(p, d) },
                                 onFinish: { classStore.finishCellDrag() }
                             ))

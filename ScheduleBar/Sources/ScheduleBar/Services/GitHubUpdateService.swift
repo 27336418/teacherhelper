@@ -15,8 +15,8 @@ import AppKit
 //
 // version.json 内容示例：
 //   {
-//     "version": "1.7.0",
-//     "download": "教师助手_v1.7.0.dmg",   // 相对文件名 → 自动解析（jsDelivr CDN 优先）；也可写完整 https 链接
+//     "version": "2.1.1",
+//     "download": "教师助手_v2.1.1.dmg",   // 相对文件名 → 自动解析（jsDelivr CDN 优先）；也可写完整 https 链接
 //     "notes": "本次更新内容……"             // 可选
 //   }
 enum GitHubRepoConfig {

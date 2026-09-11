@@ -177,10 +177,10 @@ struct PersonalScheduleView: View {
         )
         .onDrag {
             store.beginCellDrag(period, day)
-            return NSItemProvider(object: "schedule-cell" as NSString)
+            return NSItemProvider(object: DragPayload.cell(DragPayload.personalCell, period, day) as NSString)
         }
         .onDrop(of: [.text], delegate: ScheduleCellSwapDelegate(
-            onEnter: { store.swapCellTo(period, day) },
+            table: DragPayload.personalCell,
             onPerform: { store.swapCellTo(period, day) },
             onFinish: { store.finishCellDrag() }
         ))
