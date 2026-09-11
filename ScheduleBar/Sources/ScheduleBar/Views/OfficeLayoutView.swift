@@ -1,21 +1,31 @@
 import SwiftUI
 
 // MARK: - 工位拖动对换代理
+// 与课表单元格共用同一套「三重兜底」策略：dropEntered / dropUpdated 任一触发即换位，
+// performDrop 再兜底执行一次幂等换位 —— 保证内部视角与外部视角（整表镜像）下拖动都能对调。
 struct OfficeSeatSwapDelegate: DropDelegate {
     let officeID: UUID
     let row: Int
     let col: Int
     let store: OfficeLayoutStore
 
+    func validateDrop(info: DropInfo) -> Bool { true }
+
     func dropEntered(info: DropInfo) {
         store.swapSeatTo(officeID: officeID, row: row, col: col)
     }
 
+    // 某些 macOS 版本在嵌套 HStack 的格子上不会回调 dropEntered，dropUpdated 仍会稳定触发；
+    // 两处都调用同一幂等换位逻辑（swapSeatTo 内已对「来源 == 落点」短路）。
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
+        store.swapSeatTo(officeID: officeID, row: row, col: col)
+        return DropProposal(operation: .move)
     }
 
+    // 最终落点以 performDrop 为准：即使上面两个回调都没触发，这里也执行一次真正的交换，
+    // 避免出现「拖了但原数据没变」。
     func performDrop(info: DropInfo) -> Bool {
+        store.swapSeatTo(officeID: officeID, row: row, col: col)
         store.finishSeatDrag()
         return true
     }
@@ -45,11 +55,12 @@ struct OfficeLayoutView: View {
                     }
                     .help("导入工位布局；可先下载模板（办公室分段 + 每排座位）填写")
                     Button("下载") { coordinator.exportOffice() }
-                    Picker("视角", selection: $store.studentView) {
+                    Picker("", selection: $store.studentView) {
                         Text("内部视角").tag(false)
                         Text("外部视角").tag(true)
                     }
                     .pickerStyle(.segmented)
+                    .labelsHidden()
                     .fixedSize()
                     .help("内部视角：从办公室内部看，左右门在工位上方；外部视角：从办公室外部看，整张工位表 180° 镜像，左右门移到工位下方")
                     Toggle("显示左右门", isOn: $store.showDoors)
@@ -180,7 +191,8 @@ struct OfficeLayoutView: View {
     }
 
     /// 实际姓名人数：空白和固定设施不计入。
-    private func headcount(of office: OfficeBlock) -> Int {        office.seats.flatMap { $0 }
+    private func headcount(of office: OfficeBlock) -> Int {
+        office.seats.flatMap { $0 }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && $0 != "水池" }
             .count

@@ -53,21 +53,22 @@ struct ReminderSettingsView: View {
 
     // MARK: 系统日历同步卡片
     private var calendarSyncCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             Toggle(isOn: $calendarSync.syncReminders) {
                 Label("同步到系统「日历」", systemImage: "calendar.badge.plus")
-                    .font(.subheadline.weight(.medium))
+                    .font(.caption.weight(.medium))
             }
             .toggleStyle(.switch)
+            .controlSize(.small)
 
-            Text("开启后，每条提醒会在 Mac 自带「日历」里生成一条每周重复的日程（时间、文字与提醒一致），改提醒或删提醒会同步更新；日程位于「\(CalendarSyncService.calendarName)」日历中，可随时在系统日历里整体隐藏。")
-                .font(.caption)
+            Text("开启后，每条提醒会在 Mac 自带「日历」里生成一条每周重复的日程（时间、文字与提醒一致），改提醒或删提醒都会立即自动同步；日程位于「\(CalendarSyncService.calendarName)」日历中，可随时在系统日历里整体隐藏。")
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 8) {
                 Text(calendarSync.summary)
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer()
@@ -76,14 +77,8 @@ struct ReminderSettingsView: View {
                         CalendarSyncService.openCalendarPrivacySettings()
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .controlSize(.mini)
                 }
-                Button("立即同步") {
-                    calendarSync.syncAllReminders(reason: "手动")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(!calendarSync.syncReminders)
             }
         }
         .padding(10)
@@ -201,7 +196,12 @@ struct ReminderEditSheet: View {
 
             HStack {
                 Spacer()
-                Button("完成") { dismiss() }.buttonStyle(.borderedProminent)
+                Button("完成") {
+                    dismiss()
+                    // 取消人工「立即同步」按钮后，编辑完成即写一次系统日历
+                    CalendarSyncService.shared.syncAllReminders(reason: "编辑完成")
+                }
+                .buttonStyle(.borderedProminent)
             }
         }
         .padding(16)
