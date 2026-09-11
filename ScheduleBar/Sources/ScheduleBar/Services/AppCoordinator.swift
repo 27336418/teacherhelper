@@ -293,9 +293,139 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
+    // MARK: 教室分布：导入 / 下载（教室与办公室同为平铺格子，可拖对换）
+    func importClassroom() {
+        let panel = makeOpenPanel("导入教室分布")
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let grid = try XLSX.read(url)
+                let floors = AppCoordinator.parseClassrooms(AppCoordinator.dropTitleRows(grid))
+                guard !floors.isEmpty else {
+                    showAlert("没认出教室数据",
+                              "文件格式：每层一段 —— 第一列写「楼层」、第二列写层名；下面每行一个格子：\n"
+                              + "· 教室：`教室, 19班, X401`\n"
+                              + "· 办公室：`办公室, 办公室, X406`\n"
+                              + "· 第 4 列可选颜色（如 2ECC71）\n"
+                              + "· 写一行「附加行」可开始本层的下一排")
+                    return
+                }
+                ClassroomStore.shared.replaceAll(floors)
+                let total = floors.reduce(0) { $0 + $1.cellCount }
+                showAlert("导入完成", "共导入 \(floors.count) 个楼层、\(total) 个格子（教室/办公室）。")
+            } catch {
+                showAlert("导入失败", error.localizedDescription)
+            }
+        }
+    }
+
+    /// 解析教室分布：
+    ///   `楼层, X栋4楼` 开一段；`附加行` 开本层下一排；
+    ///   `教室, 19班, X401[, 颜色]` 教室格；`办公室, 办公室, X406[, 颜色]` 办公室格。
+    /// 容错：第一列不是关键字但有两列以上时，按教室格处理（用户删了类型列也能导入）。
+    static func parseClassrooms(_ grid: [[String]]) -> [ClassroomFloor] {
+        var floors: [ClassroomFloor] = []
+        var current: ClassroomFloor? = nil
+        var pendingRow: [ClassroomCell] = []
+        var inExtraRow = false
+
+        func flushExtraRow() {
+            if inExtraRow, !pendingRow.isEmpty {
+                current?.extraRows.append(ClassroomRow(cells: pendingRow))
+            }
+            pendingRow = []
+        }
+        func flushFloor() {
+            flushExtraRow()
+            if let f = current, !f.cells.isEmpty || !f.extraRows.isEmpty { floors.append(f) }
+            current = nil
+            inExtraRow = false
+        }
+
+        for row in grid {
+            let cells = row.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            let first = cells.first ?? ""
+            if first.isEmpty { flushExtraRow(); continue }      // 空行只做分隔
+
+            if first == "楼层" || first == "层" {
+                flushFloor()
+                let title = cells.count > 1 && !cells[1].isEmpty ? cells[1] : "新楼层"
+                current = ClassroomFloor(title: title, cells: [], extraRows: [])
+                continue
+            }
+            if first == "附加行" || first == "新行" {
+                flushExtraRow()
+                inExtraRow = true
+                continue
+            }
+            guard current != nil else { continue }
+
+            let isOffice = (first == "办公室" || first == "教师办公室")
+            var klass: String
+            let room: String
+            var color: String? = nil
+            if first == "教室" || isOffice {
+                klass = cells.count > 1 ? cells[1] : ""
+                room = cells.count > 2 ? cells[2] : ""
+                if cells.count > 3 { color = normalizeHex(cells[3]) }
+            } else {
+                // 容错：当成「名称, 房号[, 颜色]」
+                klass = first
+                room = cells.count > 1 ? cells[1] : ""
+                if cells.count > 2 { color = normalizeHex(cells[2]) }
+            }
+            if isOffice && klass.isEmpty { klass = "办公室" }
+            let cell = ClassroomCell(kind: isOffice ? .office : .room,
+                                     klass: klass, room: room, color: color)
+            if inExtraRow { pendingRow.append(cell) } else { current?.cells.append(cell) }
+        }
+        flushFloor()
+        return floors
+    }
+
+    /// 颜色：统一成不含 # 的大写 hex；认不出返回 nil
+    static func normalizeHex(_ raw: String) -> String? {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "")
+            .uppercased()
+        guard s.count == 6, s.allSatisfy({ $0.isHexDigit }) else { return nil }
+        return s
+    }
+
+    func exportClassroom() {
+        let panel = makeSavePanel("下载教室分布", defaultName: "教室分布.xlsx")
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                try XLSX.write(exportClassroomRows(), to: url)
+            } catch {
+                showAlert("导出失败", error.localizedDescription)
+            }
+        }
+    }
+
+    private func exportClassroomRows() -> [[String]] {
+        var rows: [[String]] = []
+        for f in ClassroomStore.shared.floors {
+            rows.append(["楼层", f.title])
+            for c in f.cells { rows.append(classroomCellRow(c)) }
+            for r in f.extraRows {
+                rows.append(["附加行"])
+                for c in r.cells { rows.append(classroomCellRow(c)) }
+            }
+            rows.append([""])
+        }
+        return rows
+    }
+
+    private func classroomCellRow(_ c: ClassroomCell) -> [String] {
+        let kind = c.kind == .office ? "办公室" : "教室"
+        let name = c.klass.isEmpty && c.kind == .office ? "办公室" : c.klass
+        var row = [kind, name, c.room]
+        if let hex = c.color, !hex.isEmpty { row.append(hex) }
+        return row
+    }
+
     /// 解析工位：以「办公室」开头的行分段，随后每行 = 一排座位；「颜色」段可读回自定义色
-    static func parseOffices(_ grid: [[String]]) -> [OfficeBlock] {
-        var out: [OfficeBlock] = []
+    static func parseOffices(_ grid: [[String]]) -> [OfficeBlock] {        var out: [OfficeBlock] = []
         var current: OfficeBlock? = nil
         var inColorSection = false
         let cols = OfficeLayoutStore.seatColumns
@@ -870,9 +1000,10 @@ final class AppCoordinator: ObservableObject {
     // MARK: 下载填写模板（新机器数据为空：下载模板 → 填写 → 从对应「导入」导入）
     // 每个模板都带结构锚点，空机器上也能看懂怎么填：
     //   个人/班级课表 → 标题行 +「节次」；学生/师资 → 标题行 + 列名；
-    //   工位 →「办公室」；座位 →「小组」；延时监考 →「子表」+「第几周」。
+    //   工位 →「办公室」；座位 →「小组」；延时监考 →「子表」+「第几周」；
+    //   教室分布 →「楼层」+「教室/办公室」。
     // ⚠️ 标题行统一为「整行只有 1 个非空格」，导入侧用 dropTitleRows 跳过（见下方）。
-    enum ImportTemplate { case personal, classSheet, student, staff, office, seating, extend }
+    enum ImportTemplate { case personal, classSheet, student, staff, office, seating, extend, classroom }
 
     func downloadTemplate(_ kind: ImportTemplate) {
         let (rows, name) = AppCoordinator.templateRows(kind)
@@ -942,6 +1073,24 @@ final class AppCoordinator: ObservableObject {
                     ["1", "4", "数学", "张老师"],
                     ["7", "5", "语文+历史", "李老师"]]
             name = "延时监考模板"
+        case .classroom:
+            rows = [["教室分布"],
+                    ["楼层", "X栋4楼"],
+                    ["教室", "19班", "X401"],
+                    ["教室", "23班", "X402"],
+                    ["教室", "25班", "X403"],
+                    ["办公室", "办公室", "X406"],
+                    ["教室", "26班", "X407"],
+                    ["教室", "28班", "X408"],
+                    ["附加行"],
+                    ["教室", "1班", "X501"],
+                    ["教室", "2班", "X502"],
+                    [""],
+                    ["楼层", "S栋5楼"],
+                    ["教室", "3班", "S501"],
+                    ["教室", "4班", "S502"],
+                    ["办公室", "办公室", "S507"]]
+            name = "教室分布模板"
         }
         return (rows, name)
     }

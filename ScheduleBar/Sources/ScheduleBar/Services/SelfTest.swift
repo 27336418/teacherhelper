@@ -157,14 +157,15 @@ enum SelfTest {
 
         let kinds: [(String, AppCoordinator.ImportTemplate)] = [
             ("个人课表", .personal), ("班级课表", .classSheet), ("学生信息", .student),
-            ("年级师资", .staff), ("办公室工位", .office), ("班级座位", .seating), ("延时监考", .extend),
+            ("年级师资", .staff), ("办公室工位", .office), ("班级座位", .seating),
+            ("延时监考", .extend), ("教室分布", .classroom),
         ]
         for (label, kind) in kinds {
             let (rows, name) = AppCoordinator.templateRows(kind)
             let flat = rows.flatMap { $0 }.map { $0.trimmingCharacters(in: .whitespaces) }
             let firstCell = rows.first?.first?.trimmingCharacters(in: .whitespaces) ?? ""
-            // 锚点：标题 / 节次 / 第几周 / 办公室 / 小组 / 子表
-            let anchors = ["节次", "第几周", "办公室", "小组", "子表"]
+            // 锚点：标题 / 节次 / 第几周 / 办公室 / 小组 / 子表 / 楼层
+            let anchors = ["节次", "第几周", "办公室", "小组", "子表", "楼层"]
             let hasAnchor = anchors.contains { flat.contains($0) }
             let hasTitle = !firstCell.isEmpty
             let nonEmptyRows = rows.filter { !$0.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } }.count
@@ -189,7 +190,7 @@ enum SelfTest {
 
         // 落盘 → 读回：验证标题行在真实 xlsx 里也能被导入侧识别并跳过
         print("--- xlsx 落盘并读回（\(tmpDir.path)）---")
-        let withTitle: Set<String> = ["个人课表", "班级课表", "学生信息", "年级师资"]
+        let withTitle: Set<String> = ["个人课表", "班级课表", "学生信息", "年级师资", "教室分布"]
         for (label, kind) in kinds {
             let (rows, name) = AppCoordinator.templateRows(kind)
             let url = tmpDir.appendingPathComponent("\(name).xlsx")
@@ -208,6 +209,45 @@ enum SelfTest {
                 bad.append("读回/\(label)")
             }
         }
+        // 教室分布：模板 → 解析回环
+        print("--- 教室分布 解析回环 ---")
+        let (cRows, _) = AppCoordinator.templateRows(.classroom)
+        let parsedFloors = AppCoordinator.parseClassrooms(AppCoordinator.dropTitleRows(cRows))
+        for f in parsedFloors {
+            print("  \(f.title): 主行=\(f.cells.count) 附加行=\(f.extraRows.count)")
+            print("    " + f.cells.map { "\($0.kind == .office ? "办" : "教"):\($0.klass)/\($0.room)" }.joined(separator: " "))
+        }
+        let cOk = parsedFloors.count == 2
+            && parsedFloors.first?.cells.contains { $0.kind == .office } == true
+            && parsedFloors.first?.extraRows.count == 1
+            && parsedFloors.last?.cells.contains { $0.kind == .office } == true
+        if !cOk { bad.append("教室分布解析") }
+        print("  判定=\(cOk ? "✓" : "✗")")
+
+        // 旧 classrooms.json 迁移：left + office + right → 平铺 cells
+        print("--- 旧 classrooms.json 迁移 ---")
+        let legacyJSON = """
+        [{"title":"X栋4楼",
+          "left":[{"klass":"19班","room":"X401"},{"klass":"23班","room":"X402"}],
+          "officeName":"办公室","officeRoom":"X406","officeColor":"2ECC71",
+          "right":[{"klass":"26班","room":"X407"}],
+          "extraRows":[{"blocks":[{"klass":"1班","room":"X501"}]}]}]
+        """
+        var migrationOK = false
+        if let data = legacyJSON.data(using: .utf8),
+           let fs = try? JSONDecoder().decode([ClassroomFloor].self, from: data),
+           let f = fs.first {
+            print("  楼层=\(fs.count) 主行=\(f.cells.count) 附加行=\(f.extraRows.count) 附加行格子=\(f.extraRows.first?.cells.count ?? 0)")
+            print("  顺序: " + f.cells.map { "\($0.kind == .office ? "办" : "教"):\($0.klass)/\($0.room)" }.joined(separator: " "))
+            migrationOK = f.cells.count == 4
+                && f.cells[2].kind == .office && f.cells[2].room == "X406" && f.cells[2].color == "2ECC71"
+                && f.extraRows.first?.cells.first?.kind == .room
+        } else {
+            print("  解码失败")
+        }
+        if !migrationOK { bad.append("旧 JSON 迁移") }
+        print("  判定=\(migrationOK ? "✓" : "✗")")
+
         print(bad.isEmpty ? "全部通过 ✓" : "异常：\(bad.joined(separator: ", "))")
     }
 

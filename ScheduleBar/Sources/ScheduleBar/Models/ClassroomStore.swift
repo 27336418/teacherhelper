@@ -1,68 +1,146 @@
 import Foundation
 import SwiftUI
 
-// MARK: - 教室分布（按层展示：左翼 5 间 + 中间办公室 + 右翼 5 间；可编辑）
+// MARK: - 教室分布（每层一行「平铺」格子：教室与办公室同为格子，可拖动对换）
 // 数据来自「教室分布.xlsx」；持久化 classrooms.json。
+// 旧格式（left / officeName / officeRoom / right / officeColor）在解码时自动迁移成 cells。
 
-struct ClassroomSide: Codable, Equatable {
-    var klass: String     // 班级（如 19班），可空
-    var room: String      // 房间号（如 X401）
-    var color: String?    // 自定义颜色 hex（如 "E74C3C"），nil=默认
+/// 格子类型：普通教室 / 办公室
+enum ClassroomKind: String, Codable {
+    case room     // 教室
+    case office   // 办公室
 }
 
-/// 楼层内附加的一行教室（走廊另一侧 / 额外一排），不含办公室
+/// 一个格子（教室或办公室）
+struct ClassroomCell: Identifiable, Codable, Equatable {
+    var id: UUID = UUID()
+    var kind: ClassroomKind = .room
+    var klass: String = ""      // 教室=班级（19班）；办公室=名称（办公室）
+    var room: String = ""       // 房号（X401）
+    var color: String?          // 自定义颜色 hex（如 "E74C3C"），nil=默认
+
+    init(id: UUID = UUID(),
+         kind: ClassroomKind = .room,
+         klass: String = "",
+         room: String = "",
+         color: String? = nil) {
+        self.id = id
+        self.kind = kind
+        self.klass = klass
+        self.room = room
+        self.color = color
+    }
+
+    enum CodingKeys: String, CodingKey { case id, kind, klass, room, color }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        let k = try c.decodeIfPresent(String.self, forKey: .kind) ?? "room"
+        self.kind = ClassroomKind(rawValue: k) ?? .room
+        self.klass = try c.decodeIfPresent(String.self, forKey: .klass) ?? ""
+        self.room = try c.decodeIfPresent(String.self, forKey: .room) ?? ""
+        self.color = try c.decodeIfPresent(String.self, forKey: .color)
+    }
+}
+
+/// 旧版格子（仅用于读回历史 JSON）
+struct ClassroomSide: Codable, Equatable {
+    var klass: String
+    var room: String
+    var color: String?
+}
+
+/// 楼层内附加的一排（走廊另一侧 / 额外一排），格子与主行同构
 struct ClassroomRow: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
-    var blocks: [ClassroomSide]
+    var cells: [ClassroomCell]
+
+    init(id: UUID = UUID(), cells: [ClassroomCell] = []) {
+        self.id = id
+        self.cells = cells
+    }
+
+    enum CodingKeys: String, CodingKey { case id, cells, blocks }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        if let cs = try c.decodeIfPresent([ClassroomCell].self, forKey: .cells) {
+            self.cells = cs
+        } else if let old = try c.decodeIfPresent([ClassroomSide].self, forKey: .blocks) {
+            self.cells = old.map { ClassroomCell(kind: .room, klass: $0.klass, room: $0.room, color: $0.color) }
+        } else {
+            self.cells = []
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(cells, forKey: .cells)
+    }
 }
 
 struct ClassroomFloor: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
     var title: String                  // 层名（如 X栋4楼）
-    var left: [ClassroomSide]          // 左翼 5
-    var officeName: String             // 中间办公室标签
-    var officeRoom: String             // 中间办公室房号
-    var right: [ClassroomSide]         // 右翼 5
-    var officeColor: String?           // 中间办公室自定义颜色，nil=默认
+    var cells: [ClassroomCell]         // 主行：教室/办公室平铺混排（顺序即显示顺序）
     var extraRows: [ClassroomRow]      // 附加行（可增删）
-
-    // 旧 classrooms.json 没有 extraRows，需要自定义解码兜底
-    enum CodingKeys: String, CodingKey {
-        case id, title, left, officeName, officeRoom, right, officeColor, extraRows
-    }
 
     init(id: UUID = UUID(),
          title: String,
-         left: [ClassroomSide],
-         officeName: String,
-         officeRoom: String,
-         right: [ClassroomSide],
-         officeColor: String? = nil,
+         cells: [ClassroomCell] = [],
          extraRows: [ClassroomRow] = []) {
         self.id = id
         self.title = title
-        self.left = left
-        self.officeName = officeName
-        self.officeRoom = officeRoom
-        self.right = right
-        self.officeColor = officeColor
+        self.cells = cells
         self.extraRows = extraRows
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, cells, extraRows
+        // 旧格式字段（仅解码用）
+        case left, officeName, officeRoom, right, officeColor
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         self.title = try c.decode(String.self, forKey: .title)
-        self.left = try c.decodeIfPresent([ClassroomSide].self, forKey: .left) ?? []
-        self.officeName = try c.decodeIfPresent(String.self, forKey: .officeName) ?? ""
-        self.officeRoom = try c.decodeIfPresent(String.self, forKey: .officeRoom) ?? ""
-        self.right = try c.decodeIfPresent([ClassroomSide].self, forKey: .right) ?? []
-        self.officeColor = try c.decodeIfPresent(String.self, forKey: .officeColor)
         self.extraRows = try c.decodeIfPresent([ClassroomRow].self, forKey: .extraRows) ?? []
+        if let cs = try c.decodeIfPresent([ClassroomCell].self, forKey: .cells) {
+            self.cells = cs
+        } else {
+            // 旧格式：左翼 + 中间办公室 + 右翼 → 平铺
+            let left = try c.decodeIfPresent([ClassroomSide].self, forKey: .left) ?? []
+            let right = try c.decodeIfPresent([ClassroomSide].self, forKey: .right) ?? []
+            let name = try c.decodeIfPresent(String.self, forKey: .officeName) ?? ""
+            let room = try c.decodeIfPresent(String.self, forKey: .officeRoom) ?? ""
+            let color = try c.decodeIfPresent(String.self, forKey: .officeColor)
+            var out = left.map { ClassroomCell(kind: .room, klass: $0.klass, room: $0.room, color: $0.color) }
+            if !name.isEmpty || !room.isEmpty {
+                out.append(ClassroomCell(kind: .office,
+                                         klass: name.isEmpty ? "办公室" : name,
+                                         room: room, color: color))
+            }
+            out.append(contentsOf: right.map {
+                ClassroomCell(kind: .room, klass: $0.klass, room: $0.room, color: $0.color)
+            })
+            self.cells = out
+        }
     }
 
-    /// 该层一行的教室数量（用于新增附加行时对齐宽度）
-    var rowWidth: Int { max(1, left.count + right.count) }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(title, forKey: .title)
+        try c.encode(cells, forKey: .cells)
+        try c.encode(extraRows, forKey: .extraRows)
+    }
+
+    /// 该层主行 + 所有附加行的格子总数
+    var cellCount: Int { cells.count + extraRows.reduce(0) { $0 + $1.cells.count } }
 }
 
 final class ClassroomStore: ObservableObject {
@@ -72,21 +150,81 @@ final class ClassroomStore: ObservableObject {
         didSet { save() }
     }
 
+    /// 拖动中的来源位置（用于实时对换）；非 @Published，不触发视图刷新
+    var dragSource: (floorID: UUID, rowID: UUID?, index: Int)?
+    /// 拖动开始时的快照（用于撤销）
+    private var dragSnapshot: [ClassroomFloor]?
+
     init() {
-        self.floors = ClassroomStore.load() ?? ClassroomStore.defaults()
+        let loaded = ClassroomStore.load()
+        self.floors = loaded?.floors ?? ClassroomStore.defaults()
+        // 旧格式（left / officeName / right）在内存里已迁移成平铺 cells，这里顺手落盘成新格式
+        if loaded?.wasLegacy == true { save() }
     }
 
     func addFloor() {
-        let empty = (0..<5).map { _ in ClassroomSide(klass: "", room: "") }
-        floors.append(ClassroomFloor(title: "新楼层", left: empty,
-                                     officeName: "教师办公室", officeRoom: "",
-                                     right: empty))
+        let empty = (0..<5).map { _ in ClassroomCell(kind: .room, klass: "", room: "") }
+        let office = ClassroomCell(kind: .office, klass: "办公室", room: "")
+        floors.append(ClassroomFloor(title: "新楼层", cells: empty + [office] + empty))
     }
+
     func removeFloor(_ id: UUID) {
         let snap = floors
         let title = floors.first(where: { $0.id == id })?.title ?? ""
         floors.removeAll { $0.id == id }
         UndoService.shared.register("删除\(title.isEmpty ? "楼层" : "「\(title)」")") { [weak self] in
+            guard let self else { return }
+            self.floors = snap
+            self.save()
+        }
+    }
+
+    // MARK: 拖动对换（教室 / 办公室同级，可任意换位）
+    func beginDrag(floorID: UUID, rowID: UUID?, index: Int) {
+        dragSnapshot = floors
+        dragSource = (floorID, rowID, index)
+    }
+
+    /// 把拖动来源与目标位置的格子对换
+    func swapTo(floorID: UUID, rowID: UUID?, index: Int) {
+        guard var src = dragSource, src.index != index else { return }
+        guard let f = floors.firstIndex(where: { $0.id == floorID }) else { return }
+        // 仅支持同一层内的对换（同层主行 ↔ 主行，或同一附加行内）
+        guard src.floorID == floorID else { return }
+
+        if src.rowID == nil && rowID == nil {
+            guard floors[f].cells.indices.contains(src.index),
+                  floors[f].cells.indices.contains(index) else { return }
+            floors[f].cells.swapAt(src.index, index)
+            src.index = index
+            dragSource = src
+        } else if let rid = rowID, src.rowID == rid {
+            guard let r = floors[f].extraRows.firstIndex(where: { $0.id == rid }),
+                  floors[f].extraRows[r].cells.indices.contains(src.index),
+                  floors[f].extraRows[r].cells.indices.contains(index) else { return }
+            floors[f].extraRows[r].cells.swapAt(src.index, index)
+            src.index = index
+            dragSource = src
+        }
+    }
+
+    /// 拖动结束：若确实换过位就注册一次撤销
+    func finishDrag() {
+        defer { dragSource = nil; dragSnapshot = nil }
+        guard let snap = dragSnapshot, snap != floors else { return }
+        UndoService.shared.register("调整教室位置") { [weak self] in
+            guard let self else { return }
+            self.floors = snap
+            self.save()
+        }
+    }
+
+    /// 整表替换（导入用）
+    func replaceAll(_ newFloors: [ClassroomFloor]) {
+        let snap = floors
+        floors = newFloors
+        save()
+        UndoService.shared.register("导入教室分布") { [weak self] in
             guard let self else { return }
             self.floors = snap
             self.save()
@@ -118,26 +256,24 @@ final class ClassroomStore: ObservableObject {
 
     // 早期预置数据（保留备用）
     static func presetFloors() -> [ClassroomFloor] {
-        func side(_ k: String, _ r: String) -> ClassroomSide { ClassroomSide(klass: k, room: r) }
+        func room(_ k: String, _ r: String) -> ClassroomCell { ClassroomCell(kind: .room, klass: k, room: r) }
+        func office(_ r: String) -> ClassroomCell { ClassroomCell(kind: .office, klass: "办公室", room: r) }
+        func wing(_ prefix: String, _ src: [(String, String)]) -> [ClassroomCell] {
+            src.map { room($0.0, "\(prefix)\($0.1)") }
+        }
         return [
-            ClassroomFloor(
-                title: "X栋4楼",
-                left: [side("19班", "X401"), side("23班", "X402"), side("24班", "X403"), side("25班", "X404"), side("22班", "X405")],
-                officeName: "教师办公室（15人）", officeRoom: "X406",
-                right: [side("26班", "X407"), side("27班", "X408"), side("28班", "X409"), side("29班", "X410"), side("30班", "X411")]
-            ),
-            ClassroomFloor(
-                title: "X栋5楼",
-                left: [side("21班", "X501"), side("20班", "X502"), side("18班", "X503"), side("17班", "X504"), side("16班", "X505")],
-                officeName: "教师办公室（15人）", officeRoom: "X506",
-                right: [side("15班", "X507"), side("14班", "X508"), side("13班", "X509"), side("12班", "X510"), side("11班", "X511")]
-            ),
-            ClassroomFloor(
-                title: "S栋5楼",
-                left: [side("1班", "S501"), side("2班", "S502"), side("3班", "S503"), side("4班", "S504"), side("5班", "S505")],
-                officeName: "教师办公室（15人）", officeRoom: "S507",
-                right: [side("6班", "S508"), side("8班", "S509"), side("10班", "S510"), side("9班", "S511"), side("7班", "S512")]
-            ),
+            ClassroomFloor(title: "X栋4楼",
+                           cells: wing("X", [("19班", "401"), ("23班", "402"), ("24班", "403"), ("25班", "404"), ("22班", "405")])
+                                + [office("X406")]
+                                + wing("X", [("26班", "407"), ("27班", "408"), ("28班", "409"), ("29班", "410"), ("30班", "411")])),
+            ClassroomFloor(title: "X栋5楼",
+                           cells: wing("X", [("21班", "501"), ("20班", "502"), ("18班", "503"), ("17班", "504"), ("16班", "505")])
+                                + [office("X506")]
+                                + wing("X", [("15班", "507"), ("14班", "508"), ("13班", "509"), ("12班", "510"), ("11班", "511")])),
+            ClassroomFloor(title: "S栋5楼",
+                           cells: wing("S", [("1班", "501"), ("2班", "502"), ("3班", "503"), ("4班", "504"), ("5班", "505")])
+                                + [office("S507")]
+                                + wing("S", [("6班", "508"), ("8班", "509"), ("10班", "510"), ("9班", "511"), ("7班", "512")])),
         ]
     }
 
@@ -153,9 +289,12 @@ final class ClassroomStore: ObservableObject {
         }
     }
 
-    static func load() -> [ClassroomFloor]? {
+    /// 读取本地数据；wasLegacy = 磁盘上还是旧格式（left / officeName / right）
+    static func load() -> (floors: [ClassroomFloor], wasLegacy: Bool)? {
         guard let data = try? Data(contentsOf: fileURL()) else { return nil }
-        return try? JSONDecoder().decode([ClassroomFloor].self, from: data)
+        guard let floors = try? JSONDecoder().decode([ClassroomFloor].self, from: data) else { return nil }
+        let wasLegacy = data.range(of: Data("\"cells\"".utf8)) == nil
+        return (floors, wasLegacy)
     }
 
     static func fileURL() -> URL {
