@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 
+
 // MARK: - GitHub Release 自动更新检查
 //
 // ⚠️⚠️ 只需改这两行：填成你托管教师助手源码的 GitHub 仓库 ⚠️⚠️
@@ -100,9 +101,13 @@ final class GitHubUpdateService {
                 let body = (json["body"] as? String) ?? "(无说明)"
                 let html = (json["html_url"] as? String) ?? ""
                 let assets = (json["assets"] as? [[String: Any]]) ?? []
-                let asset = assets.first ?? [:]
-                let assetName = (asset["name"] as? String) ?? "下载"
-                let assetURL = (asset["browser_download_url"] as? String) ?? html
+                // 优先选发布附件中的 dmg；没有附件时退回 release 页面，避免误下源码压缩包。
+                let dmg = assets.first { asset in
+                    ((asset["name"] as? String) ?? "").lowercased().hasSuffix(".dmg")
+                }
+                let asset = dmg ?? assets.first ?? [:]
+                let assetName = (asset["name"] as? String) ?? "打开 release 页面"
+                let assetURL = (asset["browser_download_url"] as? String) ?? ""
 
                 let remoteVer = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
                 if Self.compare(remoteVer, self.currentVersion) == .orderedDescending {
@@ -112,6 +117,39 @@ final class GitHubUpdateService {
                     SeatingStore.seatLog("升级：当前 \(self.currentVersion) 已是最新")
                     completion(.latest(current: self.currentVersion))
                 }
+            }
+        }.resume()
+    }
+
+    /// 自动下载 release 附件到临时目录；下载完成后打开 dmg，由用户拖动覆盖旧 App。
+    func downloadUpdate(from urlString: String, suggestedName: String,
+                        completion: @escaping (Swift.Result<URL, Error>) -> Void) {
+        guard let url = URL(string: urlString), !urlString.isEmpty else {
+            completion(.failure(NSError(domain: "ScheduleBar.Update", code: 1,
+                                        userInfo: [NSLocalizedDescriptionKey: "没有可下载的 dmg 附件"])))
+            return
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 120
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+        let token = GitHubRepoConfig.token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        URLSession.shared.downloadTask(with: request) { tempURL, response, error in
+            DispatchQueue.main.async {
+                if let error { completion(.failure(error)); return }
+                guard let tempURL, let http = response as? HTTPURLResponse,
+                      (200..<300).contains(http.statusCode) else {
+                    completion(.failure(NSError(domain: "ScheduleBar.Update", code: 2,
+                                                userInfo: [NSLocalizedDescriptionKey: "下载更新失败"])))
+                    return
+                }
+                let name = suggestedName.lowercased().hasSuffix(".dmg") ? suggestedName : "教师助手-更新.dmg"
+                let destination = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("教师助手-更新-\(UUID().uuidString)-\(name)")
+                do {
+                    try FileManager.default.moveItem(at: tempURL, to: destination)
+                    completion(.success(destination))
+                } catch { completion(.failure(error)) }
             }
         }.resume()
     }

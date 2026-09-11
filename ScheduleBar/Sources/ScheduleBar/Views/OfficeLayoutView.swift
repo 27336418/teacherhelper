@@ -45,6 +45,17 @@ struct OfficeLayoutView: View {
                     }
                     .help("导入工位布局；可先下载模板（办公室分段 + 每排座位）填写")
                     Button("下载") { coordinator.exportOffice() }
+                    Picker("视角", selection: $store.studentView) {
+                        Text("教师视角").tag(false)
+                        Text("学生视角").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                    .help("教师视角：左门在左、右门在右；学生视角：整张工位表 180° 镜像")
+                    Toggle("显示左右门", isOn: $store.showDoors)
+                        .toggleStyle(.checkbox)
+                        .fixedSize()
+                        .help("隐藏或显示办公室顶部的左右门标识")
                     Button {
                         store.addOffice()
                     } label: {
@@ -178,24 +189,19 @@ struct OfficeCard: View {
                 .help("删除此办公室")
             }
 
-            // 门向表头
-            HStack(spacing: 4) {
-                Text("左门")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: seatWidth, height: 20)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.yellow.opacity(0.35)))
-                Spacer()
-                Text("右门")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: seatWidth, height: 20)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.yellow.opacity(0.35)))
+            if store.showDoors {
+                // 门向表头：学生视角整表 180° 镜像
+                HStack(spacing: 4) {
+                    doorLabel(store.studentView ? "右门" : "左门")
+                    Spacer()
+                    doorLabel(store.studentView ? "左门" : "右门")
+                }
             }
 
-            // 列管理：每列可删除，末尾可增加一列
+            // 列管理：每列可删除，末尾可增加一列（学生视角下显示列号镜像）
             HStack(spacing: 4) {
-                ForEach(0..<columnCount, id: \.self) { c in
+                ForEach(0..<columnCount, id: \.self) { displayCol in
+                    let c = modelCol(displayCol)
                     HStack(spacing: 2) {
                         Text("列\(c + 1)")
                             .font(.system(size: 9))
@@ -225,10 +231,12 @@ struct OfficeCard: View {
             }
 
             // 座位（动态列数 × N 行；右键可换座位颜色）
-            ForEach(office.seats.indices, id: \.self) { r in
+            ForEach(0..<rowCount, id: \.self) { displayRow in
+                let r = modelRow(displayRow)
                 HStack(spacing: 4) {
-                    ForEach(0..<columnCount, id: \.self) { c in
-                        if office.seats[r].indices.contains(c) {
+                    ForEach(0..<columnCount, id: \.self) { displayCol in
+                        let c = modelCol(displayCol)
+                        if office.seats.indices.contains(r), office.seats[r].indices.contains(c) {
                             seatCell(row: r, col: c)
                         } else {
                             Color.clear.frame(width: seatWidth, height: 30)
@@ -259,8 +267,28 @@ struct OfficeCard: View {
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
     }
 
+    private func doorLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(.secondary)
+            .frame(width: seatWidth, height: 20)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Color.yellow.opacity(0.35)))
+    }
+
     private var columnCount: Int {
         max(1, office.seats.map(\.count).max() ?? OfficeLayoutStore.seatColumns)
+    }
+
+    private var rowCount: Int {
+        max(1, office.seats.count)
+    }
+
+    private func modelRow(_ displayRow: Int) -> Int {
+        store.studentView ? rowCount - 1 - displayRow : displayRow
+    }
+
+    private func modelCol(_ displayCol: Int) -> Int {
+        store.studentView ? columnCount - 1 - displayCol : displayCol
     }
 
     /// 该座位是否命中查询（忽略大小写、忽略首尾空格）

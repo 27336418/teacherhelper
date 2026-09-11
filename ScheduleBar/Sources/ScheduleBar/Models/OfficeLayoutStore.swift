@@ -49,11 +49,24 @@ final class OfficeLayoutStore: ObservableObject {
         didSet { save() }
     }
 
+    /// 工位视图：false = 教师视角，true = 学生视角（整张办公室工位表 180° 镜像）
+    @Published var studentView: Bool {
+        didSet { UserDefaults.standard.set(studentView, forKey: Self.viewKey) }
+    }
+    /// 是否显示办公室左右门标识
+    @Published var showDoors: Bool {
+        didSet { UserDefaults.standard.set(showDoors, forKey: Self.doorsKey) }
+    }
+    private static let viewKey = "office.studentView"
+    private static let doorsKey = "office.showDoors"
+
     /// 拖动中的工位来源：支持同一办公室内、不同办公室之间互换
     var dragSource: (officeID: UUID, row: Int, col: Int)?
     private var dragSnapshot: [OfficeBlock]?
 
     init() {
+        self.studentView = UserDefaults.standard.bool(forKey: Self.viewKey)
+        self.showDoors = UserDefaults.standard.object(forKey: Self.doorsKey) as? Bool ?? true
         self.offices = OfficeLayoutStore.load() ?? OfficeLayoutStore.defaults()
     }
 

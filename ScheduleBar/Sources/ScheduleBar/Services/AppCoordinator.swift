@@ -41,15 +41,28 @@ final class AppCoordinator: ObservableObject {
                 PanelHelper.bringFront(a)
                 a.runModal()
             }
-        case .update(let ver, _, let page, _, let assetURL):
-            // 自动检查时：同一版本每天只自动打开一次，避免每次启动都弹浏览器
+        case .update(let ver, _, let page, let assetName, let assetURL):
+            // 自动检查时：同一版本每天只自动提示/下载一次，避免重复下载。
             if !manual, !shouldAutoPrompt(version: ver) { return }
             if !manual { markAutoPrompted(version: ver) }
-            // 打开新版下载地址，用户在页面上自行选择是否下载
-            if let u = URL(string: assetURL), !assetURL.isEmpty {
-                NSWorkspace.shared.open(u)
-            } else if let u = URL(string: page) {
-                NSWorkspace.shared.open(u)
+            guard !assetURL.isEmpty else {
+                if let u = URL(string: page) { NSWorkspace.shared.open(u) }
+                return
+            }
+            GitHubUpdateService.shared.downloadUpdate(from: assetURL, suggestedName: assetName) { result in
+                switch result {
+                case .success(let url):
+                    NSWorkspace.shared.open(url)
+                case .failure(let error):
+                    if manual {
+                        PanelHelper.prepare()
+                        let a = NSAlert()
+                        a.messageText = "更新下载失败"
+                        a.informativeText = error.localizedDescription
+                        PanelHelper.bringFront(a)
+                        a.runModal()
+                    }
+                }
             }
         case .error(let msg):
             if manual {
