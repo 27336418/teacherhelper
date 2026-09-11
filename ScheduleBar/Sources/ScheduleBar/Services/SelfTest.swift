@@ -399,6 +399,65 @@ enum SelfTest {
         }
     }
 
+    // MARK: 工位拖动对换自检（纯逻辑，不启 UI）：校验「单次 drop 只换一次 + 可撤销 + 可重拖 + 自身防护」
+    // 用法：ScheduleBar --selftest-offices
+    static func runOfficeSeatCheck() {
+        let url = OfficeLayoutStore.fileURL()
+        let original = try? Data(contentsOf: url)
+        defer {
+            if let orig = original { try? orig.write(to: url) }
+            else { try? FileManager.default.removeItem(at: url) }
+        }
+        let store = OfficeLayoutStore()
+        let o1 = UUID(), o2 = UUID()
+        store.offices = [
+            OfficeBlock(id: o1, title: "办公室A", seats: [["甲", "乙"], ["丙", "丁"]]),
+            OfficeBlock(id: o2, title: "办公室B", seats: [["1", "2"]]),
+        ]
+        UndoService.shared.undo()   // 清空可能残留的撤销栈
+
+        // 1) 同办公室对换：甲(0,0) ↔ 丁(1,1)
+        store.beginSeatDrag(officeID: o1, row: 0, col: 0)
+        store.swapSeatTo(officeID: o1, row: 1, col: 1)
+        store.finishSeatDrag()
+        let a = store.offices[0].seats
+        let swap1 = a[0][0] == "丁" && a[1][1] == "甲"
+
+        // 2) 撤销应恢复原状
+        _ = UndoService.shared.undo()
+        let a2 = store.offices[0].seats
+        let restore = a2[0][0] == "甲" && a2[1][1] == "丁"
+
+        // 3) 跨办公室对换：乙(0,1) ↔ 1(0,0 of B)
+        store.beginSeatDrag(officeID: o1, row: 0, col: 1)
+        store.swapSeatTo(officeID: o2, row: 0, col: 0)
+        store.finishSeatDrag()
+        let cross = store.offices[0].seats[0][1] == "1"
+                  && store.offices[1].seats[0][0] == "乙"
+
+        // 4) 自身拖放（来源==落点）不改变数据
+        let before = store.offices[0].seats
+        store.beginSeatDrag(officeID: o1, row: 0, col: 0)
+        store.swapSeatTo(officeID: o1, row: 0, col: 0)
+        store.finishSeatDrag()
+        let selfNoOp = store.offices[0].seats == before
+
+        // 5) 落点越界（列不存在）应安全忽略
+        let beforeOut = store.offices[0].seats
+        store.beginSeatDrag(officeID: o1, row: 0, col: 0)
+        store.swapSeatTo(officeID: o1, row: 9, col: 9)
+        store.finishSeatDrag()
+        let outNoOp = store.offices[0].seats == beforeOut
+
+        print("同办公室对换:   \(swap1 ? "✓" : "✗")")
+        print("撤销恢复:       \(restore ? "✓" : "✗")")
+        print("跨办公室对换:   \(cross ? "✓" : "✗")")
+        print("自身拖放不变:   \(selfNoOp ? "✓" : "✗")")
+        print("越界安全忽略:   \(outNoOp ? "✓" : "✗")")
+        let ok = swap1 && restore && cross && selfNoOp && outNoOp
+        print(ok ? "工位对换自检全部通过 ✓" : "工位对换自检存在问题 ✗")
+    }
+
     private static var supportDir: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ScheduleBar", isDirectory: true)

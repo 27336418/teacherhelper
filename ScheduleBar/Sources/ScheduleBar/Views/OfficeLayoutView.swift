@@ -1,8 +1,9 @@
 import SwiftUI
 
 // MARK: - 工位拖动对换代理
-// 与课表单元格共用同一套「三重兜底」策略：dropEntered / dropUpdated 任一触发即换位，
-// performDrop 再兜底执行一次幂等换位 —— 保证内部视角与外部视角（整表镜像）下拖动都能对调。
+// 设计要点：拖动过程中只做「高亮」反馈（不改数据），真正交换只在 performDrop 时发生一次。
+// 这样保证：① 交换确定（不会因 hover 多次触发而乱跳）；② 撤销一定生效（提交点唯一）；
+// ③ 拖完后可立即再次拖动任意工位对换。内部/外部视角下都用模型坐标，天然都支持。
 struct OfficeSeatSwapDelegate: DropDelegate {
     let officeID: UUID
     let row: Int
@@ -12,20 +13,18 @@ struct OfficeSeatSwapDelegate: DropDelegate {
     func validateDrop(info: DropInfo) -> Bool { true }
 
     func dropEntered(info: DropInfo) {
-        store.swapSeatTo(officeID: officeID, row: row, col: col)
+        store.setDropHighlight(officeID: officeID, row: row, col: col)
     }
 
-    // 某些 macOS 版本在嵌套 HStack 的格子上不会回调 dropEntered，dropUpdated 仍会稳定触发；
-    // 两处都调用同一幂等换位逻辑（swapSeatTo 内已对「来源 == 落点」短路）。
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        store.swapSeatTo(officeID: officeID, row: row, col: col)
+        store.setDropHighlight(officeID: officeID, row: row, col: col)
         return DropProposal(operation: .move)
     }
 
-    // 最终落点以 performDrop 为准：即使上面两个回调都没触发，这里也执行一次真正的交换，
-    // 避免出现「拖了但原数据没变」。
+    // 唯一提交点：执行一次交换并登记撤销，随后清除高亮。
     func performDrop(info: DropInfo) -> Bool {
         store.swapSeatTo(officeID: officeID, row: row, col: col)
+        store.clearDropHighlight()
         store.finishSeatDrag()
         return true
     }
@@ -419,6 +418,15 @@ struct OfficeCard: View {
                 cell
             }
         }
+        .overlay(
+            Group {
+                if let hl = store.dropHighlight, hl.officeID == office.id, hl.row == r, hl.col == c {
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(Color.accentColor, lineWidth: 2.5)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(Color.accentColor.opacity(0.18)))
+                }
+            }
+        )
         .contentShape(Rectangle())
         .onDrag {
             store.beginSeatDrag(officeID: office.id, row: r, col: c)

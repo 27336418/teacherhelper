@@ -60,9 +60,13 @@ final class OfficeLayoutStore: ObservableObject {
     private static let viewKey = "office.studentView"
     private static let doorsKey = "office.showDoors"
 
-    /// 拖动中的工位来源：支持同一办公室内、不同办公室之间互换
-    var dragSource: (officeID: UUID, row: Int, col: Int)?
+    /// 拖动来源：仅记录「从哪里拖」，落点由 drop 时传入；单次 drop 只换一次，可逆、可重拖。
+    private var dragOrigin: (officeID: UUID, row: Int, col: Int)?
     private var dragSnapshot: [OfficeBlock]?
+
+    /// 当前 drop 高亮目标（仅 hover 视觉反馈，不改数据）；格式 (officeID, row, col)
+    struct SeatTarget: Equatable { let officeID: UUID; let row: Int; let col: Int }
+    @Published var dropHighlight: SeatTarget? = nil
 
     init() {
         self.studentView = UserDefaults.standard.bool(forKey: Self.viewKey)
@@ -75,41 +79,45 @@ final class OfficeLayoutStore: ObservableObject {
         guard let office = offices.first(where: { $0.id == officeID }),
               office.seats.indices.contains(row), office.seats[row].indices.contains(col) else { return }
         dragSnapshot = offices
-        dragSource = (officeID, row, col)
+        dragOrigin = (officeID, row, col)
+        dropHighlight = nil
     }
 
-    /// 将拖动来源工位与目标工位的姓名/颜色一起对换
+    func setDropHighlight(officeID: UUID, row: Int, col: Int) {
+        dropHighlight = SeatTarget(officeID: officeID, row: row, col: col)
+    }
+
+    func clearDropHighlight() {
+        dropHighlight = nil
+    }
+
+    /// 将「拖动来源工位」与「目标工位」的姓名/颜色一次性对换（在 performDrop 时调用，保证确定性，
+    /// 单次 drop 只换一次，松开即提交 → 撤销可靠、可重复拖动对换）。
     func swapSeatTo(officeID: UUID, row: Int, col: Int) {
-        guard var source = dragSource,
-              let srcOffice = offices.firstIndex(where: { $0.id == source.officeID }),
+        guard let origin = dragOrigin,
+              let srcOffice = offices.firstIndex(where: { $0.id == origin.officeID }),
               let dstOffice = offices.firstIndex(where: { $0.id == officeID }),
-              offices[srcOffice].seats.indices.contains(source.row),
-              offices[srcOffice].seats[source.row].indices.contains(source.col),
+              offices[srcOffice].seats.indices.contains(origin.row),
+              offices[srcOffice].seats[origin.row].indices.contains(origin.col),
               offices[dstOffice].seats.indices.contains(row),
               offices[dstOffice].seats[row].indices.contains(col),
-              !(source.officeID == officeID && source.row == row && source.col == col) else { return }
+              !(origin.officeID == officeID && origin.row == row && origin.col == col) else { return }
 
-        let srcKey = "\(source.row)-\(source.col)"
+        let srcKey = "\(origin.row)-\(origin.col)"
         let dstKey = "\(row)-\(col)"
-        let srcText = offices[srcOffice].seats[source.row][source.col]
+        let srcText = offices[srcOffice].seats[origin.row][origin.col]
         let dstText = offices[dstOffice].seats[row][col]
         let srcColor = offices[srcOffice].seatColors[srcKey]
         let dstColor = offices[dstOffice].seatColors[dstKey]
 
-        offices[srcOffice].seats[source.row][source.col] = dstText
+        offices[srcOffice].seats[origin.row][origin.col] = dstText
         offices[dstOffice].seats[row][col] = srcText
         setColor(srcColor, officeIndex: dstOffice, key: dstKey)
         setColor(dstColor, officeIndex: srcOffice, key: srcKey)
-
-        // 跨办公室换位后，来源位置跟着被拖动的内容走，避免 dropEntered 连续触发时来回抖动
-        source.officeID = officeID
-        source.row = row
-        source.col = col
-        dragSource = source
     }
 
     func finishSeatDrag() {
-        defer { dragSource = nil; dragSnapshot = nil }
+        defer { dragOrigin = nil; dragSnapshot = nil }
         guard let snap = dragSnapshot, snap != offices else { return }
         UndoService.shared.register("调整工位位置") { [weak self] in
             guard let self else { return }

@@ -36,6 +36,11 @@ struct ScheduleBarApp {
             SelfTest.runCalendarSyncCheck()
             return
         }
+        // 工位拖动对换自检（纯逻辑，改后还原 offices.json）：--selftest-offices
+        if args.contains("--selftest-offices") {
+            SelfTest.runOfficeSeatCheck()
+            return
+        }
 
         let app = NSApplication.shared
         let delegate = AppDelegate()
