@@ -173,6 +173,7 @@ enum SelfTest {
         defer { try? FileManager.default.removeItem(atPath: tmp) }
         print("临时数据目录 = \(tmp)（真实数据不受影响）")
 
+        // 临时目录每次都是空的 → 走「首次运行」分支（默认 11×11 + 讲台入表），行为确定
         let store = SeatingStore()
         let gid = UUID()
         func reset() {
@@ -181,11 +182,32 @@ enum SelfTest {
             store.pool = ["己"]
             store.poolGroups = []
             store.selection = []
+            store.podium = nil
+        }
+        /// 4×4 空表：给「框选整体移动 / 讲台」用例用
+        func resetBig() {
+            store.grid = [["甲", "乙", "丙", ""],
+                          ["丁", "戊", "", ""],
+                          ["", "", "", ""],
+                          ["", "", "", ""]]
+            store.regions = []
+            store.pool = []
+            store.poolGroups = []
+            store.selection = []
+            store.podium = nil
         }
         /// 模拟视图层的一次「拿起」（等价于 SeatingView.beginDrag）
         func pick(_ payload: String) { DragContext.begin(module: DragPayload.seating, payload: payload) }
 
         var cases: [(String, Bool)] = []
+
+        // 0) 全新表：默认 11×11，且讲台已经在表格里面（最后一行居中 3 格，左右两侧仍可排座位）
+        cases.append(("新表默认 11×11", store.rows == 11 && store.cols == 11))
+        cases.append(("新表默认带讲台（表格内·第11行第5~7列）",
+                      store.podium?.row == 10 && store.podium?.col == 4 && store.podium?.span == 3))
+        cases.append(("讲台左右两侧的格子仍是座位（第11行第1~4列可排）",
+                      !store.isPodium("10-3") && !store.isPodium("10-7")
+                      && store.isPodium("10-4") && store.isPodium("10-6")))
 
         // 1) 拖动来源必须能被落点识别（视图层 beginDrag 登记的正是这两步）
         reset(); pick(SeatingStore.payload(cell: "0-0"))
@@ -242,7 +264,123 @@ enum SelfTest {
         cases.append(("未登记来源 → 落点拒绝（回归护栏）",
                       !DragContext.belongs(to: DragPayload.seating)))
 
-        print("--- 座位拖拽 / 取消分组自检 ---")
+        // ── 以下为 2.1.8 新增：Excel 式框选整体移动 + 讲台放进表格 ──
+
+        // 10) 框选：从空格拖到另一格 = 选中矩形一片
+        resetBig()
+        pick(SeatingStore.payload(marquee: "0-0"))
+        store.handleDrop("marquee|0-0", toKey: "1-1"); DragContext.finish(reason: "座位")
+        cases.append(("空格起手拖动 = 框选 2×2",
+                      store.selection == Set(["0-0", "0-1", "1-0", "1-1"])))
+
+        // 11) 框选矩形（含讲台跳过）
+        resetBig(); store.selectRect(from: "0-0", to: "2-3")
+        cases.append(("框选矩形 0-0→2-3 选中 12 格", store.selection.count == 12))
+
+        // 12) 框选整体移动：2×2 往右下挪一格，学生跟着走
+        resetBig()
+        store.selection = ["0-0", "0-1", "1-0", "1-1"]
+        let movedOK = store.moveSelection(grab: "0-0", to: "1-1")
+        cases.append(("框选整体移动（+1行+1列，甲乙丁戊跟着走、原位清空）",
+                      movedOK && store.name(at: "1-1") == "甲" && store.name(at: "1-2") == "乙"
+                      && store.name(at: "2-1") == "丁" && store.name(at: "2-2") == "戊"
+                      && store.name(at: "0-0") == "" && store.name(at: "0-1") == ""
+                      && store.selection.count == 4))
+
+        // 13) 目标位置已有人 → 拒绝，谁都不动
+        resetBig()
+        store.selection = ["0-0", "0-1"]
+        let blockedMove = store.moveSelection(grab: "0-0", to: "1-0")   // 会压到 丁/戊
+        cases.append(("框选整体移动·目标有学生 → 拒绝且原样不动",
+                      !blockedMove && store.name(at: "0-0") == "甲"
+                      && store.name(at: "1-0") == "丁" && store.name(at: "1-1") == "戊"))
+
+        // 14) 撞讲台 → 拒绝
+        resetBig(); store.podium = PodiumPlacement(row: 3, col: 0, span: 2)
+        store.selection = ["0-0", "0-1"]
+        let hitPodium = store.moveSelection(grab: "0-0", to: "3-0")
+        cases.append(("框选整体移动·撞上讲台 → 拒绝",
+                      !hitPodium && store.name(at: "0-0") == "甲" && store.name(at: "3-0") == ""))
+
+        // 15) 整组都在选区里 → 小组色块连组名一起平移
+        resetBig()
+        store.regions = [SeatRegion(id: gid, title: "第1小组", cells: ["0-0", "0-1"], colorIndex: 0)]
+        store.selection = ["0-0", "0-1"]
+        _ = store.moveSelection(grab: "0-1", to: "2-1")   // 下移 2 行
+        cases.append(("框选整体移动·整组随行（色块与组名跟着走）",
+                      store.region(id: gid)?.cells == ["2-0", "2-1"]
+                      && store.name(at: "2-0") == "甲" && store.name(at: "2-1") == "乙"))
+
+        // 16) 框选整体拖到待用栏 = 选区学生全部撤下
+        resetBig()
+        store.selection = ["0-0", "1-0"]
+        pick(SeatingStore.payload(selection: "0-0"))
+        store.handleDrop("selblock|0-0", toKey: nil); DragContext.finish(reason: "座位")
+        cases.append(("框选整体拖到待用栏（甲/丁入待用、格子清空）",
+                      store.pool.contains("甲") && store.pool.contains("丁")
+                      && store.name(at: "0-0") == "" && store.name(at: "1-0") == ""))
+
+        // 17) 讲台格子拒绝放学生
+        resetBig(); store.podium = PodiumPlacement(row: 3, col: 0, span: 2)
+        store.handleDrop("cell|0-2", toKey: "3-0"); DragContext.finish(reason: "座位")
+        cases.append(("讲台格子拒绝放学生（丙仍在 0-2）",
+                      store.name(at: "0-2") == "丙" && store.name(at: "3-0") == ""))
+
+        // 18) 拖动讲台：换行换列（落点当中心）
+        resetBig(); store.podium = PodiumPlacement(row: 3, col: 0, span: 2)
+        _ = store.movePodium(to: "2-2")
+        cases.append(("拖动讲台换行换列（中心对齐落点 → 第3行第2列起）",
+                      store.podium?.row == 2 && store.podium?.col == 1))
+
+        // 19) 讲台不能压在学生上
+        resetBig(); store.podium = PodiumPlacement(row: 3, col: 0, span: 2)
+        let blockedPodium = store.movePodium(to: "0-2")      // 会压到 乙/丙
+        cases.append(("讲台压到学生 → 拒绝并留在原处", !blockedPodium && store.podium?.row == 3))
+
+        // 20) 讲台居中 + 宽度可调
+        resetBig(); store.podium = PodiumPlacement(row: 2, col: 0, span: 2)
+        store.centerPodium()                              // (2,0,2) → (2,1,2)
+        let centered = (store.podium?.col == 1 && store.podium?.span == 2)
+        store.setPodiumSpan(3)                            // (2,1,3)
+        cases.append(("讲台居中 + 宽度可调（居中到第2列、再放宽到 3 格）",
+                      centered && store.podium?.span == 3 && store.podium?.col == 1))
+
+        // 21) 删除讲台所在的行 → 讲台自动另找空行（不会越界）
+        resetBig(); store.podium = PodiumPlacement(row: 3, col: 0, span: 2)
+        store.removeRow(3)
+        cases.append(("删除讲台所在行 → 讲台自动重找位置且不越界",
+                      store.podium.map { $0.row < store.rows && $0.col + $0.span <= store.cols } ?? false))
+
+        // 22) 删列：讲台左侧被删 → 左移；删到讲台覆盖的列 → 变窄
+        resetBig(); store.podium = PodiumPlacement(row: 2, col: 1, span: 3)
+        store.removeColumn(0)
+        let shiftOK = (store.cols == 3 && store.podium?.col == 0
+                       && (store.podium.map { $0.col + $0.span <= store.cols } ?? false))
+        resetBig(); store.podium = PodiumPlacement(row: 2, col: 1, span: 3)
+        store.removeColumn(3)
+        let narrowOK = (store.cols == 3 && store.podium?.span == 2)
+        cases.append(("删列后讲台自动收敛（左侧被删→左移；删到覆盖列→变窄）",
+                      shiftOK && narrowOK))
+
+        // 23) 插行插列时讲台跟着平移
+        resetBig(); store.podium = PodiumPlacement(row: 2, col: 1, span: 2)
+        store.insertRow(at: 0); store.insertColumn(at: 0)
+        cases.append(("插行插列后讲台跟着平移（第3行第3列起）",
+                      store.podium?.row == 3 && store.podium?.col == 2))
+
+        // 24) 框选自动跳过讲台格子
+        resetBig(); store.podium = PodiumPlacement(row: 1, col: 1, span: 2)
+        store.selectRect(from: "0-0", to: "3-3")
+        cases.append(("框选自动跳过讲台格子（16 格选中 14 格）",
+                      store.selection.count == 14
+                      && !store.selection.contains("1-1") && !store.selection.contains("1-2")))
+
+        // 25) Excel 式列字母
+        cases.append(("列字母 A / K / Z / AA",
+                      SeatingStore.columnLabel(0) == "A" && SeatingStore.columnLabel(10) == "K"
+                      && SeatingStore.columnLabel(25) == "Z" && SeatingStore.columnLabel(26) == "AA"))
+
+        print("--- 座位拖拽 / 框选整体移动 / 讲台 / 取消分组自检 ---")
         for (name, ok) in cases { print("\(ok ? "✓" : "✗") \(name)") }
         print(cases.allSatisfy { $0.1 } ? "全部通过 ✓" : "存在失败项 ✗")
     }

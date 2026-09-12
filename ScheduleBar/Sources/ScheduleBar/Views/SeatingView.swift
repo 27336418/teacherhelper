@@ -1,19 +1,20 @@
 import SwiftUI
 import AppKit
 
-// MARK: - 班级学生座位安排 v2（一张完整大表 / Excel 式行列号 + 右键插删 / 点选格子组成小组（同色块）/ ⌘拖整体移动 / 待用栏）
+// MARK: - 班级学生座位安排 v3（Excel 式一张完整大表 / 讲台在表格里面（左右可排座位）/
+//                                框选多格整体移动 / 待用栏 / 性别配色 / 小组色块）
 struct SeatingView: View {
     @EnvironmentObject var store: SeatingStore
     @EnvironmentObject var coordinator: AppCoordinator
 
-    /// 当前拖拽高亮的落点：格子 "r-c" 或 待用栏 "pool"
+    /// 当前拖拽高亮的落点：格子 "r-c" 或 待用栏 "pool" 或 讲台 "podium"
     @State private var highlight: String? = nil
     @State private var dragging: String? = nil
     /// 正在编辑的格子（双击姓名进入编辑态，单击即时选中，互不等待）
     @State private var editingKey: CellKey? = nil
 
     private let cellHeight: CGFloat = 34
-    private let headerW: CGFloat = 20          // 行/列号表头宽度
+    private let headerW: CGFloat = 22          // 行/列号表头宽度
     private let minCellWidth: CGFloat = 34     // 低于此宽才左右滑动
 
     /// 多选锚点（⇧ 单击从此格框选到目标格，Excel 式）
@@ -32,13 +33,7 @@ struct SeatingView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     header
-                    Text("座次表为一张完整表格（默认 8×8，完整显示）。右键行号/列号可在任意位置插删行列；多选与 Excel 一致：单击选中一格，⌘单击加选/减选，⇧单击框选一片；选好后「组成小组」用同一色块标出，悬停立即显示组名；想撤销分组就选中那些格子点「取消分组」（组被移空会自动解散），或右键组内格子「解散小组」；右键组内格子还可改名/整体放入待用栏；⌘拖组内格子整体移动小组（组名跟组走，⌘拖到待用栏=整组放入待用）；拖动姓名对换，拖到「待用栏」即移除。待用栏里：单击选中多个后右键可批量移除；「待用小组」可整体拖回座位表。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
                     poolArea
-
                     gridArea(availWidth: max(geo.size.width - 32, 300))
 
                     if let notice = store.notice {
@@ -48,18 +43,7 @@ struct SeatingView: View {
                             .transition(.opacity)
                     }
 
-                    HStack {
-                        Spacer()
-                        Text("在座 \(store.seatedCount) 人 · 待用 \(store.pool.count) 人 · 共 \(store.totalCount) 人")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(Capsule().fill(Color.primary.opacity(0.06)))
-                            .help("在座人数 + 待用栏人数 = 全班总人数（同一姓名不会同时出现在两处）")
-                        Spacer()
-                    }
-                    .padding(.top, 4)
+                    footer
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -121,7 +105,7 @@ struct SeatingView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .fixedSize()
-                .help("教师视角：讲台在最下方；学生视角：讲台在最上方（整张表 180° 镜像）")
+                .help("教师视角：讲台在最下方；学生视角：整张表 180° 镜像（讲台跟着翻到最上方）")
             }
 
             HStack(spacing: 8) {
@@ -137,7 +121,7 @@ struct SeatingView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .fixedSize()
-                    .help("把点选中的格子组成一个小组（同一色块显示；⌘Z 可撤销）")
+                    .help("把选中的格子组成一个小组（同一色块显示；⌘Z 可撤销）")
                 }
 
                 // 选中的格子里有属于小组的 → 直接给「取消分组」入口（不必再逐格右键）
@@ -152,6 +136,14 @@ struct SeatingView: View {
                 }
 
                 Spacer()
+
+                Menu {
+                    podiumMenuItems
+                } label: {
+                    Label("讲台", systemImage: "rectangle.split.3x1")
+                }
+                .fixedSize()
+                .help("讲台放在表格里面：占一行中连续的几格，左边/右边仍可排座位")
 
                 // 导入下拉：自绘在窗口内，不会被浮层/其他界面挡住
                 ZStack(alignment: .topTrailing) {
@@ -202,6 +194,30 @@ struct SeatingView: View {
         }
     }
 
+    // MARK: 讲台菜单（顶部按钮与讲台右键共用）
+    @ViewBuilder
+    private var podiumMenuItems: some View {
+        if let p = store.podium {
+            Text("讲台：\(p.compactLabel)")
+            Button("居中") { store.centerPodium() }
+            Button("移到最上一行") { store.podiumToEdge(top: true) }
+            Button("移到最下一行") { store.podiumToEdge(top: false) }
+            Divider()
+            Text("讲台宽度（左右各留出座位）")
+            ForEach([2, 3, 4, 5], id: \.self) { s in
+                Button(p.span == s ? "✓ \(s) 格宽" : "\(s) 格宽") { store.setPodiumSpan(s) }
+            }
+            Divider()
+            Button(role: .destructive) {
+                store.removePodium()
+            } label: {
+                Label("移出表格（不显示讲台）", systemImage: "rectangle.slash")
+            }
+        } else {
+            Button("把讲台放进表格") { store.addPodium() }
+        }
+    }
+
     // MARK: 统一「拿起」入口（拖拽）
     //
     // ⚠️ 座位表的**每一处** `.onDrag` 都必须走这里。
@@ -223,36 +239,74 @@ struct SeatingView: View {
                           : (dRow, dCol)
     }
 
-    // MARK: 座位大表（行列号表头 + 完整显示）
+    /// 讲台在「显示坐标」下占的列区间（学生视角整表 180° 镜像）
+    private func podiumDisplayRange(dRow: Int) -> Range<Int>? {
+        guard let p = store.podium else { return nil }
+        let rows = store.rows, cols = store.cols
+        let mRow = store.studentView ? rows - 1 - dRow : dRow
+        guard mRow == p.row else { return nil }
+        let start = store.studentView ? cols - p.col - p.span : p.col
+        let s = max(0, min(start, max(cols - 1, 0)))
+        let e = min(max(s + 1, start + p.span), cols)
+        return s..<e
+    }
+
+    // MARK: 拖动中的落点预览（框选矩形 / 框选整体移动的目标位置）
+    private var dropPreview: Set<CellKey> {
+        guard DragContext.belongs(to: DragPayload.seating),
+              let raw = DragContext.payload,
+              let hl = highlight, hl != "pool", hl != "podium",
+              let dst = SeatingStore.parse(hl) else { return [] }
+        if raw.hasPrefix("marquee|") {
+            guard let a = SeatingStore.parse(String(raw.dropFirst("marquee|".count))) else { return [] }
+            var s: Set<CellKey> = []
+            for r in min(a.0, dst.0)...max(a.0, dst.0) {
+                for c in min(a.1, dst.1)...max(a.1, dst.1) {
+                    let k = SeatingStore.key(r, c)
+                    if !store.isPodium(k) { s.insert(k) }
+                }
+            }
+            return s
+        }
+        if raw.hasPrefix("selblock|") {
+            guard let g = SeatingStore.parse(String(raw.dropFirst("selblock|".count))) else { return [] }
+            let dr = dst.0 - g.0, dc = dst.1 - g.1
+            return Set(store.selection.compactMap { k -> CellKey? in
+                guard let (r, c) = SeatingStore.parse(k) else { return nil }
+                let nr = r + dr, nc = c + dc
+                guard nr >= 0, nr < store.rows, nc >= 0, nc < store.cols else { return nil }
+                return SeatingStore.key(nr, nc)
+            })
+        }
+        return []
+    }
+
+    // MARK: 座位大表（Excel 式：列 A/B/C… + 行 1/2/3…；讲台也在表内）
     @ViewBuilder
     private func gridArea(availWidth: CGFloat) -> some View {
-        let rows = store.rows
         let cols = store.cols
         let fit = (availWidth - headerW - 8) / CGFloat(cols)
         let cw: CGFloat = fit >= minCellWidth ? min(fit, 92) : minCellWidth
         let needsScroll = fit < minCellWidth
 
         let table = VStack(spacing: 0) {
-            // 列号表头
+            // 左上角空格 + 列号 A、B、C…
             HStack(spacing: 0) {
-                Color.clear.frame(width: headerW, height: headerW)
+                Text("")
+                    .frame(width: headerW, height: headerW)
+                    .background(Color.primary.opacity(0.09))
+                    .overlay(Rectangle().stroke(Color.primary.opacity(0.16), lineWidth: 0.5))
                 ForEach(0..<cols, id: \.self) { dc in
                     colHeader(dCol: dc, width: cw)
                 }
             }
-            // 每一行：行号 + 格子
-            ForEach(0..<rows, id: \.self) { dr in
-                HStack(spacing: 0) {
-                    rowHeader(dRow: dr)
-                    ForEach(0..<cols, id: \.self) { dc in
-                        seatCell(dRow: dr, dCol: dc, width: cw)
-                    }
-                }
+            // 每一行：行号 + 格子（讲台所在行中间嵌一块讲台，左右两侧仍是座位）
+            ForEach(0..<store.rows, id: \.self) { dr in
+                tableRow(dRow: dr, width: cw)
             }
         }
 
         VStack(spacing: 10) {
-            if store.studentView { podium }
             if needsScroll {
                 ScrollView(.horizontal, showsIndicators: true) { table }
             } else {
@@ -260,30 +314,59 @@ struct SeatingView: View {
                     .background(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.18), lineWidth: 1))
                     .frame(maxWidth: .infinity, alignment: .center)
             }
-            if !store.studentView { podium }
         }
     }
 
-    /// 列号表头（右键：左/右插入列、删除此列）
+    /// 一行：行号 + 若干座位格；若该行有讲台，则在讲台位置插一块横向合并的讲台
+    @ViewBuilder
+    private func tableRow(dRow: Int, width cw: CGFloat) -> some View {
+        let cols = store.cols
+        if let pr = podiumDisplayRange(dRow: dRow) {
+            HStack(spacing: 0) {
+                rowHeader(dRow: dRow)
+                ForEach(0..<pr.lowerBound, id: \.self) { dc in
+                    seatCell(dRow: dRow, dCol: dc, width: cw)
+                }
+                podiumBlock(width: cw * CGFloat(pr.count), height: cellHeight)
+                ForEach(pr.upperBound..<max(cols, pr.upperBound), id: \.self) { dc in
+                    seatCell(dRow: dRow, dCol: dc, width: cw)
+                }
+            }
+        } else {
+            HStack(spacing: 0) {
+                rowHeader(dRow: dRow)
+                ForEach(0..<cols, id: \.self) { dc in
+                    seatCell(dRow: dRow, dCol: dc, width: cw)
+                }
+            }
+        }
+    }
+
+    /// 列号表头（Excel 式 A/B/C；右键：左/右插入列、删除此列）
     private func colHeader(dCol: Int, width: CGFloat) -> some View {
         let (_, c) = modelRC(dRow: 0, dCol: dCol)
         let mirrored = store.studentView
-        return Text("\(dCol + 1)")
-            .font(.system(size: 9, weight: .medium))
+        let label = SeatingStore.columnLabel(dCol)
+        return Text(label)
+            .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(.secondary)
             .frame(width: max(width, headerW), height: headerW)
-            .background(Color.primary.opacity(0.045))
-            .overlay(Rectangle().stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
+            .background(Color.primary.opacity(0.06))
+            .overlay(Rectangle().stroke(Color.primary.opacity(0.14), lineWidth: 0.5))
             .contentShape(Rectangle())
             .contextMenu {
-                Button(mirrored ? "在此列右侧插入列" : "在此列左侧插入列") { store.insertColumn(at: mirrored ? c + 1 : c) }
-                Button(mirrored ? "在此列左侧插入列" : "在此列右侧插入列") { store.insertColumn(at: mirrored ? c : c + 1) }
+                Button(mirrored ? "在 \(label) 列右侧插入列" : "在 \(label) 列左侧插入列") {
+                    store.insertColumn(at: mirrored ? c + 1 : c)
+                }
+                Button(mirrored ? "在 \(label) 列左侧插入列" : "在 \(label) 列右侧插入列") {
+                    store.insertColumn(at: mirrored ? c : c + 1)
+                }
                 Divider()
                 Button(role: .destructive) { store.removeColumn(c) } label: {
-                    Label("删除此列（学生回待用栏）", systemImage: "minus.circle")
+                    Label("删除 \(label) 列（学生回待用栏）", systemImage: "minus.circle")
                 }
             }
-            .help("列号：右键可在任意位置插入/删除列（Excel 式）")
+            .help("\(label) 列：右键可在任意位置插入/删除列（Excel 式）")
     }
 
     /// 行号表头（右键：上/下插入行、删除此行）
@@ -291,11 +374,11 @@ struct SeatingView: View {
         let (r, _) = modelRC(dRow: dRow, dCol: 0)
         let mirrored = store.studentView
         return Text("\(dRow + 1)")
-            .font(.system(size: 9, weight: .medium))
+            .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(.secondary)
             .frame(width: headerW, height: cellHeight)
-            .background(Color.primary.opacity(0.045))
-            .overlay(Rectangle().stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
+            .background(Color.primary.opacity(0.06))
+            .overlay(Rectangle().stroke(Color.primary.opacity(0.14), lineWidth: 0.5))
             .contentShape(Rectangle())
             .contextMenu {
                 Button(mirrored ? "在此行下方插入行" : "在此行上方插入行") { store.insertRow(at: mirrored ? r + 1 : r) }
@@ -305,19 +388,38 @@ struct SeatingView: View {
                     Label("删除此行（学生回待用栏）", systemImage: "minus.circle")
                 }
             }
-            .help("行号：右键可在任意位置插入/删除行（Excel 式）")
+            .help("第 \(dRow + 1) 行：右键可在任意位置插入/删除行（Excel 式）")
     }
 
-    /// 讲台横条（居中）
-    private var podium: some View {
-        Text("讲　台")
-            .font(.system(size: 13, weight: .semibold))
+    /// 讲台：在表格里面，横跨一格行内的连续几格（左右两侧照样是座位格）
+    private func podiumBlock(width: CGFloat, height: CGFloat) -> some View {
+        let hot = highlight == "podium"
+        let p = store.podium
+        return Text("讲　台")
+            .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(.secondary)
-            .frame(width: 220, height: 34)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.22), lineWidth: 1))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 2)
+            .lineLimit(1)
+            .minimumScaleFactor(0.5)
+            .frame(width: width, height: height)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(hot ? 0.18 : 0.10)))
+            .overlay(RoundedRectangle(cornerRadius: 4)
+                .stroke(hot ? Color.accentColor : Color.primary.opacity(0.30),
+                        lineWidth: hot ? 2 : 1))
+            .contentShape(Rectangle())
+            .onDrag { beginDrag(SeatingStore.payloadPodium) }
+            .onDrop(of: [.text], delegate: SeatDropDelegate(
+                key: "podium",
+                highlight: $highlight,
+                onDrop: { _ in
+                    dragging = nil
+                    if let pp = p {
+                        store.handleDrop(SeatingStore.payloadPodium,
+                                         toKey: SeatingStore.key(pp.row, pp.col + pp.span / 2))
+                    }
+                }
+            ))
+            .contextMenu { podiumMenuItems }
+            .help("讲台（在表格内）：拖动可换行/换列，左右两侧仍可排座位；右键可调宽度 / 居中 / 移出表格")
     }
 
     // MARK: 待用栏（可拖入 / 拖出）
@@ -351,11 +453,11 @@ struct SeatingView: View {
             }
 
             if store.pool.isEmpty && store.poolGroups.isEmpty {
-                Text("暂无待用学生（可把座位上的姓名拖到这里，或右键小组色块「整体放入待用栏」）")
+                Text("暂无待用学生")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 6)
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     // 待用小组（整体）：拖到座位表的小组色块上即可整组放回
@@ -388,7 +490,10 @@ struct SeatingView: View {
         .onDrop(of: [.text], delegate: SeatDropDelegate(
             key: "pool",
             highlight: $highlight,
-            onDrop: { payload in store.handleDrop(payload, toKey: nil) }
+            onDrop: { payload in
+                dragging = nil
+                store.handleDrop(payload, toKey: nil)
+            }
         ))
     }
 
@@ -494,6 +599,22 @@ struct SeatingView: View {
             .help("拖动到座位上即可安排；单击选中（⌘单击多选），选中后右键可批量移除/设性别")
     }
 
+    // MARK: 底部人数统计
+    private var footer: some View {
+        HStack {
+            Spacer()
+            Text("在座 \(store.seatedCount) 人 · 待用 \(store.pool.count) 人 · 共 \(store.totalCount) 人")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color.primary.opacity(0.06)))
+                .help("在座人数 + 待用栏人数 = 全班总人数（同一姓名不会同时出现在两处）")
+            Spacer()
+        }
+        .padding(.top, 4)
+    }
+
     // MARK: 手动添加学生
     private func promptAddStudent() {
         let alert = NSAlert()
@@ -564,7 +685,7 @@ struct SeatingView: View {
         let g = store.gender(of: name)
         let region = store.region(at: modelKey)
         let isSelected = store.selection.contains(modelKey)
-        let isHighlight = highlight == modelKey
+        let isHighlight = highlight == modelKey || dropPreview.contains(modelKey)
         let isDragging = dragging == SeatingStore.payload(cell: modelKey)
 
         // 底色：小组色块优先，其次性别色
@@ -601,20 +722,30 @@ struct SeatingView: View {
         .opacity(isDragging ? 0.45 : 1)
         .contentShape(Rectangle())
         .onDrag {
-            // ⌘ 拖组内格子 = 整组移动；普通拖 = 拖学生
+            // ① ⌘ 拖组内格子 = 整组平移（优先级最高）
             if let rg = region, NSEvent.modifierFlags.contains(.command) {
                 return beginDrag(SeatingStore.payload(region: rg.id, grab: modelKey))
             }
-            guard !name.trimmingCharacters(in: .whitespaces).isEmpty else {
-                return NSItemProvider(object: "" as NSString)
+            // ② 已框选多格，拖其中任意一格 = 整块移动（学生一起走）
+            if store.selection.count > 1, store.selection.contains(modelKey) {
+                return beginDrag(SeatingStore.payload(selection: modelKey))
             }
-            return beginDrag(SeatingStore.payload(cell: modelKey))
+            // ③ 有学生 → 拖学生对换
+            if !name.trimmingCharacters(in: .whitespaces).isEmpty {
+                return beginDrag(SeatingStore.payload(cell: modelKey))
+            }
+            // ④ 空格子起手 → 拖到另一格即框选那一片（Excel 式框选）
+            return beginDrag(SeatingStore.payload(marquee: modelKey))
         }
         .onDrop(of: [.text], delegate: SeatDropDelegate(
             key: modelKey,
             highlight: $highlight,
             onDrop: { payload in
                 dragging = nil
+                if payload.hasPrefix("marquee|"),
+                   let a = SeatingStore.parse(String(payload.dropFirst("marquee|".count))) {
+                    selectAnchor = SeatingStore.key(a.0, a.1)
+                }
                 store.handleDrop(payload, toKey: modelKey)
             }
         ))
@@ -622,7 +753,7 @@ struct SeatingView: View {
             let n = name.trimmingCharacters(in: .whitespaces)
             // 批量操作（选中多格时）
             if store.selection.count > 1, isSelected {
-                Text("已选中 \(store.selection.count) 格")
+                Text("已选中 \(store.selection.count) 格（拖动任一格 = 整块移动）")
                 Button("选中项标为男生") { store.batchSetGender("男") }
                 Button("选中项标为女生") { store.batchSetGender("女") }
                 Button("清除选中项性别") { store.batchSetGender(nil) }
@@ -670,8 +801,9 @@ struct SeatingView: View {
             }
         }
         .instantTooltip(region.map { "小组：\($0.title)" } ?? "", below: dRow == 0)
-        .help(region == nil ? "单击选中，⌘单击加选/减选，⇧单击框选；双击输入姓名；拖动对换；右键批量设置性别/移到待用"
-                          : "⌘拖可整体移动小组；单击选中，⌘/⇧多选；双击输入姓名；右键更多（组名已即时显示在气泡中）")
+        .help(region == nil
+              ? "单击选中·⌘单击加选·⇧单击框选；从空格拖动 = 框选一片；选中多格后拖任一格 = 整块移动；拖动对换；双击输入姓名；右键更多"
+              : "⌘拖可整体移动小组；单击选中，⌘/⇧多选；选中多格后拖任一格 = 整块移动；双击输入姓名；右键更多（组名已即时显示在气泡中）")
     }
 
     /// Excel 式选择：单击单选；⌘单击加/减选；⇧单击从锚点框选一片
@@ -684,7 +816,9 @@ struct SeatingView: View {
             var keys: Set<CellKey> = []
             for rr in min(ar, br)...max(ar, br) {
                 for cc in min(ac, bc)...max(ac, bc) {
-                    keys.insert(SeatingStore.key(rr, cc))
+                    let k = SeatingStore.key(rr, cc)
+                    if store.isPodium(k) { continue }
+                    keys.insert(k)
                 }
             }
             store.selection = keys

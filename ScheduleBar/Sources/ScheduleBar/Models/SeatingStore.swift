@@ -52,6 +52,27 @@ struct PoolGroup: Identifiable, Codable, Equatable {
     var colorIndex: Int? = nil
 }
 
+/// 讲台在表格内的位置：从「第 row 行、第 col 列」起，横向占 span 个格子。
+/// 讲台左右两侧的格子仍是普通座位格（可以正常排座位）。
+struct PodiumPlacement: Codable, Equatable {
+    var row: Int
+    var col: Int
+    var span: Int
+
+    func covers(_ key: CellKey) -> Bool {
+        guard let (r, c) = SeatRegion.parse(key) else { return false }
+        return r == row && c >= col && c < col + span
+    }
+
+    /// 与讲台同一行、但不在讲台范围内的格子（= 讲台左边 / 右边的座位）
+    func isBeside(_ key: CellKey) -> Bool {
+        guard let (r, c) = SeatRegion.parse(key) else { return false }
+        return r == row && !(c >= col && c < col + span)
+    }
+
+    var compactLabel: String { "第\(row + 1)行 第\(col + 1)~\(col + span)列" }
+}
+
 /// v2 持久化结构
 struct SeatingDataV2: Codable {
     var version: Int
@@ -60,6 +81,7 @@ struct SeatingDataV2: Codable {
     var pool: [String]
     var genders: [String: String]
     var poolGroups: [PoolGroup]?     // 可选：旧文件没有此字段
+    var podium: PodiumPlacement?     // 可选：旧文件没有此字段（nil = 表格内不显示讲台）
 }
 
 /// 旧版持久化结构（仅迁移用）
@@ -86,8 +108,8 @@ enum RegionPalette {
 final class SeatingStore: ObservableObject {
     static let shared = SeatingStore()
 
-    /// 新建座次表默认 8×8
-    static let defaultSize = 8
+    /// 新建座次表默认 11×11（Excel 式大表；行列可任意插删）
+    static let defaultSize = 11
 
     /// 整张座位大表（行 × 列；空串 = 空位）
     @Published var grid: [[String]] { didSet { scheduleSave() } }
@@ -99,7 +121,9 @@ final class SeatingStore: ObservableObject {
     @Published var poolGroups: [PoolGroup] = [] { didSet { scheduleSave() } }
     /// 姓名 → 性别（"男" / "女"）
     @Published var genders: [String: String] { didSet { scheduleSave() } }
-    /// 点选中的格子（用于组成小组）
+    /// 讲台在**表格内**的位置（nil = 不显示讲台）。讲台左右两侧仍是普通座位格。
+    @Published var podium: PodiumPlacement? = nil { didSet { scheduleSave() } }
+    /// 点选中的格子（用于组成小组 / 框选整体移动）
     @Published var selection: Set<CellKey> = []
     /// 操作提示（移动失败等），界面短暂显示
     @Published var notice: String? = nil
@@ -109,6 +133,10 @@ final class SeatingStore: ObservableObject {
     }
 
     private static let viewKey = "seating.studentView"
+    /// 当前数据格式版本。v3 = 表格默认 11×11 + 讲台放进表格。
+    /// 一次性初始化**以数据文件里的 version 为准**（比 UserDefaults 开关可靠：
+    /// 开关一旦被写脏就再也回不去，而 version 随文件走，且用户后续的调整会被尊重）。
+    static let dataVersion = 3
 
     private let saver = Debouncer()
     private var loading = false
@@ -119,13 +147,17 @@ final class SeatingStore: ObservableObject {
     init() {
         Self.seatLog("座位：SeatingStore 初始化开始")
         studentView = UserDefaults.standard.bool(forKey: Self.viewKey)
+        /// 是否需要一次性初始化（表格至少 11×11 + 讲台放进表格）：旧数据文件 / 首次运行
+        var needsBootstrap = true
         if let d = Self.loadV2() {
             grid = d.grid
             regions = d.regions
             pool = d.pool
             poolGroups = d.poolGroups ?? []
             genders = d.genders
-            Self.seatLog("座位：已加载 seating.json v2（\(d.grid.count)×\(d.grid.first?.count ?? 0)，分组 \(d.regions.count)、待用 \(d.pool.count)、待用小组 \(poolGroups.count)）")
+            podium = d.podium
+            needsBootstrap = d.version < Self.dataVersion
+            Self.seatLog("座位：已加载 seating.json v\(d.version)（\(d.grid.count)×\(d.grid.first?.count ?? 0)，分组 \(d.regions.count)、待用 \(d.pool.count)、待用小组 \(poolGroups.count)、讲台 \(podium?.compactLabel ?? "无")）")
         } else if let old = Self.loadOld() {
             // 旧版「多小组」数据 → 自动迁移：所有小组从左到右铺进一张大表，每组一个区域
             let migrated = Self.migrate(old: old)
@@ -133,15 +165,36 @@ final class SeatingStore: ObservableObject {
             regions = migrated.regions
             pool = old.pool
             genders = old.genders
+            podium = nil
             Self.seatLog("座位：旧数据已迁移（\(old.groups.count) 组 → 表 \(grid.count)×\(grid.first?.count ?? 0)，分组 \(regions.count)）")
         } else {
             grid = Self.emptyGrid(rows: Self.defaultSize, cols: Self.defaultSize)
             regions = []
             pool = []
             genders = [:]
-            Self.seatLog("座位：未找到 seating.json，使用默认 8×8 空表")
+            podium = nil
+            Self.seatLog("座位：未找到 seating.json，使用默认 \(Self.defaultSize)×\(Self.defaultSize) 空表")
         }
+
+        // ── 一次性初始化：表格撑到至少 11×11、讲台放进表格 ──
+        // 只对「数据文件版本 < 3」跑，跑完 save() 把版本写成 3；
+        // 之后用户自己删行/移出讲台都不会被重新塞回来。
+        var boot: [String] = []
+        if needsBootstrap {
+            let oldSize = (rows, cols)
+            if ensureAtLeast(rows: Self.defaultSize, cols: Self.defaultSize) {
+                boot.append("表格 \(oldSize.0)×\(oldSize.1) → \(rows)×\(cols)")
+            }
+            if podium == nil, let a = findDefaultPodiumAnchor(span: 3) {
+                loading = true
+                podium = PodiumPlacement(row: a.0, col: a.1, span: 3)
+                loading = false
+                boot.append("讲台放入表格（\(podium?.compactLabel ?? "-")）")
+            }
+        }
+        if !boot.isEmpty { seatLog("座位：一次性初始化 —— " + boot.joined(separator: "；")) }
         normalize()
+        if needsBootstrap { save() }   // 无论有没有实际改动都要落盘（把 version 提到 3）
     }
 
     static func emptyGrid(rows: Int, cols: Int) -> [[String]] {
@@ -150,6 +203,18 @@ final class SeatingStore: ObservableObject {
 
     static func key(_ r: Int, _ c: Int) -> CellKey { "\(r)-\(c)" }
     static func parse(_ key: CellKey) -> (Int, Int)? { SeatRegion.parse(key) }
+
+    /// Excel 式列号：0→A、25→Z、26→AA…
+    static func columnLabel(_ index: Int) -> String {
+        var n = max(index, 0)
+        var s = ""
+        repeat {
+            let r = n % 26
+            s = String(UnicodeScalar(UInt8(65 + r))) + s
+            n = n / 26 - 1
+        } while n >= 0
+        return s
+    }
 
     // MARK: - 格子读写
 
@@ -160,6 +225,7 @@ final class SeatingStore: ObservableObject {
 
     func setCell(_ key: CellKey, _ name: String) {
         guard let (r, c) = Self.parse(key), grid.indices.contains(r), grid[r].indices.contains(c) else { return }
+        guard !isPodium(key) else { seatLog("座位：\(key) 是讲台位置，不能写学生"); return }
         grid[r][c] = name
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !n.isEmpty { removeFromPool(matching: n) }
@@ -180,6 +246,7 @@ final class SeatingStore: ObservableObject {
             }
             return rg
         }
+        if var p = podium, p.row >= i { p.row += 1; podium = p }   // 讲台随行号下移
         loading = false
     }
 
@@ -196,6 +263,7 @@ final class SeatingStore: ObservableObject {
             }
             return rg
         }
+        if var p = podium, p.col >= i { p.col += 1; podium = clampPodium(p) }   // 讲台随列号右移
         loading = false
     }
 
@@ -218,9 +286,25 @@ final class SeatingStore: ObservableObject {
             rg.cells = kept.sorted()
             return rg
         }
+        // 讲台：所在行被删 → 自动另找一块空行；否则整体上移一行
+        var podiumNote = ""
+        if let p = podium {
+            if p.row == index {
+                podium = nil
+                if let a = findDefaultPodiumAnchor(span: p.span) {
+                    podium = PodiumPlacement(row: a.0, col: a.1, span: p.span)
+                    podiumNote = "，讲台自动改放到 \(podium?.compactLabel ?? "-")"
+                } else {
+                    podiumNote = "，讲台因原行被删且无空行可放 → 已移出表格"
+                }
+            } else if p.row > index {
+                podium = PodiumPlacement(row: p.row - 1, col: p.col, span: p.span)
+            }
+        }
         loading = false
         pool.append(contentsOf: removed)
         registerUndo("删除第\(index + 1)行", snap)
+        seatLog("座位：删除第\(index + 1)行（\(removed.count) 人回待用栏）\(podiumNote)")
     }
 
     /// 删除第 index 列（学生回到待用栏；⌘Z 可撤销）
@@ -246,9 +330,257 @@ final class SeatingStore: ObservableObject {
             rg.cells = kept.sorted()
             return rg
         }
+        // 讲台：删到讲台覆盖的列 → 变窄一格（不足 2 格则移出）；否则左侧被删则左移
+        var podiumNote = ""
+        if let p = podium {
+            if index >= p.col, index < p.col + p.span {
+                let narrowed = p.span - 1
+                if narrowed < 2 {
+                    podium = nil
+                    podiumNote = "，讲台因宽度不足 2 格已移出表格"
+                } else {
+                    podium = clampPodium(PodiumPlacement(row: p.row, col: p.col, span: narrowed))
+                    podiumNote = "，讲台变窄为 \(narrowed) 格"
+                }
+            } else if index < p.col {
+                podium = clampPodium(PodiumPlacement(row: p.row, col: p.col - 1, span: p.span))
+            }
+        }
         loading = false
         pool.append(contentsOf: removed)
         registerUndo("删除第\(index + 1)列", snap)
+        seatLog("座位：删除第\(index + 1)列（\(removed.count) 人回待用栏）\(podiumNote)")
+    }
+
+    // MARK: - 讲台（放在表格里面；讲台左边 / 右边的格子照常排座位）
+
+    /// 讲台覆盖的所有格子（用于禁止放学生、禁止小组压上去）
+    var podiumCells: Set<CellKey> {
+        guard let p = podium else { return [] }
+        var s: Set<CellKey> = []
+        for c in p.col..<(p.col + p.span)
+        where grid.indices.contains(p.row) && grid[p.row].indices.contains(c) {
+            s.insert(Self.key(p.row, c))
+        }
+        return s
+    }
+
+    func isPodium(_ key: CellKey) -> Bool { podium?.covers(key) ?? false }
+
+    /// 把讲台位置收进表格范围内
+    private func clampPodium(_ p: PodiumPlacement) -> PodiumPlacement {
+        var q = p
+        q.span = min(max(q.span, 2), max(cols, 2))
+        q.col = min(max(q.col, 0), max(cols - q.span, 0))
+        q.row = min(max(q.row, 0), rows - 1)
+        return q
+    }
+
+    /// 该位置被学生占着 → 讲台不能放过去（避免把学生压没）
+    private func blockedUnderPodium(_ p: PodiumPlacement) -> [CellKey] {
+        (p.col..<(p.col + p.span)).compactMap { c in
+            let k = Self.key(p.row, c)
+            let n = name(at: k) ?? ""
+            return n.trimmingCharacters(in: .whitespaces).isEmpty ? nil : k
+        }
+    }
+
+    /// 统一的讲台落位入口：先校验（压到学生就拒绝），再写入 + 登记撤销
+    @discardableResult
+    private func applyPodium(_ p: PodiumPlacement, label: String) -> Bool {
+        let q = clampPodium(p)
+        let blocked = blockedUnderPodium(q)
+        guard blocked.isEmpty else {
+            setNotice("讲台放不下：\(q.compactLabel) 有 \(blocked.count) 个座位已有学生，请先把学生移开")
+            seatLog("座位：\(label)失败 —— 目标 \(q.compactLabel) 有学生 \(blocked.joined(separator: "、"))")
+            return false
+        }
+        let snap = snapshot()
+        loading = true
+        podium = q
+        loading = false
+        registerUndo(label, snap)
+        seatLog("座位：\(label) → \(q.compactLabel)（左右两侧仍可排座位）")
+        return true
+    }
+
+    /// 拖动讲台：落点格作为讲台中心
+    @discardableResult
+    func movePodium(to key: CellKey) -> Bool {
+        guard let (r, c) = Self.parse(key) else { return false }
+        let span = podium?.span ?? 3
+        let newCol = min(max(c - span / 2, 0), max(cols - span, 0))
+        let sameRow = podium?.row == min(max(r, 0), rows - 1)
+        let sameCol = podium?.col == newCol
+        guard !(sameRow && sameCol) else { return false }
+        return applyPodium(PodiumPlacement(row: r, col: newCol, span: span), label: "拖动讲台")
+    }
+
+    /// 讲台居中（同一行左右各留尽可能相等的座位）
+    func centerPodium() {
+        guard let p = podium else { return }
+        let c = max((cols - p.span) / 2, 0)
+        guard c != p.col else { return }
+        _ = applyPodium(PodiumPlacement(row: p.row, col: c, span: p.span), label: "讲台居中")
+    }
+
+    /// 讲台移到最上一行 / 最下一行
+    func podiumToEdge(top: Bool) {
+        guard let p = podium else { return }
+        _ = applyPodium(PodiumPlacement(row: top ? 0 : rows - 1, col: p.col, span: p.span),
+                        label: top ? "讲台移到最上一行" : "讲台移到最下一行")
+    }
+
+    /// 调整讲台宽度（占几格）
+    func setPodiumSpan(_ span: Int) {
+        guard let p = podium else { return }
+        _ = applyPodium(PodiumPlacement(row: p.row, col: p.col, span: span), label: "讲台宽度改为 \(span) 格")
+    }
+
+    /// 从表格里移除讲台（数据不动）
+    func removePodium() {
+        guard let p = podium else { return }
+        let snap = snapshot()
+        loading = true
+        podium = nil
+        loading = false
+        registerUndo("移出讲台", snap)
+        seatLog("座位：讲台已移出表格（原 \(p.compactLabel)）")
+    }
+
+    /// 把讲台放进表格：优先最下面一行、居中；放不下就往上找一整条空行
+    @discardableResult
+    func addPodium(span: Int = 3) -> Bool {
+        guard podium == nil else { return false }
+        guard let a = findDefaultPodiumAnchor(span: span) else {
+            setNotice("表格里找不到连续 \(span) 格的空行放讲台，请先腾出空位")
+            seatLog("座位：放入讲台失败 —— 没有连续 \(span) 格的空行")
+            return false
+        }
+        let snap = snapshot()
+        loading = true
+        podium = PodiumPlacement(row: a.0, col: a.1, span: min(span, cols))
+        loading = false
+        registerUndo("放入讲台", snap)
+        seatLog("座位：讲台已放入表格 \(podium?.compactLabel ?? "-")")
+        return true
+    }
+
+    /// 从最后一行往上找一条「连续 span 格全空」的横带，优先居中
+    private func findDefaultPodiumAnchor(span: Int) -> (Int, Int)? {
+        let w = min(max(span, 2), cols)
+        var r = rows - 1
+        while r >= 0 {
+            let center = max((cols - w) / 2, 0)
+            var order: [Int] = [center]
+            if cols - w >= 0 {
+                for c in 0...(cols - w) where c != center { order.append(c) }
+            }
+            for c in order where isBlankSeatRun(row: r, col: c, width: w) { return (r, c) }
+            r -= 1
+        }
+        return nil
+    }
+
+    /// 该行这一段是否整段可用（空格子 + 不属于任何小组 + 不与讲台重叠）
+    private func isBlankSeatRun(row: Int, col: Int, width: Int) -> Bool {
+        guard row >= 0, row < rows, col >= 0, col + width <= cols else { return false }
+        let occupied = Set(regions.flatMap { $0.cells })
+        for c in col..<(col + width) {
+            let k = Self.key(row, c)
+            if occupied.contains(k) { return false }
+            if isPodium(k) { return false }
+            if !grid[row][c].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
+        }
+        return true
+    }
+
+    // MARK: - 框选（Excel 式矩形选择）与「框选整体移动」
+
+    /// 选中以 a、b 为对角的矩形区域（讲台格子自动跳过）
+    func selectRect(from a: CellKey, to b: CellKey) {
+        guard let (ar, ac) = Self.parse(a), let (br, bc) = Self.parse(b) else { return }
+        var keys: Set<CellKey> = []
+        for r in min(ar, br)...max(ar, br) {
+            for c in min(ac, bc)...max(ac, bc) {
+                guard grid.indices.contains(r), grid[r].indices.contains(c) else { continue }
+                let k = Self.key(r, c)
+                if isPodium(k) { continue }
+                keys.insert(k)
+            }
+        }
+        selection = keys
+        seatLog("座位：框选 \(a) → \(b)，选中 \(keys.count) 格")
+    }
+
+    /// 框选整体移动：抓着 grab 格，把**整个选区**按同样的偏移搬到 target；
+    /// 学生一起走；完全落在选区里的小组连色块一起平移。
+    /// 越界 / 撞讲台 / 目标格已有人 / 目标格属于别的小组 → 拒绝并提示。
+    @discardableResult
+    func moveSelection(grab: CellKey, to target: CellKey) -> Bool {
+        guard selection.count > 1, selection.contains(grab),
+              let g = Self.parse(grab), let t = Self.parse(target) else { return false }
+        let dr = t.0 - g.0, dc = t.1 - g.1
+        guard dr != 0 || dc != 0 else { return false }
+        let moved = Set(selection)
+
+        // ① 每个源格都要算出一个合法的目标格
+        var dest: [CellKey: CellKey] = [:]
+        for k in moved {
+            guard let (r, c) = Self.parse(k) else { continue }
+            let nr = r + dr, nc = c + dc
+            guard grid.indices.contains(nr), grid[nr].indices.contains(nc) else {
+                setNotice("整体移动失败：会移出表格边界")
+                seatLog("座位：框选整体移动失败 —— 会移出表格边界")
+                return false
+            }
+            if isPodium(Self.key(nr, nc)) {
+                setNotice("整体移动失败：目标位置是讲台")
+                seatLog("座位：框选整体移动失败 —— 撞上讲台")
+                return false
+            }
+            dest[k] = Self.key(nr, nc)
+        }
+
+        // ② 选区里「整组都在」的小组才跟着平移；只落进一小部分的小组不动 → 目标格不能压到它们
+        let movingRegionIDs = Set(regions.filter {
+            !$0.cells.isEmpty && $0.cells.allSatisfy { moved.contains($0) }
+        }.map(\.id))
+        let outside = Set(dest.values).subtracting(moved)
+        for k in outside {
+            let n = name(at: k) ?? ""
+            if !n.trimmingCharacters(in: .whitespaces).isEmpty {
+                setNotice("整体移动失败：\(k) 已有学生「\(n)」，请先移到空位")
+                seatLog("座位：框选整体移动失败 —— 目标 \(k) 已有学生「\(n)」")
+                return false
+            }
+            if let rg = region(at: k), !movingRegionIDs.contains(rg.id) {
+                setNotice("整体移动失败：目标位置与小组「\(rg.title)」重叠")
+                seatLog("座位：框选整体移动失败 —— 目标 \(k) 与小组「\(rg.title)」重叠")
+                return false
+            }
+        }
+
+        let snap = snapshot()
+        loading = true
+        var carried: [(CellKey, String)] = []
+        for k in moved {
+            let n = name(at: k) ?? ""
+            if !n.trimmingCharacters(in: .whitespaces).isEmpty { carried.append((k, n)) }
+            setCellRaw(k, "")
+        }
+        for (k, n) in carried { if let nk = dest[k] { setCellRaw(nk, n) } }
+        var movedTitles: [String] = []
+        for i in regions.indices where movingRegionIDs.contains(regions[i].id) {
+            movedTitles.append(regions[i].title)
+            regions[i].cells = regions[i].cells.compactMap { dest[$0] }.sorted()
+        }
+        loading = false
+        selection = Set(dest.values)
+        seatLog("座位：框选整体移动 \(moved.count) 格（下移 \(dr) 行、右移 \(dc) 列），携带 \(carried.count) 名学生"
+                + (movedTitles.isEmpty ? "" : "；小组「\(movedTitles.joined(separator: "、"))」连色块一起移动"))
+        registerUndo("框选整体移动", snap)
+        return true
     }
 
     // MARK: - 分组（框选 → 色块区域）
@@ -361,12 +693,14 @@ final class SeatingStore: ObservableObject {
                 return false
             }
         }
-        let others = Set(regions.filter { $0.id != id }.flatMap { $0.cells })
+        let others = Set(regions.filter { $0.id != id }.flatMap { $0.cells }).union(podiumCells)
         for (r, c) in member {
             let k = Self.key(r + dr, c + dc)
             guard !others.contains(k) else {
-                setNotice("整体移动失败：与「\(region(at: k)?.title ?? "其他小组")」重叠")
-                seatLog("座位：「\(rg.title)」整体移动失败：与其他小组重叠")
+                let hitPodium = isPodium(k)
+                setNotice(hitPodium ? "整体移动失败：目标位置是讲台"
+                                    : "整体移动失败：与「\(region(at: k)?.title ?? "其他小组")」重叠")
+                seatLog("座位：「\(rg.title)」整体移动失败：\(hitPodium ? "撞上讲台" : "与其他小组重叠")")
                 return false
             }
             newCells.append(k)
@@ -583,6 +917,11 @@ final class SeatingStore: ObservableObject {
     func poolGroupToRegion(groupID: UUID, anchor key: CellKey) {
         guard let gi = poolGroups.firstIndex(where: { $0.id == groupID }) else { return }
         guard let (ar, ac) = Self.parse(key) else { return }
+        guard !isPodium(key) else {
+            setNotice("讲台位置不能放学生")
+            seatLog("座位：待用小组落到讲台格 \(key) → 拒绝")
+            return
+        }
         let pg = poolGroups[gi]
 
         // 1) 落在已有小组上：沿用该区域
@@ -680,13 +1019,15 @@ final class SeatingStore: ObservableObject {
         }
     }
 
-    /// 该矩形是否完全空白（既不属于任何小组，也没有其他学生）
+    /// 该矩形是否完全空白（不属于任何小组、没有其他学生、也不压在讲台上）
     private func isBlankRect(row r0: Int, col c0: Int, height: Int, width: Int) -> Bool {
         guard r0 >= 0, c0 >= 0, r0 + height <= rows, c0 + width <= cols else { return false }
         let occupied = Set(regions.flatMap { $0.cells })
         for r in r0..<(r0 + height) {
             for c in c0..<(c0 + width) {
-                if occupied.contains(Self.key(r, c)) { return false }
+                let k = Self.key(r, c)
+                if occupied.contains(k) { return false }
+                if isPodium(k) { return false }
                 if !grid[r][c].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
             }
         }
@@ -695,6 +1036,14 @@ final class SeatingStore: ObservableObject {
 
     /// 需要时补齐行列（只在右侧补列、在底部补行，已有坐标不受影响）
     private func ensureCapacity(rows needRows: Int, cols needCols: Int) {
+        _ = ensureAtLeast(rows: needRows, cols: needCols)
+    }
+
+    /// 把表格撑到「至少 needRows × needCols」（只增不减，已有坐标不受影响）
+    /// - Returns: 是否真的变大了
+    @discardableResult
+    private func ensureAtLeast(rows needRows: Int, cols needCols: Int) -> Bool {
+        var changed = false
         if needCols > cols {
             loading = true
             let add = needCols - cols
@@ -702,12 +1051,15 @@ final class SeatingStore: ObservableObject {
                 grid[r].append(contentsOf: Array(repeating: "", count: add))
             }
             loading = false
+            changed = true
         }
         while rows < needRows {
             loading = true
             grid.append(Array(repeating: "", count: cols))
             loading = false
+            changed = true
         }
+        return changed
     }
 
     /// 待用小组拆成个人（每个学生单独一条，便于逐个安排）
@@ -758,7 +1110,7 @@ final class SeatingStore: ObservableObject {
 
     func gender(of name: String) -> String? { genders[name] }
 
-    /// 清空全部座位数据：保留一张空 8×8 大表（便于直接双击填写），
+    /// 清空全部座位数据：保留一张空 11×11 大表（便于直接双击填写）+ 表格内默认讲台，
     /// 同时清空分组色块 / 待用栏 / 待用小组 / 性别标注。
     func clearAll() {
         loading = true
@@ -768,9 +1120,13 @@ final class SeatingStore: ObservableObject {
         poolGroups = []
         genders = [:]
         selection = []
+        podium = nil
+        if let a = findDefaultPodiumAnchor(span: 3) {
+            podium = PodiumPlacement(row: a.0, col: a.1, span: 3)
+        }
         loading = false
         save()
-        seatLog("座位：已清空全部数据（保留 8×8 空表结构）")
+        seatLog("座位：已清空全部数据（保留 \(SeatingStore.defaultSize)×\(SeatingStore.defaultSize) 空表 + 讲台 \(podium?.compactLabel ?? "无")）")
     }
 
     func setGender(_ name: String, _ g: String?) {
@@ -781,13 +1137,29 @@ final class SeatingStore: ObservableObject {
 
     // MARK: - 拖拽落点处理
 
-    /// 载荷：cell|r-c（拖学生） / pool|index / poolgroup|<uuid>（拖待用小组） / region|<uuid>|r-c（⌘ 拖整组）
+    /// 载荷：
+    /// - `cell|r-c`            拖学生对换（单格）
+    /// - `selblock|r-c`        框选多格后整块移动（r-c = 抓着的那一格）
+    /// - `marquee|r-c`         从空格子起手拖到另一格 = 矩形框选
+    /// - `pool|index`          待用栏里的学生
+    /// - `poolgroup|<uuid>`    待用小组整体
+    /// - `region|<uuid>|r-c`   ⌘ 拖整组
+    /// - `podium`              讲台（在表格内，可拖着换行换列）
     static func payload(cell key: CellKey) -> String { "cell|\(key)" }
+    static func payload(selection grab: CellKey) -> String { "selblock|\(grab)" }
+    static func payload(marquee anchor: CellKey) -> String { "marquee|\(anchor)" }
     static func payload(pool index: Int) -> String { "pool|\(index)" }
     static func payload(poolGroup id: UUID) -> String { "poolgroup|\(id.uuidString)" }
     static func payload(region id: UUID, grab key: CellKey) -> String { "region|\(id.uuidString)|\(key)" }
+    static let payloadPodium = "podium"
 
     func handleDrop(_ payload: String, toKey dst: CellKey?) {
+        // 讲台（单 token，没有 "|"）
+        if payload == Self.payloadPodium {
+            guard let dstKey = dst else { return }
+            _ = movePodium(to: dstKey)
+            return
+        }
         let parts = payload.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
         guard parts.count >= 2 else { return }
         let snap = snapshot()
@@ -805,6 +1177,11 @@ final class SeatingStore: ObservableObject {
                   let moving = name(at: src),
                   !moving.trimmingCharacters(in: .whitespaces).isEmpty else { return }
             if let dst {
+                if isPodium(dst) {
+                    setNotice("讲台位置不能放学生")
+                    seatLog("座位：拖学生到讲台格 \(dst) → 拒绝")
+                    return
+                }
                 let displaced = name(at: dst) ?? ""
                 setCellRaw(src, displaced)
                 setCellRaw(dst, moving)
@@ -818,6 +1195,11 @@ final class SeatingStore: ObservableObject {
             guard let idx = Int(parts[1]), pool.indices.contains(idx) else { return }
             let moving = pool[idx]
             if let dst {
+                if isPodium(dst) {
+                    setNotice("讲台位置不能放学生")
+                    seatLog("座位：从待用栏拖到讲台格 \(dst) → 拒绝")
+                    return
+                }
                 let displaced = name(at: dst) ?? ""
                 pool.remove(at: idx)
                 removeNameFromGrid(moving)
@@ -843,6 +1225,20 @@ final class SeatingStore: ObservableObject {
                 // 拖到待用栏（无落点格）→ 小组整体放入待用栏
                 regionToPool(id: rid)
             }
+        case "selblock":
+            guard parts.count >= 2 else { return }
+            if let dstKey = dst {
+                _ = moveSelection(grab: parts[1], to: dstKey)
+            } else {
+                // 框选整体拖到待用栏 → 选区里的学生全部撤下待用
+                batchToPool()
+            }
+        case "marquee":
+            guard parts.count >= 2, let dstKey = dst else { return }
+            selectRect(from: parts[1], to: dstKey)
+        case "podium":
+            guard let dstKey = dst else { return }
+            _ = movePodium(to: dstKey)
         default:
             break
         }
@@ -851,6 +1247,7 @@ final class SeatingStore: ObservableObject {
     /// 只写格子，不动待用栏（对换等内部操作使用）
     private func setCellRaw(_ key: CellKey, _ name: String) {
         guard let (r, c) = Self.parse(key), grid.indices.contains(r), grid[r].indices.contains(c) else { return }
+        guard !isPodium(key) else { return }   // 讲台格子永远不写学生
         grid[r][c] = name
     }
 
@@ -894,8 +1291,16 @@ final class SeatingStore: ObservableObject {
         regions = newRegions
         pool = cleanPool
         genders = newGenders
+        podium = nil
         loading = false
+        // 导入后把讲台放回表格（只挑一整条空行，绝不会压到刚导入的学生）
+        if let a = findDefaultPodiumAnchor(span: 3) {
+            loading = true
+            podium = PodiumPlacement(row: a.0, col: a.1, span: 3)
+            loading = false
+        }
         save()
+        seatLog("座位：导入完成 → 表 \(rows)×\(cols)，讲台 \(podium?.compactLabel ?? "无")")
         UndoService.shared.register("导入座位安排") { [weak self] in
             guard let self else { return }
             self.restore(snap)
@@ -963,7 +1368,18 @@ final class SeatingStore: ObservableObject {
             loading = false
             changed = true
         }
-        seatLog("座位自检：待用 \(cleanPool.count) 人 / 在座 \(seatedCount) 人，需修正=\(changed)")
+        // 讲台越界清理（行列被删过等历史原因）
+        if let p = podium {
+            let q = clampPodium(p)
+            if q != p {
+                loading = true
+                podium = q
+                loading = false
+                changed = true
+                seatLog("座位自检：讲台位置已收进表格范围（\(p.compactLabel) → \(q.compactLabel)）")
+            }
+        }
+        seatLog("座位自检：待用 \(cleanPool.count) 人 / 在座 \(seatedCount) 人 / 讲台 \(podium?.compactLabel ?? "无")，需修正=\(changed)")
         if changed {
             save()
             seatLog("座位自检：已自动清理重复姓名 / 无效区域")
@@ -972,14 +1388,16 @@ final class SeatingStore: ObservableObject {
 
     // MARK: - 撤销快照
 
-    private typealias Snap = (grid: [[String]], regions: [SeatRegion], pool: [String], poolGroups: [PoolGroup])
-    private func snapshot() -> Snap { (grid, regions, pool, poolGroups) }
+    private typealias Snap = (grid: [[String]], regions: [SeatRegion], pool: [String],
+                              poolGroups: [PoolGroup], podium: PodiumPlacement?)
+    private func snapshot() -> Snap { (grid, regions, pool, poolGroups, podium) }
     private func restore(_ s: Snap) {
         loading = true
         grid = s.grid
         regions = s.regions
         pool = s.pool
         poolGroups = s.poolGroups
+        podium = s.podium
         loading = false
         save()
     }
@@ -1006,8 +1424,8 @@ final class SeatingStore: ObservableObject {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
             let data = try JSONEncoder().encode(
-                SeatingDataV2(version: 2, grid: grid, regions: regions, pool: pool,
-                              genders: genders, poolGroups: poolGroups)
+                SeatingDataV2(version: Self.dataVersion, grid: grid, regions: regions, pool: pool,
+                              genders: genders, poolGroups: poolGroups, podium: podium)
             )
             try data.write(to: url, options: .atomic)
         } catch {
