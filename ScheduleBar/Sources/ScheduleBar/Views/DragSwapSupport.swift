@@ -68,6 +68,9 @@ enum DragContext {
     /// 落点是否属于本模块
     static func belongs(to m: String) -> Bool { module == m }
 
+    /// 是否正有一次已拿起、尚未落地的拖动
+    static var isDragging: Bool { module != nil }
+
     /// 落点处理完毕（不论有没有真的换位）→ 清状态，并让面板窗口重新成为 key
     static func finish(reason: String) {
         module = nil
@@ -79,6 +82,12 @@ enum DragContext {
     static func cancel() {
         module = nil
         payload = nil
+    }
+
+    /// 落点不属于本模块 → 原样拒绝。**只记日志，绝不改任何状态**
+    /// （尤其不能 `finish`：那会把同一次拖拽的来源抹掉，下一拖也跟着失效）。
+    static func reject(_ table: String) {
+        DragSessionGuard.log("落点拒绝：落点=\(table) 当前拖动=\(module ?? "无")")
     }
 }
 
@@ -93,21 +102,32 @@ struct ScheduleCellSwapDelegate: DropDelegate {
     /// 拖动经过时的视觉反馈（默认不做任何事，学生座位用高亮，课表用系统拖影）
     var onEnter: () -> Void = {}
 
-    func validateDrop(info: DropInfo) -> Bool { true }
+    /// 本落点是否该管家下的这次拖拽（不是本模块 → 一概不理，光标也显示为「不可放」）
+    private var isOurs: Bool { DragContext.belongs(to: table) }
 
-    func dropEntered(info: DropInfo) { onEnter() }
+    func validateDrop(info: DropInfo) -> Bool { isOurs }
+
+    func dropEntered(info: DropInfo) {
+        guard isOurs else { return }
+        onEnter()
+    }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard isOurs else { return nil }
         onEnter()
         return DropProposal(operation: .move)
     }
 
     /// 唯一提交点：**同步**对换一次（不能放进 loadObject 的异步回调，
     /// 否则 macOS 26 上拖拽会话不复位，后续就拖不动了）。
+    ///
+    /// ⚠️ 不是本模块的拖拽必须「原样拒绝、什么都不清」：
+    ///   缓存页（ZStack 里 opacity=0 的已访问页面）的 `.onDrop` 依然会被 AppKit 当成
+    ///   拖拽落点，落点落错页时如果顺手 `DragContext.finish`，同一次拖拽的来源就没了——
+    ///   表现就是「拖了没换」＋「下一拖也随之失效」。（座位表代理一直是这么写的，所以最稳）
     func performDrop(info: DropInfo) -> Bool {
-        if DragContext.belongs(to: table) {
-            onPerform()
-        }
+        guard DragContext.belongs(to: table) else { DragContext.reject(table); return false }
+        onPerform()
         onFinish()
         DragContext.finish(reason: table)
         return true

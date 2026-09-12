@@ -51,24 +51,28 @@ struct ClassroomSwapDelegate: DropDelegate {
     let index: Int
     let store: ClassroomStore
 
-    func validateDrop(info: DropInfo) -> Bool { true }
+    private var isOurs: Bool { DragContext.belongs(to: DragPayload.classroomCell) }
+
+    func validateDrop(info: DropInfo) -> Bool { isOurs }
 
     func dropEntered(info: DropInfo) {
+        guard isOurs else { return }
         store.setDropTarget(floorID: floorID, rowID: rowID, index: index)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard isOurs else { return nil }
         store.setDropTarget(floorID: floorID, rowID: rowID, index: index)
         return DropProposal(operation: .move)
     }
 
     /// 唯一提交点：**同步**对换一次 → 登记撤销、清理状态。
     /// （不能放进 loadObject 的异步回调：macOS 26 上拖拽会话会因此不复位，之后再也拖不动）
+    /// 不是本模块的拖拽原样拒绝，什么都不清 —— 详见 DragSwapSupport.swift 的说明。
     func performDrop(info: DropInfo) -> Bool {
+        guard isOurs else { DragContext.reject(DragPayload.classroomCell); return false }
         store.clearDropTarget()
-        if DragContext.belongs(to: DragPayload.classroomCell) {
-            store.swapTo(floorID: floorID, rowID: rowID, index: index)
-        }
+        store.swapTo(floorID: floorID, rowID: rowID, index: index)
         store.finishDrag()
         DragContext.finish(reason: "教室")
         return true

@@ -10,13 +10,19 @@ struct OfficeSeatSwapDelegate: DropDelegate {
     let col: Int
     let store: OfficeLayoutStore
 
-    func validateDrop(info: DropInfo) -> Bool { true }
+    /// 本落点是否该管家下的这次拖拽（不是工位模块 → 一概不理，
+    /// 尤其不能顺手清掉 DragContext，否则「拖了没换」之后下一拖也没有来源）
+    private var isOurs: Bool { DragContext.belongs(to: DragPayload.officeSeat) }
+
+    func validateDrop(info: DropInfo) -> Bool { isOurs }
 
     func dropEntered(info: DropInfo) {
+        guard isOurs else { return }
         store.setDropHighlight(officeID: officeID, row: row, col: col)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard isOurs else { return nil }
         store.setDropHighlight(officeID: officeID, row: row, col: col)
         return DropProposal(operation: .move)
     }
@@ -24,9 +30,8 @@ struct OfficeSeatSwapDelegate: DropDelegate {
     // 唯一提交点：**同步**执行一次交换并登记撤销，随后清除高亮。
     // （不能放进 loadObject 的异步回调：macOS 26 上拖拽会话会因此不复位，之后再也拖不动）
     func performDrop(info: DropInfo) -> Bool {
-        if DragContext.belongs(to: DragPayload.officeSeat) {
-            store.swapSeatTo(officeID: officeID, row: row, col: col)
-        }
+        guard isOurs else { DragContext.reject(DragPayload.officeSeat); return false }
+        store.swapSeatTo(officeID: officeID, row: row, col: col)
         store.clearDropHighlight()
         store.finishSeatDrag()
         DragContext.finish(reason: "工位")

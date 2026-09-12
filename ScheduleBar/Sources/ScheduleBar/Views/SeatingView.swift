@@ -704,6 +704,7 @@ private struct SeatDropDelegate: DropDelegate {
         // （异步换位会让 macOS 26 的拖拽会话不复位，之后所有 .onDrag 静默失效）
         guard DragContext.belongs(to: DragPayload.seating),
               let payload = DragContext.payload, !payload.isEmpty else {
+            DragContext.reject(DragPayload.seating)
             return false
         }
         onDrop(payload)

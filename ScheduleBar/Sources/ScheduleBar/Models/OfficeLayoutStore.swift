@@ -83,8 +83,11 @@ final class OfficeLayoutStore: ObservableObject {
         dropHighlight = nil
     }
 
+    /// 拖动经过时的高亮。**必须去重**：dropUpdated 在拖动过程中每帧都会调用，
+    /// 无脑赋值会让 @Published 连续变化 → 整页反复重绘 → 拖拽会话容易被打断（松手不落地）。
     func setDropHighlight(officeID: UUID, row: Int, col: Int) {
-        dropHighlight = SeatTarget(officeID: officeID, row: row, col: col)
+        let t = SeatTarget(officeID: officeID, row: row, col: col)
+        if dropHighlight != t { dropHighlight = t }
     }
 
     func clearDropHighlight() {

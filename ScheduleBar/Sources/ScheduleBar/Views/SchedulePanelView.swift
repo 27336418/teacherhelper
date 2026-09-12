@@ -233,8 +233,11 @@ struct SchedulePanelView: View {
                 radius: draggedTab == tab ? 6 : 0, x: 0, y: 2)
         .animation(.spring(response: 0.26, dampingFraction: 0.78), value: draggedTab)
         // 鼠标移上去即切换（拖拽过程中不切换，避免乱跳）
+        // ⚠️ 只要左键还按着就不能换页：拖动单元格时鼠标划过左侧栏会切页，
+        //    松手就落到另一个板块的落点上（表现为「拖了没换 / 换到别处」）。
         .onHover { inside in
             guard inside, draggedTab == nil else { return }
+            guard NSEvent.pressedMouseButtons == 0 else { return }
             if selectedTab != tab { selectedTab = tab }
         }
         .contextMenu {
@@ -271,7 +274,25 @@ struct SchedulePanelView: View {
     }
 
     // MARK: 右侧内容区
-    // 已访问的页面缓存常驻（ZStack 叠放），切换只改透明度，避免反复重建大表格导致卡顿
+    // 已访问的页面缓存常驻（ZStack 叠放），切换只改透明度，避免反复重建大表格导致卡顿。
+    //
+    // ⚠️ 2026-09-12 关键修复：**当前选中页必须是 ZStack 里最后一个（最上层）**。
+    //   `.allowsHitTesting(false)` 只挡得住 SwiftUI 自己的手势（所以隐藏页上的 .onDrag 确实起不来），
+    //   但挡不住 AppKit 的拖拽落点注册：隐藏页上 `.onDrop` 仍是有效的落点，谁在最上层谁接走松手。
+    //   原来的顺序是 PanelTab.allCases（个人→班级→…→提醒），于是：
+    //     · 在「个人课表」拖格子，松手被上层的「班级课表」接走 → 提交给了 csc，实际什么都没换；
+    //     · 一旦访问过「提醒设置」（排在最后 = 永远在最上层），它的空白区就把后面的松手全吃掉
+    //       → 「工位拖不动」。
+    //   把选中页挪到末尾即可：可见页永远优先命中，隐藏页只在可见页没有落点的空白处兜底，
+    //   而兜底那一次也会被各落点代理按「非本模块」拒掉（见 DragSwapSupport.swift）。
+    private var cachedTabs: [PanelTab] {
+        var list = PanelTab.allCases.filter { visitedTabs.contains($0) }
+        if let i = list.firstIndex(of: selectedTab) {
+            list.append(list.remove(at: i))
+        }
+        return list
+    }
+
     @ViewBuilder
     private var contentArea: some View {
         if navPrefs.visibleTabs.isEmpty || navPrefs.isHidden(selectedTab) {
@@ -289,13 +310,11 @@ struct SchedulePanelView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ZStack {
-                ForEach(PanelTab.allCases) { tab in
-                    if visitedTabs.contains(tab) {
-                        tabView(tab)
-                            .opacity(tab == selectedTab ? 1 : 0)
-                            .allowsHitTesting(tab == selectedTab)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
+                ForEach(cachedTabs, id: \.self) { tab in
+                    tabView(tab)
+                        .opacity(tab == selectedTab ? 1 : 0)
+                        .allowsHitTesting(tab == selectedTab)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }

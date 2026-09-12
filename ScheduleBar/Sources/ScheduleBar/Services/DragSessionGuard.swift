@@ -59,12 +59,26 @@ enum DragSessionGuard {
 
         // ④ 兜底轮询：面板显示期间每 0.5 秒检查一次「有没有窗口是 key」。
         //    轮询**不激活 App**（避免用户切到别的 App 时把焦点抢回来），只在自己已经在前台时补 key。
+        //    顺带做「松手后仍残留拖动状态」的兜底复位（见下方 recoverStuckDrag）。
         let t = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
             ensureInteractive(nil, reason: "轮询", allowActivate: false)
+            recoverStuckDrag()
         }
         t.tolerance = 0.3
         RunLoop.main.add(t, forMode: .common)
         keyWatch = t
+    }
+
+    /// 松手之后如果 DragContext 里还留着「正在拖动」，说明这一次松手**没有落到任何落点**
+    /// （丢在空白处、或丢在了缓存页的死角）。此时立刻把状态复位：
+    /// 否则残留的来源会让下一轮对换换错对象，甚至看起来完全拖不动。
+    /// 判据用 `NSEvent.pressedMouseButtons == 0`，所以正在按着鼠标拖动时绝不会误清。
+    private static func recoverStuckDrag() {
+        guard DragContext.isDragging else { return }
+        guard NSEvent.pressedMouseButtons == 0 else { return }
+        DragContext.cancel()
+        let had = resetDragState(reason: "松手未落地")
+        log("拖拽未落地：已复位拖动状态\(had ? "（此前有一次未完成的拖动）" : "")")
     }
 
     /// 有一次拖动因为「切走 App」被打断（没有走完成功落点）。
