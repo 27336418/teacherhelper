@@ -63,6 +63,12 @@ struct SeatingView: View {
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // 拖动被外部打断（切走 App / 窗口失去 key / 面板收起）→ 清掉本视图的拖动标记，
+                // 否则格子会一直保持半透明「正在拖动」的样子，且下次拖动带着旧来源。
+                .onReceive(NotificationCenter.default.publisher(for: .dragSessionDidReset)) { _ in
+                    dragging = nil
+                    highlight = nil
+                }
                 // 小组改名弹层：直接画在本窗口内，层级天然最高，不可能被任何界面挡住
                 .overlay {
                     if let rg = renameTarget {

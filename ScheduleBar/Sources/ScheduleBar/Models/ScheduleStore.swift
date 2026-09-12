@@ -147,6 +147,18 @@ final class ScheduleStore: ObservableObject {
         }
     }
 
+    /// 拖动被外部打断（切走 App / 窗口失去 key / 面板收起）时清掉拖动状态。
+    /// 只复位来源与快照，不改任何单元格内容、不登记撤销 —— 避免上一轮的
+    /// 拖动来源残留，导致下一次对换换错对象或「拖了没反应」。
+    /// - Returns: 之前是否真的有一次未完成的拖动（用于判断要不要重建面板窗口）
+    @discardableResult
+    func cancelCellDrag() -> Bool {
+        let had = cellDragSource != nil
+        cellDragSource = nil
+        cellDragSnapshot = nil
+        return had
+    }
+
     // MARK: 节次增删（在某个时段内）
     func addPeriod(in groupIndex: Int) {
         guard groups.indices.contains(groupIndex) else { return }

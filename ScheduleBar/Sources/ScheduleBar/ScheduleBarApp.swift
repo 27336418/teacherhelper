@@ -155,6 +155,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
+    /// 上次收起面板时是否留有「未完成的拖动」→ 下次展开重建面板窗口（丢弃残留拖拽会话）
+    private var needsFreshPopoverWindow = false
     /// 供独立窗口使用：打开窗口前先收起浮层（两者互斥）
     static weak var sharedPopover: NSPopover?
 
@@ -216,15 +218,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         mainMenu.addItem(editMenuItem)
         NSApp.mainMenu = mainMenu
 
-        let hosting = NSHostingController(rootView: AnyView(Self.makeRootView()))
+        popover = makePopover()
 
-        let pop = NSPopover()
-        pop.contentViewController = hosting
-        pop.behavior = .transient
-        pop.contentSize = NSSize(width: 880, height: 720)
-        pop.animates = true
-        popover = pop
-        AppDelegate.sharedPopover = pop
+        // 拖拽会话守护：切到别的 App（录屏软件等）之后仍能正常拖动对换。
+        // 详见 Services/DragSessionGuard.swift 的说明（accessory App + NSPopover 的 key 问题）。
+        DragSessionGuard.install()
 
         // 通知中心代理 + 启动时按已保存提醒重建系统通知
         NotificationScheduler.shared.requestPermission()
@@ -239,13 +237,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
         // 启动后自动展开面板，让用户立即看到界面（点其他位置自动关闭）
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            guard let pop = self.popover, let btn = self.statusItem?.button else { return }
-            if !pop.isShown {
-                pop.show(relativeTo: btn.bounds, of: btn, preferredEdge: .minY)
-                pop.contentViewController?.view.window?.makeKey()
-                writeLaunchLog("启动后自动展开面板 ✓")
-            }
+            guard let btn = self.statusItem?.button else { return }
+            self.showPopover(relativeTo: btn, reason: "启动")
         }
+    }
+
+    /// 新建面板（全新的内容视图 + 全新的 popover 窗口）。
+    /// 「拖动被硬中断」之后重建面板，可以连同窗口上残留的拖拽会话状态一起丢掉。
+    private func makePopover() -> NSPopover {
+        let hosting = NSHostingController(rootView: AnyView(Self.makeRootView()))
+        let pop = NSPopover()
+        pop.contentViewController = hosting
+        pop.behavior = .transient
+        pop.contentSize = NSSize(width: 880, height: 720)
+        pop.animates = true
+        pop.delegate = self            // 展示后补齐「App 激活 + 窗口 key」，否则拖不动
+        AppDelegate.sharedPopover = pop
+        return pop
+    }
+
+    /// 展开面板的统一入口：**先激活 App，再把面板窗口设为 key**。
+    /// SwiftUI 的 `.onDrag` 只在「App 处于激活状态 + 源窗口是 key window」时才起得来；
+    /// 只调 makeKey() 而不激活 App，会让之后所有拖动静默失效（点击、输入仍正常，
+    /// 所以很容易被误判成「只有拖拽坏了」）。
+    private func showPopover(relativeTo button: NSButton, reason: String) {
+        // 上一轮拖动是被打断的（切走 App 时半途中断）→ 换一个全新窗口，
+        // 彻底丢掉可能残留的拖拽会话，保证这次一定能拖。
+        if needsFreshPopoverWindow {
+            popover?.delegate = nil
+            popover = makePopover()
+            needsFreshPopoverWindow = false
+            writeLaunchLog("面板：上次拖动被中断，已重建面板窗口")
+        }
+        guard let popover, !popover.isShown else { return }
+        DragSessionGuard.activateApp()
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        DragSessionGuard.makeKey(popover.contentViewController?.view.window)
+        writeLaunchLog("\(reason)：面板已展开（App 激活 + 窗口 key）")
     }
 
     // ⌘Z：回退最近一次删除 / 清空 / 隐藏等重要操作
@@ -284,8 +312,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         } else {
             // 与独立窗口互斥：避免同屏出现两份界面
             PanelWindowController.shared.close()
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            showPopover(relativeTo: button, reason: "点击菜单栏")
         }
+    }
+}
+
+// MARK: - NSPopoverDelegate：把「App 激活 + 窗口 key」补在面板真正显示之后
+extension AppDelegate: NSPopoverDelegate {
+    func popoverDidShow(_ notification: Notification) {
+        DragSessionGuard.activateApp()
+        DragSessionGuard.makeKey(popover?.contentViewController?.view.window)
+    }
+
+    /// 面板收起 → 任何半途中的拖动都作废，清掉残影，避免下一轮换错位置；
+    /// 若确实有一次被打断的拖动，下次展开时换一个全新窗口，彻底复位拖拽会话。
+    func popoverDidClose(_ notification: Notification) {
+        let interrupted = DragSessionGuard.consumeDragInterrupted()
+        let hadDrag = DragSessionGuard.resetDragState(reason: "面板收起")
+        if interrupted || hadDrag { needsFreshPopoverWindow = true }
     }
 }

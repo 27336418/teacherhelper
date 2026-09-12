@@ -238,6 +238,18 @@ final class ClassroomStore: ObservableObject {
         }
     }
 
+    /// 拖动被外部打断（切走 App / 窗口失去 key / 面板收起）时清掉拖动状态与高亮。
+    /// 只复位状态，不改任何教室内容、不登记撤销。
+    /// - Returns: 之前是否真的有一次未完成的拖动
+    @discardableResult
+    func cancelDrag() -> Bool {
+        let had = dragSource != nil
+        dragSource = nil
+        dragSnapshot = nil
+        if dropTarget != nil { dropTarget = nil }
+        return had
+    }
+
     /// 清空所有教室/办公室的名称与房号（保留楼层与格子结构，便于直接双击填写）
     func clearRooms() {
         var fs = floors

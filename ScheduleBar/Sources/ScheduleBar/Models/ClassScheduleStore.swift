@@ -468,6 +468,17 @@ final class ClassScheduleStore: ObservableObject {
         }
     }
 
+    /// 拖动被外部打断（切走 App / 窗口失去 key / 面板收起）时清掉拖动状态。
+    /// 只复位来源与快照，不改任何课表内容、不登记撤销。
+    /// - Returns: 之前是否真的有一次未完成的拖动
+    @discardableResult
+    func cancelCellDrag() -> Bool {
+        let had = cellDragSource != nil
+        cellDragSource = nil
+        cellDragSnapshot = nil
+        return had
+    }
+
     /// 导出全校：行=节次、列=班级、按星期分块（与「定稿」文件同构，可再导回）
     func wholeSchoolRows() -> [[String]] {
         flushCurrent()

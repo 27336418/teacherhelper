@@ -126,6 +126,18 @@ final class OfficeLayoutStore: ObservableObject {
         }
     }
 
+    /// 拖动被外部打断（切走 App / 窗口失去 key / 面板收起）时清掉拖动状态与高亮。
+    /// 只复位状态，不改任何工位内容、不登记撤销。
+    /// - Returns: 之前是否真的有一次未完成的拖动
+    @discardableResult
+    func cancelSeatDrag() -> Bool {
+        let had = dragOrigin != nil
+        dragOrigin = nil
+        dragSnapshot = nil
+        dropHighlight = nil
+        return had
+    }
+
     private func setColor(_ color: String?, officeIndex: Int, key: String) {
         if let color, !color.isEmpty {
             offices[officeIndex].seatColors[key] = color
