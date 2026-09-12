@@ -344,7 +344,10 @@ struct ClassScheduleView: View {
                             )
                             .onDrag {
                                 classStore.beginCellDrag(p, d)
-                                return NSItemProvider(object: DragPayload.cell(DragPayload.classCell, p, d) as NSString)
+                                // 拿起时同步登记来源模块，落点据此同步换位（见 DragSwapSupport.swift）
+                                let payload = DragPayload.cell(DragPayload.classCell, p, d)
+                                DragContext.begin(module: DragPayload.classCell, payload: payload)
+                                return NSItemProvider(object: payload as NSString)
                             }
                             .onDrop(of: [.text], delegate: ScheduleCellSwapDelegate(
                                 table: DragPayload.classCell,

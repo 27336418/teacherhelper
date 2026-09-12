@@ -103,20 +103,24 @@ struct SchedulePanelView: View {
             .padding(.top, 14)
             .padding(.bottom, 6)
 
-            HStack {
+            HStack(spacing: 6) {
                 Text("第 \(weekStore.currentWeek) 周")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(Capsule().fill(Color.accentColor))
                     .contentShape(Capsule())
                     .onTapGesture { showWeekSetup = true }
                     .help("点击设置第1周开始日期")
                     .popover(isPresented: $showWeekSetup, arrowEdge: .bottom) { WeekSetupView() }
+                // 日期必须一行显示完整：lineLimit(1) + 轻微缩放，空间再紧也不折行
                 Text("\(weekdayString()) \(dateString())")
-                    .font(.caption)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 22)
             .padding(.bottom, 12)

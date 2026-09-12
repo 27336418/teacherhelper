@@ -62,23 +62,15 @@ struct ClassroomSwapDelegate: DropDelegate {
         return DropProposal(operation: .move)
     }
 
-    /// 唯一提交点：读载荷 → 对换一次 → 登记撤销、清理状态
+    /// 唯一提交点：**同步**对换一次 → 登记撤销、清理状态。
+    /// （不能放进 loadObject 的异步回调：macOS 26 上拖拽会话会因此不复位，之后再也拖不动）
     func performDrop(info: DropInfo) -> Bool {
         store.clearDropTarget()
-        guard let provider = info.itemProviders(for: [.text]).first else {
+        if DragContext.belongs(to: DragPayload.classroomCell) {
             store.swapTo(floorID: floorID, rowID: rowID, index: index)
-            store.finishDrag()
-            return true
         }
-        provider.loadObject(ofClass: NSString.self) { obj, _ in
-            DispatchQueue.main.async {
-                let raw = obj as? String ?? ""
-                if raw.isEmpty || DragPayload.belongs(raw, to: DragPayload.classroomCell) {
-                    store.swapTo(floorID: floorID, rowID: rowID, index: index)
-                }
-                store.finishDrag()
-            }
-        }
+        store.finishDrag()
+        DragContext.finish(reason: "教室")
         return true
     }
 }
@@ -225,8 +217,10 @@ struct FloorCard: View {
         .contentShape(Rectangle())
         .onDrag {
             store.beginDrag(floorID: floor.id, rowID: rowID, index: index)
-            return NSItemProvider(object: DragPayload.classroom(floor: floor.id, row: rowID,
-                                                               index: index) as NSString)
+            // 拿起时同步登记来源模块，落点据此同步换位（见 DragSwapSupport.swift 的说明）
+            let payload = DragPayload.classroom(floor: floor.id, row: rowID, index: index)
+            DragContext.begin(module: DragPayload.classroomCell, payload: payload)
+            return NSItemProvider(object: payload as NSString)
         }
         .onDrop(of: [.text], delegate: ClassroomSwapDelegate(floorID: floor.id, rowID: rowID,
                                                             index: index, store: store))

@@ -438,8 +438,10 @@ struct SeatingView: View {
                 }
             }
             .onDrag {
-                dragging = SeatingStore.payload(pool: index)
-                return NSItemProvider(object: SeatingStore.payload(pool: index) as NSString)
+                let p = SeatingStore.payload(pool: index)
+                dragging = p
+                DragContext.begin(module: DragPayload.seating, payload: p)
+                return NSItemProvider(object: p as NSString)
             }
             .contextMenu {
                 // 批量操作（选中多个时）
@@ -698,11 +700,14 @@ private struct SeatDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         highlight = nil
-        guard let provider = info.itemProviders(for: [.text]).first else { return false }
-        provider.loadObject(ofClass: NSString.self) { obj, _ in
-            guard let s = obj as? String, !s.isEmpty else { return }
-            DispatchQueue.main.async { onDrop(s) }
+        // **同步**提交：载荷在拿起时已由 DragContext 记好，不再走异步的 loadObject。
+        // （异步换位会让 macOS 26 的拖拽会话不复位，之后所有 .onDrag 静默失效）
+        guard DragContext.belongs(to: DragPayload.seating),
+              let payload = DragContext.payload, !payload.isEmpty else {
+            return false
         }
+        onDrop(payload)
+        DragContext.finish(reason: "座位")
         return true
     }
 }

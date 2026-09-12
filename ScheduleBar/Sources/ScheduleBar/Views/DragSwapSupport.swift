@@ -3,15 +3,20 @@ import UniformTypeIdentifiers
 
 // MARK: - 统一拖拽对换（与学生座位一致的做法）
 //
-// 所有「格子对调」模块（个人课表 / 班级课表 / 教室分布 / 办公室工位）共用这套约定：
-//   1. `.onDrag` 时把「来源」编码成载荷字符串（前缀 + 定位信息），同时让 store 记下快照；
+// 所有「格子对调」模块（个人课表 / 班级课表 / 教室分布 / 办公室工位 / 学生座位）共用这套约定：
+//   1. `.onDrag` 时把「来源」登记到 DragContext（同步），同时让 store 记下快照；
 //   2. 拖动过程中（dropEntered / dropUpdated）只做高亮等视觉反馈，**不改任何数据**；
-//   3. 松手（performDrop）时读取载荷，确认来源属于本模块后，**只执行一次对换**，并登记撤销。
+//   3. 松手（performDrop）时读 DragContext，确认来源属于本模块后，**同步**执行一次对换，
+//      并登记撤销。
 //
-// 这样做的原因：早期版本在 dropEntered 里直接换位，拖过一串格子会被连续触发，
-// 表现为「内容被覆盖 / 反复乱跳」。改成松手一次性提交后，落点唯一、撤销可靠。
+// ⚠️ 2026-09-12（macOS 26 / Tahoe）关键修复：落点必须**同步**换位。
+//   原实现是 `provider.loadObject(...)` → `DispatchQueue.main.async { 换位 }`，
+//   视图更新发生在拖拽会话结束之后；而 SwiftUI 26 上拖拽会话只有在落点处理里
+//   同步更新视图才会正常复位，否则后续 `.onDrag` 不再触发——
+//   表现就是「拖一次之后再也拖不动，必须切到别的 App 再点回来」。
+//   现在改成：拿起时同步记录 DragContext，落点按它判断归属并直接换位，全同步。
 
-/// 拖拽载荷：`模块|类型|定位…`
+/// 拖拽载荷 / 模块标识
 enum DragPayload {
     /// 课表格子（个人课表）前缀
     static let personalCell = "psc"
@@ -21,6 +26,8 @@ enum DragPayload {
     static let classroomCell = "classroom"
     /// 办公室工位前缀
     static let officeSeat = "office"
+    /// 学生座位（单元格 / 待用 / 待用小组 / 小组区域）统一模块名
+    static let seating = "seating"
 
     static func cell(_ table: String, _ period: String, _ day: Int) -> String {
         "\(table)|cell|\(period)|\(day)"
@@ -37,6 +44,41 @@ enum DragPayload {
     /// 载荷是否属于某个模块（前缀匹配）
     static func belongs(_ raw: String, to table: String) -> Bool {
         raw.hasPrefix(table + "|")
+    }
+}
+
+/// 「当前正在进行的拖拽」记录：由 `.onDrag` 在**拿起时同步**写入，供落点同步读取。
+///
+/// 为什么不用 `DropInfo.itemProviders(...).loadObject(...)`：
+/// 那个回调是异步的，换位会晚于拖拽会话结束 → 在 macOS 26 上会让拖拽会话不复位，
+/// 之后所有 `.onDrag` 都静默失效。改成同步登记后，落点处理里就能立刻换位。
+enum DragContext {
+    /// 当前拖拽所属模块（DragPayload 里的常量）
+    private(set) static var module: String?
+    /// 当前拖拽的载荷字符串（学生座位要用它解析来源）
+    private(set) static var payload: String?
+
+    /// 拿起（在 `.onDrag` 里同步调用）
+    static func begin(module: String, payload: String) {
+        self.module = module
+        self.payload = payload
+        DragSessionGuard.log("拖拽开始：模块=\(module) 载荷=\(payload)")
+    }
+
+    /// 落点是否属于本模块
+    static func belongs(to m: String) -> Bool { module == m }
+
+    /// 落点处理完毕（不论有没有真的换位）→ 清状态，并让面板窗口重新成为 key
+    static func finish(reason: String) {
+        module = nil
+        payload = nil
+        DragSessionGuard.panelDropDidFinish(reason: reason)
+    }
+
+    /// 拖拽被打断（切走 App / 面板收起）：只清状态，不动任何数据
+    static func cancel() {
+        module = nil
+        payload = nil
     }
 }
 
@@ -60,23 +102,14 @@ struct ScheduleCellSwapDelegate: DropDelegate {
         return DropProposal(operation: .move)
     }
 
-    /// 唯一提交点：先读拖拽载荷确认来源是本模块的格子，再执行一次对换。
+    /// 唯一提交点：**同步**对换一次（不能放进 loadObject 的异步回调，
+    /// 否则 macOS 26 上拖拽会话不复位，后续就拖不动了）。
     func performDrop(info: DropInfo) -> Bool {
-        guard let provider = info.itemProviders(for: [.text]).first else {
-            // 拿不到载荷（极少数情况）也兜底提交一次，避免「拖了但没换」
+        if DragContext.belongs(to: table) {
             onPerform()
-            onFinish()
-            return true
         }
-        provider.loadObject(ofClass: NSString.self) { obj, _ in
-            DispatchQueue.main.async {
-                let raw = obj as? String ?? ""
-                if raw.isEmpty || DragPayload.belongs(raw, to: table) {
-                    onPerform()
-                }
-                onFinish()
-            }
-        }
+        onFinish()
+        DragContext.finish(reason: table)
         return true
     }
 }

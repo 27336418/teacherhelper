@@ -21,24 +21,15 @@ struct OfficeSeatSwapDelegate: DropDelegate {
         return DropProposal(operation: .move)
     }
 
-    // 唯一提交点：读取拖拽载荷确认来源本模块后，执行一次交换并登记撤销，随后清除高亮。
+    // 唯一提交点：**同步**执行一次交换并登记撤销，随后清除高亮。
+    // （不能放进 loadObject 的异步回调：macOS 26 上拖拽会话会因此不复位，之后再也拖不动）
     func performDrop(info: DropInfo) -> Bool {
-        guard let provider = info.itemProviders(for: [.text]).first else {
+        if DragContext.belongs(to: DragPayload.officeSeat) {
             store.swapSeatTo(officeID: officeID, row: row, col: col)
-            store.clearDropHighlight()
-            store.finishSeatDrag()
-            return true
         }
-        provider.loadObject(ofClass: NSString.self) { obj, _ in
-            DispatchQueue.main.async {
-                let raw = obj as? String ?? ""
-                if raw.isEmpty || DragPayload.belongs(raw, to: DragPayload.officeSeat) {
-                    store.swapSeatTo(officeID: officeID, row: row, col: col)
-                }
-                store.clearDropHighlight()
-                store.finishSeatDrag()
-            }
-        }
+        store.clearDropHighlight()
+        store.finishSeatDrag()
+        DragContext.finish(reason: "工位")
         return true
     }
 }
@@ -470,7 +461,10 @@ struct OfficeCard: View {
         .contentShape(Rectangle())
         .onDrag {
             store.beginSeatDrag(officeID: office.id, row: r, col: c)
-            return NSItemProvider(object: DragPayload.office(office.id, row: r, col: c) as NSString)
+            // 拿起时同步登记来源模块，落点据此同步换位（见 DragSwapSupport.swift 的说明）
+            let payload = DragPayload.office(office.id, row: r, col: c)
+            DragContext.begin(module: DragPayload.officeSeat, payload: payload)
+            return NSItemProvider(object: payload as NSString)
         }
         .onDrop(of: [.text], delegate: OfficeSeatSwapDelegate(officeID: office.id,
                                                                row: r, col: c, store: store))

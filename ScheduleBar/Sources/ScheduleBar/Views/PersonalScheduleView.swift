@@ -177,7 +177,10 @@ struct PersonalScheduleView: View {
         )
         .onDrag {
             store.beginCellDrag(period, day)
-            return NSItemProvider(object: DragPayload.cell(DragPayload.personalCell, period, day) as NSString)
+            // 拿起时同步登记来源模块，落点据此同步换位（见 DragSwapSupport.swift 的说明）
+            let payload = DragPayload.cell(DragPayload.personalCell, period, day)
+            DragContext.begin(module: DragPayload.personalCell, payload: payload)
+            return NSItemProvider(object: payload as NSString)
         }
         .onDrop(of: [.text], delegate: ScheduleCellSwapDelegate(
             table: DragPayload.personalCell,
