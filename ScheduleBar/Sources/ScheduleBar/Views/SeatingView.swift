@@ -32,7 +32,7 @@ struct SeatingView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     header
-                    Text("座次表为一张完整表格（默认 8×8，完整显示）。右键行号/列号可在任意位置插删行列；多选与 Excel 一致：单击选中一格，⌘单击加选/减选，⇧单击框选一片；选好后「组成小组」用同一色块标出，悬停立即显示组名；右键组内格子可改名/解散/整体放入待用栏；⌘拖组内格子整体移动小组（组名跟组走，⌘拖到待用栏=整组放入待用）；拖动姓名对换，拖到「待用栏」即移除。待用栏里：单击选中多个后右键可批量移除；「待用小组」可整体拖回座位表。")
+                    Text("座次表为一张完整表格（默认 8×8，完整显示）。右键行号/列号可在任意位置插删行列；多选与 Excel 一致：单击选中一格，⌘单击加选/减选，⇧单击框选一片；选好后「组成小组」用同一色块标出，悬停立即显示组名；想撤销分组就选中那些格子点「取消分组」（组被移空会自动解散），或右键组内格子「解散小组」；右键组内格子还可改名/整体放入待用栏；⌘拖组内格子整体移动小组（组名跟组走，⌘拖到待用栏=整组放入待用）；拖动姓名对换，拖到「待用栏」即移除。待用栏里：单击选中多个后右键可批量移除；「待用小组」可整体拖回座位表。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -140,6 +140,17 @@ struct SeatingView: View {
                     .help("把点选中的格子组成一个小组（同一色块显示；⌘Z 可撤销）")
                 }
 
+                // 选中的格子里有属于小组的 → 直接给「取消分组」入口（不必再逐格右键）
+                if !store.selectionGroupCells.isEmpty {
+                    Button {
+                        store.ungroupSelection()
+                    } label: {
+                        Label("取消分组(\(store.selectionGroupCells.count))", systemImage: "square.slash")
+                    }
+                    .fixedSize()
+                    .help("把选中的格子从所在小组里移出来（学生留在原位；整组被移空则自动解散；⌘Z 可撤销）")
+                }
+
                 Spacer()
 
                 // 导入下拉：自绘在窗口内，不会被浮层/其他界面挡住
@@ -189,6 +200,20 @@ struct SeatingView: View {
                     .fixedSize()
             }
         }
+    }
+
+    // MARK: 统一「拿起」入口（拖拽）
+    //
+    // ⚠️ 座位表的**每一处** `.onDrag` 都必须走这里。
+    // 落点 `SeatDropDelegate.performDrop` 是**同步**从 `DragContext` 读载荷的
+    // （不能再用异步 `loadObject`：macOS 26 上异步换位会让拖拽会话不复位，
+    //  之后所有 `.onDrag` 静默失效 →「拖一次就再也拖不动」）。
+    // 所以只要有一处 `.onDrag` 忘了登记 DragContext，那个来源就永远拖不动
+    // —— 2026-09-12 的故障就是这么来的（座位格 / 待用小组 / ⌘拖组都漏了登记）。
+    private func beginDrag(_ payload: String) -> NSItemProvider {
+        dragging = payload
+        DragContext.begin(module: DragPayload.seating, payload: payload)
+        return NSItemProvider(object: payload as NSString)
     }
 
     // MARK: 显示坐标 ⇄ 数据坐标（学生视角整表 180° 镜像）
@@ -389,8 +414,7 @@ struct SeatingView: View {
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.accentColor.opacity(0.45), lineWidth: 1))
         .contentShape(Rectangle())
         .onDrag {
-            dragging = SeatingStore.payload(poolGroup: pg.id)
-            return NSItemProvider(object: SeatingStore.payload(poolGroup: pg.id) as NSString)
+            beginDrag(SeatingStore.payload(poolGroup: pg.id))
         }
         .contextMenu {
             Button {
@@ -630,6 +654,14 @@ struct SeatingView: View {
                 Divider()
                 Text("小组：\(rg.title)")
                 Button("小组改名…") { promptRenameRegion(rg) }
+                if store.selection.count > 1, isSelected, !store.selectionGroupCells.isEmpty {
+                    Button {
+                        store.removeFromRegions(keys: store.selection)
+                    } label: {
+                        Label("取消分组（选中的 \(store.selectionGroupCells.count) 格移出小组）",
+                              systemImage: "square.slash")
+                    }
+                }
                 Button {
                     store.regionToPool(id: rg.id)
                 } label: {
@@ -694,9 +726,21 @@ private struct SeatDropDelegate: DropDelegate {
     @Binding var highlight: String?
     let onDrop: (String) -> Void
 
-    func dropEntered(info: DropInfo) { highlight = key }
+    /// 本落点只管座位表自己发起的拖拽（其它模块 / 外部文本一律拒绝，光标显示「不可放」）
+    private var isOurs: Bool { DragContext.belongs(to: DragPayload.seating) }
+
+    func validateDrop(info: DropInfo) -> Bool { isOurs }
+
+    func dropEntered(info: DropInfo) {
+        guard isOurs else { return }
+        highlight = key
+    }
+
     func dropExited(info: DropInfo) { if highlight == key { highlight = nil } }
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        isOurs ? DropProposal(operation: .move) : nil
+    }
 
     func performDrop(info: DropInfo) -> Bool {
         highlight = nil

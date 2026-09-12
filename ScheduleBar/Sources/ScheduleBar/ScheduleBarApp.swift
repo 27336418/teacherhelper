@@ -26,6 +26,11 @@ struct ScheduleBarApp {
             SelfTest.runSeatingCheck()
             return
         }
+        // 座位拖拽 / 取消分组自检（纯逻辑，临时数据目录）：--selftest-seating-drag
+        if args.contains("--selftest-seating-drag") {
+            SelfTest.runSeatingDragCheck()
+            return
+        }
         // 节次规整自检（只读预演，不改数据）：--selftest-periods
         if args.contains("--selftest-periods") {
             SelfTest.runPeriodCheck()

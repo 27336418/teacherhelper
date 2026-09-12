@@ -265,6 +265,17 @@ final class SeatingStore: ObservableObject {
     func createRegion(from keys: Set<CellKey>) {
         guard !keys.isEmpty else { return }
         let snap = snapshot()
+        // 先把这些格子从原有小组里摘出来（并清掉被摘空的小组）：
+        // 否则一个格子会同时属于两个小组 —— 色块显示混乱、⌘拖整组时也会拖错组。
+        var detached = 0
+        for i in regions.indices {
+            let old = regions[i].cells
+            let left = old.filter { !keys.contains($0) }
+            detached += old.count - left.count
+            regions[i].cells = left
+        }
+        regions.removeAll { $0.cells.isEmpty }
+        if detached > 0 { seatLog("座位：新小组先从原有小组移出 \(detached) 格（避免一格同属两组）") }
         var usage: [Int: Int] = [:]
         for rg in regions { usage[rg.colorIndex, default: 0] += 1 }
         let colorIndex = (0..<RegionPalette.count).min { usage[$0, default: 0] < usage[$1, default: 0] } ?? 0
@@ -288,6 +299,47 @@ final class SeatingStore: ObservableObject {
         let title = regions[i].title
         regions.remove(at: i)
         registerUndo("解散\(title)", snap)
+        seatLog("座位：已解散小组「\(title)」（学生留在原位；剩余小组 \(regions.count) 个）")
+    }
+
+    /// 选中项里属于小组的格子（「取消分组」按钮据此显隐与计数）
+    var selectionGroupCells: Set<CellKey> {
+        Set(selection.filter { region(at: $0) != nil })
+    }
+
+    /// 取消分组：把当前选中的格子从所在小组里移出（学生留在原位）。⌘Z 可撤销。
+    @discardableResult
+    func ungroupSelection() -> Int { removeFromRegions(keys: selection) }
+
+    /// 把指定格子从它们所属的小组里移出；某个小组被移空 → 自动解散该组。
+    /// - Returns: 实际移出的格子数（0 = 这些格子本来就不在任何小组里）
+    @discardableResult
+    func removeFromRegions(keys: Set<CellKey>) -> Int {
+        let targets = keys.filter { region(at: $0) != nil }
+        guard !targets.isEmpty else {
+            seatLog("座位：取消分组 —— 选中的 \(keys.count) 格都不属于任何小组，无需处理")
+            return 0
+        }
+        let snap = snapshot()
+        var changed: [String] = []
+        var dissolved: [String] = []
+        for i in regions.indices.reversed() {
+            let old = regions[i].cells
+            let left = old.filter { !targets.contains($0) }
+            guard left.count != old.count else { continue }
+            changed.append(regions[i].title)
+            if left.isEmpty {
+                dissolved.append(regions[i].title)
+                regions.remove(at: i)
+            } else {
+                regions[i].cells = left
+            }
+        }
+        selection = []
+        registerUndo("取消分组（\(targets.count) 格）", snap)
+        seatLog("座位：取消分组 —— 从「\(changed.joined(separator: "、"))」移出 \(targets.count) 格"
+                + (dissolved.isEmpty ? "" : "；「\(dissolved.joined(separator: "、"))」被移空 → 自动解散"))
+        return targets.count
     }
 
     /// 整体移动小组：抓着的格子对齐到目标格，整块平移（组内学生一起走）。
@@ -1016,6 +1068,11 @@ final class SeatingStore: ObservableObject {
     }
 
     static func fileURL() -> URL {
+        // 自检用：SCHEDULEBAR_DATA_DIR 可把数据目录重定向到临时目录（绝不触碰真实数据）
+        if let dir = ProcessInfo.processInfo.environment["SCHEDULEBAR_DATA_DIR"], !dir.isEmpty {
+            return URL(fileURLWithPath: dir, isDirectory: true)
+                .appendingPathComponent("seating.json")
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                             in: .userDomainMask)[0]
         return base.appendingPathComponent("ScheduleBar", isDirectory: true)

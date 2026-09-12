@@ -160,6 +160,93 @@ enum SelfTest {
         print("数据文件=\(SeatingStore.fileURL().path)")
     }
 
+    /// 座位拖拽 / 取消分组自检（纯逻辑，不启 UI）
+    /// 用法：ScheduleBar --selftest-seating-drag
+    ///
+    /// 覆盖 2026-09-12 的故障：座位格 / 待用小组 / ⌘拖组 的 `.onDrag` 忘了登记 DragContext，
+    /// 落点因此一律 `落点拒绝：当前拖动=无` —— 座位无法对换、拖不进待用栏。
+    /// 这里用「临时数据目录 + 独立 store」跑完整逻辑，绝不碰真实的 seating.json。
+    static func runSeatingDragCheck() {
+        let tmp = "/tmp/selftest-seating-\(UUID().uuidString.prefix(8))"
+        try? FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+        setenv("SCHEDULEBAR_DATA_DIR", tmp, 1)
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+        print("临时数据目录 = \(tmp)（真实数据不受影响）")
+
+        let store = SeatingStore()
+        let gid = UUID()
+        func reset() {
+            store.grid = [["甲", "乙", "丙"], ["丁", "戊", ""]]
+            store.regions = [SeatRegion(id: gid, title: "第1小组", cells: ["0-0", "0-1"], colorIndex: 0)]
+            store.pool = ["己"]
+            store.poolGroups = []
+            store.selection = []
+        }
+        /// 模拟视图层的一次「拿起」（等价于 SeatingView.beginDrag）
+        func pick(_ payload: String) { DragContext.begin(module: DragPayload.seating, payload: payload) }
+
+        var cases: [(String, Bool)] = []
+
+        // 1) 拖动来源必须能被落点识别（视图层 beginDrag 登记的正是这两步）
+        reset(); pick(SeatingStore.payload(cell: "0-0"))
+        cases.append(("拿起后落点能识别来源", DragContext.belongs(to: DragPayload.seating)
+                      && DragContext.payload == "cell|0-0"))
+
+        // 2) 座位 ↔ 座位：对换
+        store.handleDrop(DragContext.payload ?? "", toKey: "1-0"); DragContext.finish(reason: "座位")
+        cases.append(("座位↔座位对换（甲↔丁）",
+                      store.name(at: "0-0") == "丁" && store.name(at: "1-0") == "甲"))
+
+        // 3) 座位 → 待用栏
+        reset(); pick(SeatingStore.payload(cell: "0-0"))
+        store.handleDrop(DragContext.payload ?? "", toKey: nil); DragContext.finish(reason: "座位")
+        cases.append(("座位拖到待用栏（甲入待用、格子清空）",
+                      (store.name(at: "0-0") ?? "") == "" && store.pool.contains("甲")))
+
+        // 4) 待用栏 → 座位
+        reset(); pick(SeatingStore.payload(pool: 0))
+        store.handleDrop(DragContext.payload ?? "", toKey: "1-2"); DragContext.finish(reason: "座位")
+        cases.append(("待用栏拖回座位（己落到 1-2）",
+                      store.name(at: "1-2") == "己" && !store.pool.contains("己")))
+
+        // 5) ⌘ 拖整组：整块平移、学生跟组走
+        reset(); pick(SeatingStore.payload(region: gid, grab: "0-0"))
+        store.handleDrop(DragContext.payload ?? "", toKey: "1-1"); DragContext.finish(reason: "座位")
+        cases.append(("⌘拖整组平移（右下移一格，学生跟组走）",
+                      store.region(id: gid)?.cells == ["1-1", "1-2"]
+                      && store.name(at: "1-1") == "甲" && store.name(at: "1-2") == "乙"))
+
+        // 6) 取消分组：只把选中的格子移出小组，学生留在原位
+        reset()
+        let moved = store.removeFromRegions(keys: ["0-0"])
+        cases.append(("取消分组·部分移出（组只剩 0-1、学生不动）",
+                      moved == 1 && store.region(id: gid)?.cells == ["0-1"]
+                      && store.name(at: "0-0") == "甲"))
+
+        // 7) 取消分组：整组被移空 → 自动解散
+        reset(); store.selection = ["0-0", "0-1"]
+        _ = store.ungroupSelection()
+        cases.append(("取消分组·移空自动解散",
+                      store.regions.isEmpty && store.name(at: "0-0") == "甲" && store.name(at: "0-1") == "乙"))
+
+        // 8) 组成小组时把格子从原组摘出（避免一格同属两组、⌘拖组时拖错组）
+        reset(); store.createRegion(from: ["0-0", "1-1"])
+        let oldLeft = store.region(id: gid)?.cells
+        let newRegion = store.region(at: "0-0")
+        cases.append(("组成小组不留双重归属（原组剩 0-1，新组拿走 0-0/1-1）",
+                      store.regions.count == 2 && oldLeft == ["0-1"]
+                      && newRegion?.cells.sorted() == ["0-0", "1-1"]))
+
+        // 9) 回归护栏：没有登记来源时（曾经的 bug）落点必须拒绝，而不是「悄悄什么都不做」
+        DragContext.cancel()
+        cases.append(("未登记来源 → 落点拒绝（回归护栏）",
+                      !DragContext.belongs(to: DragPayload.seating)))
+
+        print("--- 座位拖拽 / 取消分组自检 ---")
+        for (name, ok) in cases { print("\(ok ? "✓" : "✗") \(name)") }
+        print(cases.allSatisfy { $0.1 } ? "全部通过 ✓" : "存在失败项 ✗")
+    }
+
     /// 节次规整自检：只读预演，不改动任何数据文件
     /// 用法：ScheduleBar --selftest-periods
     static func runPeriodCheck() {
