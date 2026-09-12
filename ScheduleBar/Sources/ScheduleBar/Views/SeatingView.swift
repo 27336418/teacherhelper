@@ -212,6 +212,7 @@ struct SeatingView: View {
     // —— 2026-09-12 的故障就是这么来的（座位格 / 待用小组 / ⌘拖组都漏了登记）。
     private func beginDrag(_ payload: String) -> NSItemProvider {
         dragging = payload
+        store.seatLog("座位：拿起拖动（载荷=\(payload)）")
         DragContext.begin(module: DragPayload.seating, payload: payload)
         return NSItemProvider(object: payload as NSString)
     }
@@ -462,10 +463,7 @@ struct SeatingView: View {
                 }
             }
             .onDrag {
-                let p = SeatingStore.payload(pool: index)
-                dragging = p
-                DragContext.begin(module: DragPayload.seating, payload: p)
-                return NSItemProvider(object: p as NSString)
+                beginDrag(SeatingStore.payload(pool: index))
             }
             .contextMenu {
                 // 批量操作（选中多个时）
@@ -605,15 +603,12 @@ struct SeatingView: View {
         .onDrag {
             // ⌘ 拖组内格子 = 整组移动；普通拖 = 拖学生
             if let rg = region, NSEvent.modifierFlags.contains(.command) {
-                let p = SeatingStore.payload(region: rg.id, grab: modelKey)
-                dragging = p
-                return NSItemProvider(object: p as NSString)
+                return beginDrag(SeatingStore.payload(region: rg.id, grab: modelKey))
             }
             guard !name.trimmingCharacters(in: .whitespaces).isEmpty else {
                 return NSItemProvider(object: "" as NSString)
             }
-            dragging = SeatingStore.payload(cell: modelKey)
-            return NSItemProvider(object: SeatingStore.payload(cell: modelKey) as NSString)
+            return beginDrag(SeatingStore.payload(cell: modelKey))
         }
         .onDrop(of: [.text], delegate: SeatDropDelegate(
             key: modelKey,
