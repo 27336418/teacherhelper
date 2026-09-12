@@ -35,7 +35,7 @@ struct ReminderSettingsView: View {
                 // 添加
                 Button {
                     let new = Reminder(title: "新提醒", hour: 9, minute: 0,
-                                       weekdays: [1, 2, 3, 4, 5], url: "")
+                                       weekdays: ReminderStore.weekdayWorkdays, url: "")
                     reminderStore.add(new)
                     editing = new
                 } label: {
@@ -109,9 +109,17 @@ struct ReminderRow: View {
                 Text(reminder.title)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
-                Text(timeText + " · " + weekText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(timeText + " · " + weekText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if reminder.weekdays.isEmpty {
+                        // 一天都没勾 → 永远不会弹，必须让用户看出来
+                        Text("未勾选任何星期，不会提醒")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.orange)
+                    }
+                }
             }
             Spacer()
             if !reminder.url.isEmpty {
@@ -142,9 +150,9 @@ struct ReminderRow: View {
         String(format: "%02d:%02d", reminder.hour, reminder.minute)
     }
     private var weekText: String {
-        let sorted = reminder.weekdays.sorted()
-        let labels = sorted.map { ReminderStore.weekdayLabel($0) }
-        return labels.joined(separator: " ")
+        // 按「周一…周六、周日」显示（只是显示顺序，取值仍是 1=周日…7=周六）
+        let ordered = ReminderStore.weekdayDisplayOrder.filter { reminder.weekdays.contains($0) }
+        return ordered.map { ReminderStore.weekdayLabel($0) }.joined(separator: " ")
     }
     private var urlAbsolute: URL { URL(string: reminder.url) ?? URL(string: "https://www.baidu.com")! }
 }
@@ -172,12 +180,25 @@ struct ReminderEditSheet: View {
                     .foregroundStyle(.secondary)
             }
 
-            // 星期循环
-            Text("一周哪些天重复")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            // 星期循环（显示顺序：周一…周六、周日；取值仍是 1=周日…7=周六）
             HStack(spacing: 6) {
-                ForEach(1...7, id: \.self) { w in
+                Text("一周哪些天重复")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("每天") { reminder.weekdays = ReminderStore.weekdayEveryDay }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 11))
+                    .help("勾选周一到周日全部七天")
+                Button("周一至周五") { reminder.weekdays = ReminderStore.weekdayWorkdays }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 11))
+                Button("周一至周六") { reminder.weekdays = ReminderStore.weekdayMonToSat }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 11))
+                Spacer()
+            }
+            HStack(spacing: 6) {
+                ForEach(ReminderStore.weekdayDisplayOrder, id: \.self) { w in
                     Button(ReminderStore.weekdayLabel(w)) {
                         if reminder.weekdays.contains(w) {
                             reminder.weekdays.remove(w)
@@ -195,6 +216,10 @@ struct ReminderEditSheet: View {
                 .font(.caption)
 
             HStack {
+                Button("测试弹窗") {
+                    ReminderFirer.shared.fireTest(reminder)
+                }
+                .help("立刻弹一次这条提醒的窗口，用来确认到点弹窗正常（不影响正常的提醒时间）")
                 Spacer()
                 Button("完成") {
                     dismiss()

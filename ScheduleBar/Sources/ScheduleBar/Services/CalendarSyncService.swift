@@ -379,16 +379,51 @@ final class CalendarSyncService: ObservableObject {
     // MARK: - 权限
 
     /// 请求日历权限（只问一次；拒绝后不再弹，静默失败并记日志）
+    ///
+    /// ⚠️ 2026-09-12 修正：macOS 14 起 `requestAccess(to:)` **已废弃且不再弹出授权对话框**
+    ///   （直接返回 false），所以用户「看不到弹窗、也没法选允许/不允许」，
+    ///   日志只会留下一句「未获授权」。14 及以上必须改用 `requestFullAccessToEvents`。
+    ///   另外本 App 是 `.accessory`（无 Dock 图标），请求前先把自己拉到前台，
+    ///   否则系统对话框可能被压在别的窗口后面，用户根本看不到。
     private func ensureAccess(_ comp: @escaping (Bool) -> Void) {
         if granted { permissionDenied = false; comp(true); return }
-        store.requestAccess(to: .event) { [weak self] g, err in
+
+        let status = EKEventStore.authorizationStatus(for: .event)
+        let statusDesc: String = {
+            if #available(macOS 14.0, *) {
+                switch status {
+                case .notDetermined: return "未询问（应弹授权窗）"
+                case .restricted:    return "受限"
+                case .denied:        return "已拒绝（要去系统设置里打开）"
+                case .fullAccess:    return "完全访问"
+                case .writeOnly:     return "仅写入"
+                @unknown default:    return "rawValue=\(status.rawValue)"
+                }
+            }
+            return "rawValue=\(status.rawValue)"
+        }()
+        SeatingStore.seatLog("系统日历：当前授权状态 \(statusDesc)")
+
+        let finish: (Bool, Error?) -> Void = { [weak self] g, err in
             if let err { SeatingStore.seatLog("系统日历：权限错误 \(err.localizedDescription)") }
             if g == false {
                 SeatingStore.seatLog("系统日历：未获授权，日程不会同步到系统日历（可在 系统设置→隐私与安全性→日历 中开启）")
+            } else {
+                SeatingStore.seatLog("系统日历：已获授权")
             }
             self?.granted = g
             self?.permissionDenied = !g
             comp(g)
+        }
+
+        if #available(macOS 14.0, *) {
+            // 未询问过 → 先把 App 拉到前台，保证系统授权弹窗用户能看见
+            if status == .notDetermined {
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            store.requestFullAccessToEvents(completion: finish)
+        } else {
+            store.requestAccess(to: .event, completion: finish)
         }
     }
 

@@ -109,9 +109,15 @@ final class ReminderFirer {
     ]
     private static let defaultSnoozeIndex = 1   // 30 分钟
 
+    /// 测试用：立刻弹一次这条提醒的窗口，用来确认「到点弹窗」链路正常。
+    /// 不写 `lastFired`（不影响正常的到点判断），也不产生「稍后提醒」。
+    func fireTest(_ r: Reminder) {
+        fire(r, isRepeat: false, isTest: true) { _ in }
+    }
+
     /// 弹出提醒窗口（**非模态**：不锁面板，用户可先切到教师助手处理完再回来点）。
     /// isRepeat=true 表示这是「等会处理」后的再次提醒；用户选择通过 onFinish 回调。
-    private func fire(_ r: Reminder, isRepeat: Bool = false,
+    private func fire(_ r: Reminder, isRepeat: Bool = false, isTest: Bool = false,
                       onFinish: @escaping (AlertAction) -> Void) {
         // 已在主队列（DispatchSourceTimer 队列为 .main）
         let time = String(format: "%02d:%02d", r.hour, r.minute)
@@ -173,6 +179,8 @@ final class ReminderFirer {
             if let obs = self.closeObservers.removeValue(forKey: id) {
                 NotificationCenter.default.removeObserver(obs)
             }
+            // 测试弹窗不产生「稍后提醒」
+            guard !isTest else { return }
             let def = Self.snoozeOptions[Self.defaultSnoozeIndex].interval
             self.snoozed[id] = Date().addingTimeInterval(def)
         }

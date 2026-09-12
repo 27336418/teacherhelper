@@ -363,6 +363,33 @@ enum SelfTest {
         f.locale = Locale(identifier: "zh_CN")
         let weekNames = ["", "周日", "周一", "周二", "周三", "周四", "周五", "周六"]
 
+        // ① 星期标签必须与取值指向同一天（2026-09-12 曾整体错位一天，导致「勾了周六却周六不弹」）
+        print("--- 星期标签用例（标签必须等于 Calendar.weekday 的同一天）---")
+        var labelBad: [String] = []
+        for w in 1...7 {
+            let got = ReminderStore.weekdayLabel(w)
+            let want = weekNames[w]
+            if got != want { labelBad.append("\(w)→\(got)（应为 \(want)）") }
+            print("  取值 \(w)：标签「\(got)」\(got == want ? "✓" : "✗ 应为「\(want)」")")
+        }
+        let orderOK = Set(ReminderStore.weekdayDisplayOrder) == Set(1...7)
+        if !orderOK { labelBad.append("显示顺序不是 1…7 的排列") }
+        print("  显示顺序 = \(ReminderStore.weekdayDisplayOrder.map { ReminderStore.weekdayLabel($0) }.joined(separator: " ")) \(orderOK ? "✓" : "✗")")
+
+        // ② 用真实日历验证「周六」确实命中周六（2026-09-12 是周六）
+        let satFormatter = DateFormatter()
+        satFormatter.dateFormat = "yyyy-MM-dd HH:mm"
+        satFormatter.locale = Locale(identifier: "zh_CN")
+        if let sat = satFormatter.date(from: "2026-09-12 11:41") {
+            let wd = cal.component(.weekday, from: sat)
+            let probe = Reminder(title: "周六用例", hour: 11, minute: 41,
+                                 weekdays: ReminderStore.weekdayMonToSat, url: "")
+            let hit = probe.fires(on: wd)
+            if !hit { labelBad.append("2026-09-12(周六) 未命中「周一至周六」") }
+            print("  2026-09-12（Calendar.weekday=\(wd) 即 \(weekNames[wd])）命中「周一至周六」= \(hit ? "✓" : "✗")")
+        }
+        print(labelBad.isEmpty ? "  星期标签判定=✓" : "  星期标签判定=✗ \(labelBad.joined(separator: "; "))")
+
         for r in reminders {
             let days = CalendarSyncService.orderedWeekdays(r.weekdays)
             let labels = days.map { weekNames[$0] }.joined(separator: " ")
