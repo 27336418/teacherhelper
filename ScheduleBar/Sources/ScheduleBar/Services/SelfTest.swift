@@ -236,16 +236,18 @@ enum SelfTest {
 
         // ── 以下为 2.1.8 新增：Excel 式框选整体移动 + 讲台放进表格 ──
 
-        // 10) 框选：从空格拖到另一格 = 选中矩形一片
+        // 10) 框选：从空格拖到另一格 = 选中矩形一片（只含坐着学生的格）
         resetBig()
         pick(SeatingStore.payload(marquee: "0-0"))
         store.handleDrop("marquee|0-0", toKey: "1-1"); DragContext.finish(reason: "座位")
-        cases.append(("空格起手拖动 = 框选 2×2",
+        cases.append(("空格起手拖动 = 框选 2×2（4 格都有学生）",
                       store.selection == Set(["0-0", "0-1", "1-0", "1-1"])))
 
-        // 11) 框选矩形（含讲台跳过）
+        // 11) ⚠️ 框选**只把坐着学生的格**放进选区（2026-09-12 用户反馈：
+        //     从空格起手框选「老是会连空格一起选中」，蓝框框住一片空白像误选）
         resetBig(); store.selectRect(from: "0-0", to: "2-3")
-        cases.append(("框选矩形 0-0→2-3 选中 12 格", store.selection.count == 12))
+        cases.append(("框选只选有学生的格（0-0→2-3 只中甲/乙/丙/丁/戊 5 格，11 个空位不进选区）",
+                      store.selection == Set(["0-0", "0-1", "0-2", "1-0", "1-1"])))
 
         // 12) 框选整体移动：2×2 往右下挪一格，学生跟着走
         resetBig()
@@ -279,6 +281,34 @@ enum SelfTest {
         cases.append(("框选整体移动·越界 → 拒绝且原样不动",
                       !oobMove && store.name(at: "0-0") == "甲" && store.name(at: "0-1") == "乙"
                       && store.selection == ["0-0", "0-1"]))
+
+        // 15b) 框选状态下拖到**有学生**的格 → 两格直接互换（2026-09-12 修复的核心）
+        resetBig()
+        store.selection = ["0-0", "0-1"]                 // 框选住 甲 / 乙
+        pick(SeatingStore.payload(selection: "0-0"))
+        store.handleDrop("selblock|0-0", toKey: "1-1")   // 1-1 = 戊（选区外、有学生）
+        DragContext.finish(reason: "座位")
+        cases.append(("框选状态下拖到有学生的格 → 两格直接互换（甲↔戊，乙不动，选区清空）",
+                      store.name(at: "0-0") == "戊" && store.name(at: "1-1") == "甲"
+                      && store.name(at: "0-1") == "乙" && store.selection.isEmpty))
+
+        // 15c) 框选状态下拖到**空位** → 仍然是整块移动（回归护栏）
+        resetBig()
+        store.selection = ["0-0", "0-1"]
+        pick(SeatingStore.payload(selection: "0-0"))
+        store.handleDrop("selblock|0-0", toKey: "2-0")   // 2-0 是空位
+        DragContext.finish(reason: "座位")
+        cases.append(("框选状态下拖到空位 → 整块移动（甲/乙 下移 2 行，原位清空）",
+                      store.name(at: "2-0") == "甲" && store.name(at: "2-1") == "乙"
+                      && store.name(at: "0-0") == "" && store.name(at: "0-1") == ""))
+
+        // 15d) 单格拖动对换（没有框选时也一样是互换）
+        resetBig()
+        pick(SeatingStore.payload(cell: "0-0"))
+        store.handleDrop("cell|0-0", toKey: "1-1")
+        DragContext.finish(reason: "座位")
+        cases.append(("单格拖动到有学生的格 → 直接互换（甲↔戊）",
+                      store.name(at: "0-0") == "戊" && store.name(at: "1-1") == "甲"))
 
         // 16) 框选整体拖到待用栏 = 选区学生全部撤下
         resetBig()
@@ -337,11 +367,11 @@ enum SelfTest {
         cases.append(("插行插列后讲台跟着平移（第3行第3列起）",
                       store.podium?.row == 3 && store.podium?.col == 2))
 
-        // 24) 框选自动跳过讲台格子
+        // 24) 框选同时跳过讲台格与空位
         resetBig(); store.podium = PodiumPlacement(row: 1, col: 1, span: 2)
         store.selectRect(from: "0-0", to: "3-3")
-        cases.append(("框选自动跳过讲台格子（16 格选中 14 格）",
-                      store.selection.count == 14
+        cases.append(("框选自动跳过讲台格 / 空位（0-0→3-3 只中甲/乙/丙/丁 4 格）",
+                      store.selection == Set(["0-0", "0-1", "0-2", "1-0"])
                       && !store.selection.contains("1-1") && !store.selection.contains("1-2")))
 
         // 25) Excel 式列字母

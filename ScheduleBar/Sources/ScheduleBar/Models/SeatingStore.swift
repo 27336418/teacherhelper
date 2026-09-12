@@ -442,20 +442,35 @@ final class SeatingStore: ObservableObject {
 
     // MARK: - 框选（Excel 式矩形选择）与「框选整体移动」
 
+    /// 该格是否坐着学生（空格 / 讲台都算「没有学生」）
+    func hasStudent(_ key: CellKey) -> Bool {
+        guard let n = name(at: key) else { return false }
+        return !n.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// 选中以 a、b 为对角的矩形区域（讲台格子自动跳过）
-    func selectRect(from a: CellKey, to b: CellKey) {
-        guard let (ar, ac) = Self.parse(a), let (br, bc) = Self.parse(b) else { return }
+    ///
+    /// ⚠️ 只把**坐着学生**的格子放进选区（2026-09-12 用户反馈：从空格起手框选时
+    ///    「老是会连空格一起选中」，蓝框框住一整片空白看着就像误选）。
+    ///    整块移动靠的是「统一偏移量」，空位不参与选区也不影响结果
+    ///    （空位平移过去还是空位，本来就不用写）。
+    @discardableResult
+    func selectRect(from a: CellKey, to b: CellKey) -> Int {
+        guard let (ar, ac) = Self.parse(a), let (br, bc) = Self.parse(b) else { return 0 }
         var keys: Set<CellKey> = []
+        var emptySeats = 0, podiumCells = 0
         for r in min(ar, br)...max(ar, br) {
             for c in min(ac, bc)...max(ac, bc) {
                 guard grid.indices.contains(r), grid[r].indices.contains(c) else { continue }
                 let k = Self.key(r, c)
-                if isPodium(k) { continue }
+                if isPodium(k) { podiumCells += 1; continue }
+                if !hasStudent(k) { emptySeats += 1; continue }   // 空座位不进选区
                 keys.insert(k)
             }
         }
         selection = keys
-        seatLog("座位：框选 \(a) → \(b)，选中 \(keys.count) 格")
+        seatLog("座位：框选 \(a) → \(b)，选中 \(keys.count) 格（有学生的座位；跳过空位 \(emptySeats) / 讲台 \(podiumCells)）")
+        return keys.count
     }
 
     /// 框选整体移动：抓着 grab 格，把**整个选区**按同样的偏移搬到 target（学生一起走）。
@@ -508,9 +523,37 @@ final class SeatingStore: ObservableObject {
         }
         for (k, n) in carried { if let nk = dest[k] { setCellRaw(nk, n) } }
         loading = false
-        selection = Set(dest.values)
+        // 选区跟着搬到新位置（同样只保留坐着学生的格）
+        selection = Set(dest.values).filter { hasStudent($0) }
         seatLog("座位：框选整体移动 \(moved.count) 格（下移 \(dr) 行、右移 \(dc) 列），携带 \(carried.count) 名学生")
         registerUndo("框选整体移动", snap)
+        return true
+    }
+
+    /// 两格**直接互换**学生 —— 拖动一个学生到另一个有学生的格子上时使用。
+    /// 2026-09-12 用户要求：「拖动学生的时候要支持两个直接互换」。
+    /// 无论目标格是空位（= 单纯移动）还是有人（= 互换）都走这里，日志统一好排查。
+    @discardableResult
+    func swapTwoCells(_ a: CellKey, _ b: CellKey, clearSelection: Bool = false,
+                      notice: String? = nil) -> Bool {
+        guard a != b else { return false }
+        guard !isPodium(a), !isPodium(b) else {
+            setNotice("讲台位置不能放学生")
+            seatLog("座位：对换失败 —— \(a) / \(b) 里含讲台格")
+            return false
+        }
+        let moving = name(at: a) ?? ""
+        guard !moving.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        let displaced = name(at: b) ?? ""
+        let snap = snapshot()
+        loading = true
+        setCellRaw(a, displaced)
+        setCellRaw(b, moving)
+        loading = false
+        if clearSelection { selection = [] }
+        registerUndo("对换座位", snap)
+        seatLog("座位：对换 \(a) ↔ \(b)（「\(moving)」↔「\(displaced.isEmpty ? "空位" : displaced)」）")
+        if let notice { setNotice(notice) }
         return true
     }
 
@@ -745,15 +788,8 @@ final class SeatingStore: ObservableObject {
                   let moving = name(at: parts[1]),
                   !moving.trimmingCharacters(in: .whitespaces).isEmpty else { return }
             if let dst {
-                if isPodium(dst) {
-                    setNotice("讲台位置不能放学生")
-                    seatLog("座位：拖学生到讲台格 \(dst) → 拒绝")
-                    return
-                }
-                let displaced = name(at: dst) ?? ""
-                setCellRaw(parts[1], displaced)
-                setCellRaw(dst, moving)
-                commit("对换座位")
+                // 拖动学生 → 落到有学生的格 = 两人直接互换；落到空位 = 单纯移动（同一个方法）
+                _ = swapTwoCells(parts[1], dst)   // 内部已登记撤销
             } else {
                 setCellRaw(parts[1], "")
                 if !poolContains(moving) { pool.append(moving) }
@@ -782,7 +818,18 @@ final class SeatingStore: ObservableObject {
         case "selblock":
             guard parts.count >= 2 else { return }
             if let dstKey = dst {
-                _ = moveSelection(grab: parts[1], to: dstKey)
+                // ⚠️ 落点格**已有学生**且不在选区内 → 直接与拖动的那一格互换。
+                // 否则整块移动会因「目标已有学生」被拒（2026-09-12 用户反馈：
+                // 「拖动学生的时候要支持两个直接互换」，日志里就是这条失败）。
+                // 整块移动请拖到空位（或选区内的另一格）。
+                if hasStudent(dstKey), !selection.contains(dstKey) {
+                    let a = name(at: parts[1]) ?? ""
+                    let b = name(at: dstKey) ?? ""
+                    _ = swapTwoCells(parts[1], dstKey, clearSelection: true,
+                                     notice: "已对换「\(a)」↔「\(b)」（整块移动请拖到空位）")
+                } else {
+                    _ = moveSelection(grab: parts[1], to: dstKey)
+                }
             } else {
                 // 框选整体拖到待用栏 → 选区里的学生全部撤下待用
                 batchToPool()

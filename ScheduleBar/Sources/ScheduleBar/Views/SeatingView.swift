@@ -206,7 +206,10 @@ struct SeatingView: View {
             for r in min(a.0, dst.0)...max(a.0, dst.0) {
                 for c in min(a.1, dst.1)...max(a.1, dst.1) {
                     let k = SeatingStore.key(r, c)
-                    if !store.isPodium(k) { s.insert(k) }
+                    if store.isPodium(k) { continue }
+                    // 预览与最终选区保持一致：只亮「坐着学生」的格
+                    if !store.hasStudent(k) { continue }
+                    s.insert(k)
                 }
             }
             return s
@@ -577,7 +580,14 @@ struct SeatingView: View {
         let g = store.gender(of: name)
         let isSelected = store.selection.contains(modelKey)
         let isHighlight = highlight == modelKey || dropPreview.contains(modelKey)
-        let isDragging = dragging == SeatingStore.payload(cell: modelKey)
+        // 「正在被拿起的那一格」：单格拖动 / 框选整块拖动 / 框选起手格
+        let isDragSource = dragging == SeatingStore.payload(cell: modelKey)
+                        || dragging == SeatingStore.payload(selection: modelKey)
+                        || dragging == SeatingStore.payload(marquee: modelKey)
+        let draggingStudent = (dragging?.hasPrefix("cell|") ?? false)
+                           || (dragging?.hasPrefix("selblock|") ?? false)
+        // 拖着一个学生、而落点这一格也有人 → 松手即互换，用**橙色**与普通蓝色高亮区分
+        let isSwapTarget = isHighlight && draggingStudent && !isDragSource && store.hasStudent(modelKey)
 
         return EditableGridCell(text: Binding(
             get: { store.name(at: modelKey) ?? "" },
@@ -599,14 +609,16 @@ struct SeatingView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 5)
                 .stroke(isSelected ? Color.accentColor :
-                        (isHighlight ? Color.accentColor : Color.clear),
-                        lineWidth: isSelected ? 2 : 1.5)
+                        (isSwapTarget ? Color.orange :
+                         (isHighlight ? Color.accentColor : Color.clear)),
+                        lineWidth: isSelected ? 2 : (isSwapTarget ? 2.5 : 1.5))
                 .background(
                     RoundedRectangle(cornerRadius: 5)
-                        .fill(isHighlight ? Color.accentColor.opacity(0.14) : Color.clear)
+                        .fill(isSwapTarget ? Color.orange.opacity(0.22)
+                                           : (isHighlight ? Color.accentColor.opacity(0.14) : Color.clear))
                 )
         )
-        .opacity(isDragging ? 0.45 : 1)
+        .opacity(isDragSource ? 0.45 : 1)
         .contentShape(Rectangle())
         .onDrag {
             // ① 已框选多格，拖其中任意一格 = 整块移动（学生一起走）
@@ -636,7 +648,7 @@ struct SeatingView: View {
             let n = name.trimmingCharacters(in: .whitespaces)
             // 批量操作（选中多格时）
             if store.selection.count > 1, isSelected {
-                Text("已选中 \(store.selection.count) 格（拖动任一格 = 整块移动）")
+                Text("已选中 \(store.selection.count) 格（拖到空位 = 整块移动，拖到有学生的格 = 两格互换）")
                 Button("选中项标为男生") { store.batchSetGender("男") }
                 Button("选中项标为女生") { store.batchSetGender("女") }
                 Button("清除选中项性别") { store.batchSetGender(nil) }
@@ -660,25 +672,16 @@ struct SeatingView: View {
                 Text("空座位：双击输入姓名")
             }
         }
-        .help("单击选中·⌘单击加选·⇧单击框选；从空格拖动 = 框选一片；选中多格后拖任一格 = 整块移动；拖动对换；双击输入姓名；右键更多")
+        .help("单击选中·⌘单击加选·⇧单击框选（只框住坐着学生的座位）；拖动学生 = 与落点格互换；从空格拖动 = 框选一片；框选后拖到空位 = 整块移动、拖到有学生的格 = 两格互换；双击输入姓名；右键更多")
     }
 
     /// Excel 式选择：单击单选；⌘单击加/减选；⇧单击从锚点框选一片
+    /// （框选只收「坐着学生」的格子，空格子不进选区 —— 见 `selectRect`）
     private func handleSelectTap(modelKey: CellKey) {
         let cmd = NSEvent.modifierFlags.contains(.command)
         let shift = NSEvent.modifierFlags.contains(.shift)
-        if shift, let a = selectAnchor,
-           let (ar, ac) = SeatingStore.parse(a),
-           let (br, bc) = SeatingStore.parse(modelKey) {
-            var keys: Set<CellKey> = []
-            for rr in min(ar, br)...max(ar, br) {
-                for cc in min(ac, bc)...max(ac, bc) {
-                    let k = SeatingStore.key(rr, cc)
-                    if store.isPodium(k) { continue }
-                    keys.insert(k)
-                }
-            }
-            store.selection = keys
+        if shift, let a = selectAnchor {
+            store.selectRect(from: a, to: modelKey)
         } else if cmd {
             store.selection.formSymmetricDifference([modelKey])
             selectAnchor = modelKey
