@@ -604,7 +604,7 @@ final class AppCoordinator: ObservableObject {
                 }
                 SeatingStore.shared.replaceAll(groups: parsed.groups, pool: parsed.pool, genders: parsed.genders)
                 showAlert("导入完成",
-                          "共导入 \(parsed.groups.count) 个小组、待用栏 \(parsed.pool.count) 人（已铺进一张大表，每组一个色块区域）。")
+                          "共导入 \(parsed.groups.count) 个座位块、待用栏 \(parsed.pool.count) 人（已按行铺进一张大表）。")
             } catch {
                 showAlert("导入失败", error.localizedDescription)
             }
@@ -626,8 +626,17 @@ final class AppCoordinator: ObservableObject {
             current = nil
         }
 
+        var isFirstRow = true
         for row in grid {
-            let cells = row.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            defer { isFirstRow = false }
+            var cells = row.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            // 文件首行的标题（整行只有 1 个非空格，如「班级座位表」）→ 跳过
+            if isFirstRow, cells.filter({ !$0.isEmpty }).count == 1 { continue }
+            // 兼容「导出文件」格式：跳过「空 + 列号 A/B/C…」的列头行、剥掉行首行号
+            if isSeatingColumnHeader(cells) { continue }
+            if cells.count > 1, let f = cells.first, isRowNumber(f) {
+                cells.removeFirst()
+            }
             guard let first = cells.first, !first.isEmpty || cells.count > 1 else { continue }
 
             if first == "小组" {
@@ -659,8 +668,12 @@ final class AppCoordinator: ObservableObject {
                     if g == "男" || g == "女" { genders[cells[0]] = g }
                 }
             default:
-                let vals = cells.filter { !$0.isEmpty }
-                if vals.isEmpty { flush(); continue }
+                let vals = cells.filter { !$0.isEmpty && $0 != "讲台" }
+                if vals.isEmpty {
+                    // 讲台行：只跳过，不切分分组（否则整张表会被切成几块、铺进大表时串位）
+                    if cells.contains("讲台") { continue }
+                    flush(); continue
+                }
                 if current == nil {
                     current = SeatGroup(title: "第\(groups.count + 1)小组", seats: [])
                 }
@@ -696,6 +709,19 @@ final class AppCoordinator: ObservableObject {
         return (normalized, pool, genders)
     }
 
+    /// 导出的座位表列头行：「首格为空 + 其余都是 1~3 个大写字母（A/B/C…）」
+    private static func isSeatingColumnHeader(_ cells: [String]) -> Bool {
+        guard cells.count > 1, cells[0].isEmpty else { return false }
+        let rest = cells.dropFirst()
+        guard rest.contains(where: { !$0.isEmpty }) else { return false }
+        return rest.allSatisfy { $0.isEmpty || ($0.count <= 3 && $0.allSatisfy { $0.isLetter && $0.isUppercase }) }
+    }
+
+    /// 行号列（纯数字）：用于剥掉导出文件每行开头的 1 / 2 / 3…
+    private static func isRowNumber(_ s: String) -> Bool {
+        !s.isEmpty && s.allSatisfy { $0.isNumber }
+    }
+
     func exportSeating() {
         let store = SeatingStore.shared
         guard store.seatedCount > 0 || !store.pool.isEmpty else {
@@ -715,23 +741,20 @@ final class AppCoordinator: ObservableObject {
     private func exportSeatingRows() -> [[String]] {
         let store = SeatingStore.shared
         var rows: [[String]] = []
-        // 每个分组区域：按包围盒逐行导出（区域外格子跳过）
-        let regions = store.regions.sorted {
-            let a = $0.bounds, b = $1.bounds
-            return (a.minR, a.minC) < (b.minR, b.minC)
-        }
-        for rg in regions {
-            rows.append(["小组", rg.title])
-            let b = rg.bounds
-            for r in b.minR...b.maxR {
-                var line: [String] = []
-                for c in b.minC...b.maxC {
-                    let k = SeatingStore.key(r, c)
-                    if rg.cells.contains(k) { line.append(store.name(at: k) ?? "") }
+        // 整张表原样导出（Excel 式）：第一行是列号 A/B/C…（首格留空），之后每行 = 行号 + 各列姓名。
+        // 讲台只在其起始格写「讲台」，被它覆盖的其余格子留空。
+        rows.append([""] + (0..<store.cols).map { SeatingStore.columnLabel($0) })
+        for r in 0..<store.rows {
+            var line: [String] = ["\(r + 1)"]
+            for c in 0..<store.cols {
+                let k = SeatingStore.key(r, c)
+                if store.isPodium(k) {
+                    line.append(c == store.podium?.col ? "讲台" : "")
+                } else {
+                    line.append(store.name(at: k) ?? "")
                 }
-                if line.contains(where: { !$0.isEmpty }) { rows.append(line) }
             }
-            rows.append([""])
+            rows.append(line)
         }
         if !store.pool.isEmpty {
             rows.append(["待用栏"] + store.pool)
@@ -1139,9 +1162,22 @@ final class AppCoordinator: ObservableObject {
                 + Array(repeating: Array(repeating: "", count: cols), count: 4)
             name = "办公室工位模板"
         case .seating:
-            rows = [["小组", "第1小组"]]
-                + Array(repeating: Array(repeating: "", count: 6), count: 5)
-                + [[""], ["待用栏"], ["性别"]]
+            // 与「下载」导出的格式完全一致（Excel 式）：标题行 + 列号 A/B/C… + 每行「行号 + 姓名」。
+            // 最后一行中间 3 格写着「讲台」，用来示范「讲台在表格里面」（可自行改位置或删掉）。
+            // 分组功能已取消：不再有「小组」分段，整张表就是一张座位表。
+            let seatCols = SeatingStore.defaultSize
+            let podiumRow = seatCols - 1
+            let podiumCol = (seatCols - 3) / 2
+            rows = [["班级座位表"],
+                    [""] + (0..<seatCols).map { SeatingStore.columnLabel($0) }]
+                + (0..<seatCols).map { r -> [String] in
+                    var line: [String] = ["\(r + 1)"]
+                    for c in 0..<seatCols {
+                        line.append(r == podiumRow && c == podiumCol ? "讲台" : "")
+                    }
+                    return line
+                }
+                + [["待用栏"], ["性别"]]
             name = "班级座位表模板"
         case .extend:
             rows = [["子表", "周二延时"],

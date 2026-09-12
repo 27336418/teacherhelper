@@ -149,7 +149,7 @@ enum SelfTest {
     /// 座位安排自检：模拟应用启动（创建 store → 触发加载与 normalize），打印前后状态
     static func runSeatingCheck() {
         let store = SeatingStore.shared
-        print("表格=\(store.rows)x\(store.cols)  分组=\(store.regions.count)")
+        print("表格=\(store.rows)x\(store.cols)  讲台=\(store.podium?.compactLabel ?? "无")")
         let seated = Set(store.grid.flatMap { $0 }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty })
@@ -175,12 +175,9 @@ enum SelfTest {
 
         // 临时目录每次都是空的 → 走「首次运行」分支（默认 11×11 + 讲台入表），行为确定
         let store = SeatingStore()
-        let gid = UUID()
         func reset() {
             store.grid = [["甲", "乙", "丙"], ["丁", "戊", ""]]
-            store.regions = [SeatRegion(id: gid, title: "第1小组", cells: ["0-0", "0-1"], colorIndex: 0)]
             store.pool = ["己"]
-            store.poolGroups = []
             store.selection = []
             store.podium = nil
         }
@@ -190,9 +187,7 @@ enum SelfTest {
                           ["丁", "戊", "", ""],
                           ["", "", "", ""],
                           ["", "", "", ""]]
-            store.regions = []
             store.pool = []
-            store.poolGroups = []
             store.selection = []
             store.podium = nil
         }
@@ -231,33 +226,8 @@ enum SelfTest {
         cases.append(("待用栏拖回座位（己落到 1-2）",
                       store.name(at: "1-2") == "己" && !store.pool.contains("己")))
 
-        // 5) ⌘ 拖整组：整块平移、学生跟组走
-        reset(); pick(SeatingStore.payload(region: gid, grab: "0-0"))
-        store.handleDrop(DragContext.payload ?? "", toKey: "1-1"); DragContext.finish(reason: "座位")
-        cases.append(("⌘拖整组平移（右下移一格，学生跟组走）",
-                      store.region(id: gid)?.cells == ["1-1", "1-2"]
-                      && store.name(at: "1-1") == "甲" && store.name(at: "1-2") == "乙"))
-
-        // 6) 取消分组：只把选中的格子移出小组，学生留在原位
-        reset()
-        let moved = store.removeFromRegions(keys: ["0-0"])
-        cases.append(("取消分组·部分移出（组只剩 0-1、学生不动）",
-                      moved == 1 && store.region(id: gid)?.cells == ["0-1"]
-                      && store.name(at: "0-0") == "甲"))
-
-        // 7) 取消分组：整组被移空 → 自动解散
-        reset(); store.selection = ["0-0", "0-1"]
-        _ = store.ungroupSelection()
-        cases.append(("取消分组·移空自动解散",
-                      store.regions.isEmpty && store.name(at: "0-0") == "甲" && store.name(at: "0-1") == "乙"))
-
-        // 8) 组成小组时把格子从原组摘出（避免一格同属两组、⌘拖组时拖错组）
-        reset(); store.createRegion(from: ["0-0", "1-1"])
-        let oldLeft = store.region(id: gid)?.cells
-        let newRegion = store.region(at: "0-0")
-        cases.append(("组成小组不留双重归属（原组剩 0-1，新组拿走 0-0/1-1）",
-                      store.regions.count == 2 && oldLeft == ["0-1"]
-                      && newRegion?.cells.sorted() == ["0-0", "1-1"]))
+        // 5) 「分组」相关用例已随功能移除（2026-09-12）：⌘拖整组 / 组成小组 / 取消分组
+        //    这些类型与方法已从 store 删掉，这里是编译期保证，不再有运行时用例。
 
         // 9) 回归护栏：没有登记来源时（曾经的 bug）落点必须拒绝，而不是「悄悄什么都不做」
         DragContext.cancel()
@@ -302,14 +272,13 @@ enum SelfTest {
         cases.append(("框选整体移动·撞上讲台 → 拒绝",
                       !hitPodium && store.name(at: "0-0") == "甲" && store.name(at: "3-0") == ""))
 
-        // 15) 整组都在选区里 → 小组色块连组名一起平移
+        // 15) 框选整体移动越界（会超出表格右边界）→ 拒绝且原样不动
         resetBig()
-        store.regions = [SeatRegion(id: gid, title: "第1小组", cells: ["0-0", "0-1"], colorIndex: 0)]
         store.selection = ["0-0", "0-1"]
-        _ = store.moveSelection(grab: "0-1", to: "2-1")   // 下移 2 行
-        cases.append(("框选整体移动·整组随行（色块与组名跟着走）",
-                      store.region(id: gid)?.cells == ["2-0", "2-1"]
-                      && store.name(at: "2-0") == "甲" && store.name(at: "2-1") == "乙"))
+        let oobMove = store.moveSelection(grab: "0-0", to: "0-3")   // 右移 3 格 → 0-1 会落到 0-4（越界）
+        cases.append(("框选整体移动·越界 → 拒绝且原样不动",
+                      !oobMove && store.name(at: "0-0") == "甲" && store.name(at: "0-1") == "乙"
+                      && store.selection == ["0-0", "0-1"]))
 
         // 16) 框选整体拖到待用栏 = 选区学生全部撤下
         resetBig()
@@ -380,7 +349,54 @@ enum SelfTest {
                       SeatingStore.columnLabel(0) == "A" && SeatingStore.columnLabel(10) == "K"
                       && SeatingStore.columnLabel(25) == "Z" && SeatingStore.columnLabel(26) == "AA"))
 
-        print("--- 座位拖拽 / 框选整体移动 / 讲台 / 取消分组自检 ---")
+        // ── 以下为 2.1.9：取消「分组」功能后的旧数据迁移 ──
+
+        // 26) 旧 v3 文件：色块被忽略、待用小组名单并回待用栏（学生一个不丢）
+        let legacyJSON = """
+        {"version":3,"grid":[["甲","乙"],["丙",""]],"pool":["己"],"genders":{"甲":"男"},"podium":null,\
+        "regions":[{"id":"11111111-1111-1111-1111-111111111111","title":"第1小组","cells":["0-0","0-1"],"colorIndex":0}],\
+        "poolGroups":[{"id":"22222222-2222-2222-2222-222222222222","title":"第2小组","names":["庚","辛"],"cols":2,"colorIndex":1}]}
+        """
+        try? legacyJSON.write(to: URL(fileURLWithPath: tmp + "/seating.json"),
+                              atomically: true, encoding: .utf8)
+        let migrated = SeatingStore()
+        cases.append(("旧 v3 迁移·色块忽略 + 待用小组名单并回待用栏（己/庚/辛 都在）",
+                      Set(migrated.pool) == Set(["己", "庚", "辛"])
+                      && migrated.name(at: "0-0") == "甲" && migrated.name(at: "0-1") == "乙"
+                      && migrated.name(at: "1-0") == "丙"))
+        cases.append(("旧 v3 迁移·表格撑到 11×11 且讲台放进表格",
+                      migrated.rows == 11 && migrated.cols == 11 && migrated.podium != nil))
+        cases.append(("旧 v3 迁移·落盘为 v4 且不再写分组字段",
+                      SeatingStore.loadV2()?.version == SeatingStore.dataVersion
+                      && SeatingStore.loadV2()?.regions == nil
+                      && SeatingStore.loadV2()?.poolGroups == nil))
+
+        // 27) 导出格式（列字母表头 + 行号 + 讲台行）能被导入解析正确还原
+        let exportedRows: [[String]] = [
+            ["", "A", "B"],
+            ["1", "甲", "乙"],
+            ["2", "丙", ""],
+            ["3", "讲台", ""],
+            ["待用栏", "己"],
+        ]
+        let reparsed = AppCoordinator.parseSeating(exportedRows)
+        let reparsedNames = reparsed.groups.flatMap { $0.seats.flatMap { $0 } }.filter { !$0.isEmpty }
+        cases.append(("导出格式可再导入（列头/行号/讲台行都不当姓名，甲/乙/丙/待用己 都对）",
+                      Set(reparsedNames) == Set(["甲", "乙", "丙"]) && reparsed.pool.contains("己")))
+
+        // 28) 模板 → 导入 闭环：空模板不该解析出任何「假姓名」（表头 / 行号 / 讲台 都不算姓名）
+        let (tplRows, _) = AppCoordinator.templateRows(.seating)
+        let tplParsed = AppCoordinator.parseSeating(tplRows)
+        let tplNames = tplParsed.groups.flatMap { $0.seats.flatMap { $0 } }.filter { !$0.isEmpty }
+        cases.append(("座位模板→导入：空模板不产生假姓名（表头/行号/讲台都不算）",
+                      tplNames.isEmpty && tplParsed.pool.isEmpty))
+        var filled = tplRows
+        if filled.count > 2 { filled[2][1] = "张三" }        // 第 1 行数据的 B 列填一个姓名
+        let filledParsed = AppCoordinator.parseSeating(filled)
+        let filledNames = filledParsed.groups.flatMap { $0.seats.flatMap { $0 } }.filter { !$0.isEmpty }
+        cases.append(("座位模板填写后可导入（张三被正确解析）", filledNames == ["张三"]))
+
+        print("--- 座位拖拽 / 框选整体移动 / 讲台 / 取消分组后的数据迁移 自检 ---")
         for (name, ok) in cases { print("\(ok ? "✓" : "✗") \(name)") }
         print(cases.allSatisfy { $0.1 } ? "全部通过 ✓" : "存在失败项 ✗")
     }
@@ -507,7 +523,8 @@ enum SelfTest {
 
         // 落盘 → 读回：验证标题行在真实 xlsx 里也能被导入侧识别并跳过
         print("--- xlsx 落盘并读回（\(tmpDir.path)）---")
-        let withTitle: Set<String> = ["个人课表", "班级课表", "学生信息", "年级师资", "教室分布"]
+        // 首行是「整行只有 1 个非空格」的标题 → 导入侧 dropTitleRows 会剥掉（座位模板 2.1.9 起也改成这种格式）
+        let withTitle: Set<String> = ["个人课表", "班级课表", "学生信息", "年级师资", "教室分布", "班级座位"]
         for (label, kind) in kinds {
             let (rows, name) = AppCoordinator.templateRows(kind)
             let url = tmpDir.appendingPathComponent("\(name).xlsx")

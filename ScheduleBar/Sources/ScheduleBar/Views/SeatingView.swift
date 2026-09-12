@@ -1,8 +1,9 @@
 import SwiftUI
 import AppKit
 
-// MARK: - 班级学生座位安排 v3（Excel 式一张完整大表 / 讲台在表格里面（左右可排座位）/
-//                                框选多格整体移动 / 待用栏 / 性别配色 / 小组色块）
+// MARK: - 班级学生座位安排（Excel 式一张完整大表 / 讲台在表格里面（左右可排座位）/
+//                              框选多格整体移动 / 待用栏 / 性别配色）
+// ⚠️ 2026-09-12 起取消全部「分组」功能（组成小组 / 色块 / ⌘拖整组 / 取消分组）。
 struct SeatingView: View {
     @EnvironmentObject var store: SeatingStore
     @EnvironmentObject var coordinator: AppCoordinator
@@ -23,10 +24,6 @@ struct SeatingView: View {
     @State private var poolSelection: Set<String> = []
     /// 导入下拉菜单（窗口内自绘，保证永不被其他界面挡住）
     @State private var showImportMenu = false
-    /// 小组改名（窗口内自绘弹层，替代 NSAlert，保证永不被挡）
-    @State private var renameTarget: SeatRegion? = nil
-    @State private var renameDraft = ""
-    @FocusState private var renameFocused: Bool
 
     var body: some View {
         GeometryReader { geo in
@@ -52,41 +49,6 @@ struct SeatingView: View {
                 .onReceive(NotificationCenter.default.publisher(for: .dragSessionDidReset)) { _ in
                     dragging = nil
                     highlight = nil
-                }
-                // 小组改名弹层：直接画在本窗口内，层级天然最高，不可能被任何界面挡住
-                .overlay {
-                    if let rg = renameTarget {
-                        ZStack {
-                            Color.primary.opacity(0.2)
-                                .contentShape(Rectangle())
-                                .onTapGesture { renameTarget = nil }
-                            VStack(spacing: 10) {
-                                Text("小组改名")
-                                    .font(.system(size: 13, weight: .semibold))
-                                TextField("小组名称", text: $renameDraft)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 210)
-                                    .focused($renameFocused)
-                                    .onSubmit { commitRename(rg) }
-                                HStack(spacing: 10) {
-                                    Button("取消") { renameTarget = nil }
-                                        .frame(width: 70)
-                                    Button {
-                                        commitRename(rg)
-                                    } label: {
-                                        Text("确定").frame(width: 70)
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                    .keyboardShortcut(.defaultAction)
-                                }
-                            }
-                            .padding(16)
-                            .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
-                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.2), lineWidth: 1))
-                            .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
-                        }
-                        .zIndex(9999)
-                    }
                 }
             }
         }
@@ -114,25 +76,6 @@ struct SeatingView: View {
                 if !store.selection.isEmpty {
                     Button("取消选择") { store.selection = [] }
                         .fixedSize()
-                    Button {
-                        store.createRegion(from: store.selection)
-                    } label: {
-                        Label("组成小组(\(store.selection.count))", systemImage: "square.fill.on.square.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .fixedSize()
-                    .help("把选中的格子组成一个小组（同一色块显示；⌘Z 可撤销）")
-                }
-
-                // 选中的格子里有属于小组的 → 直接给「取消分组」入口（不必再逐格右键）
-                if !store.selectionGroupCells.isEmpty {
-                    Button {
-                        store.ungroupSelection()
-                    } label: {
-                        Label("取消分组(\(store.selectionGroupCells.count))", systemImage: "square.slash")
-                    }
-                    .fixedSize()
-                    .help("把选中的格子从所在小组里移出来（学生留在原位；整组被移空则自动解散；⌘Z 可撤销）")
                 }
 
                 Spacer()
@@ -452,26 +395,16 @@ struct SeatingView: View {
                 .help("手动添加学生到待用栏")
             }
 
-            if store.pool.isEmpty && store.poolGroups.isEmpty {
+            if store.pool.isEmpty {
                 Text("暂无待用学生")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 6)
             } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    // 待用小组（整体）：拖到座位表的小组色块上即可整组放回
-                    if !store.poolGroups.isEmpty {
-                        ForEach(store.poolGroups) { pg in
-                            poolGroupChip(pg)
-                        }
-                    }
-                    if !store.pool.isEmpty {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 84), spacing: 6)], spacing: 6) {
-                            ForEach(Array(store.pool.enumerated()), id: \.offset) { idx, name in
-                                poolChip(name: name, index: idx)
-                            }
-                        }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 84), spacing: 6)], spacing: 6) {
+                    ForEach(Array(store.pool.enumerated()), id: \.offset) { idx, name in
+                        poolChip(name: name, index: idx)
                     }
                 }
             }
@@ -495,47 +428,6 @@ struct SeatingView: View {
                 store.handleDrop(payload, toKey: nil)
             }
         ))
-    }
-
-    /// 待用小组（整体）：可整体拖回座位，右键拆成个人 / 移除
-    private func poolGroupChip(_ pg: PoolGroup) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "square.grid.3x3.fill")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Text("\(pg.title)（\(pg.names.count) 人整体）")
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-            Spacer()
-            Text(pg.names.joined(separator: "、"))
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.10)))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.accentColor.opacity(0.45), lineWidth: 1))
-        .contentShape(Rectangle())
-        .onDrag {
-            beginDrag(SeatingStore.payload(poolGroup: pg.id))
-        }
-        .contextMenu {
-            Button {
-                store.explodePoolGroup(id: pg.id)
-            } label: {
-                Label("拆成个人（逐个安排）", systemImage: "person.2")
-            }
-            Divider()
-            Button(role: .destructive) {
-                store.removePoolGroup(id: pg.id)
-            } label: {
-                Label("移除该小组", systemImage: "trash")
-            }
-        }
-        .help("拖到座位表的某个小组色块上，即整组放回；右键可拆成个人或移除")
     }
 
     private func poolChip(name: String, index: Int) -> some View {
@@ -683,14 +575,9 @@ struct SeatingView: View {
         let modelKey = SeatingStore.key(r, c)                        // 数据坐标键（拖拽/选择统一用）
         let name = store.name(at: modelKey) ?? ""
         let g = store.gender(of: name)
-        let region = store.region(at: modelKey)
         let isSelected = store.selection.contains(modelKey)
         let isHighlight = highlight == modelKey || dropPreview.contains(modelKey)
         let isDragging = dragging == SeatingStore.payload(cell: modelKey)
-
-        // 底色：小组色块优先，其次性别色
-        let bg: Color? = region.map { RegionPalette.color($0.colorIndex).opacity(0.22) }
-            ?? SeatGenderStyle.background(g)
 
         return EditableGridCell(text: Binding(
             get: { store.name(at: modelKey) ?? "" },
@@ -699,7 +586,7 @@ struct SeatingView: View {
         width: cw,
         height: cellHeight,
         font: .system(size: max(8.5, min(11, cw / 6.2))),
-        backgroundColor: bg,
+        backgroundColor: SeatGenderStyle.background(g),
         textColor: SeatGenderStyle.color(g),
         externalEditing: Binding(
             get: { editingKey == modelKey },
@@ -722,19 +609,15 @@ struct SeatingView: View {
         .opacity(isDragging ? 0.45 : 1)
         .contentShape(Rectangle())
         .onDrag {
-            // ① ⌘ 拖组内格子 = 整组平移（优先级最高）
-            if let rg = region, NSEvent.modifierFlags.contains(.command) {
-                return beginDrag(SeatingStore.payload(region: rg.id, grab: modelKey))
-            }
-            // ② 已框选多格，拖其中任意一格 = 整块移动（学生一起走）
+            // ① 已框选多格，拖其中任意一格 = 整块移动（学生一起走）
             if store.selection.count > 1, store.selection.contains(modelKey) {
                 return beginDrag(SeatingStore.payload(selection: modelKey))
             }
-            // ③ 有学生 → 拖学生对换
+            // ② 有学生 → 拖学生对换
             if !name.trimmingCharacters(in: .whitespaces).isEmpty {
                 return beginDrag(SeatingStore.payload(cell: modelKey))
             }
-            // ④ 空格子起手 → 拖到另一格即框选那一片（Excel 式框选）
+            // ③ 空格子起手 → 拖到另一格即框选那一片（Excel 式框选）
             return beginDrag(SeatingStore.payload(marquee: modelKey))
         }
         .onDrop(of: [.text], delegate: SeatDropDelegate(
@@ -776,34 +659,8 @@ struct SeatingView: View {
             } else {
                 Text("空座位：双击输入姓名")
             }
-            if let rg = region {
-                Divider()
-                Text("小组：\(rg.title)")
-                Button("小组改名…") { promptRenameRegion(rg) }
-                if store.selection.count > 1, isSelected, !store.selectionGroupCells.isEmpty {
-                    Button {
-                        store.removeFromRegions(keys: store.selection)
-                    } label: {
-                        Label("取消分组（选中的 \(store.selectionGroupCells.count) 格移出小组）",
-                              systemImage: "square.slash")
-                    }
-                }
-                Button {
-                    store.regionToPool(id: rg.id)
-                } label: {
-                    Label("小组整体放入待用栏", systemImage: "tray.and.arrow.down")
-                }
-                .help("组内学生全部撤到待用栏并作为一个整体保存；色块区域同步撤掉、腾空位置，便于其他小组整体移动过来；之后可把「待用小组」拖回")
-                Divider()
-                Button(role: .destructive) { store.dissolveRegion(id: rg.id) } label: {
-                    Label("解散小组（学生留在原位）", systemImage: "xmark.square")
-                }
-            }
         }
-        .instantTooltip(region.map { "小组：\($0.title)" } ?? "", below: dRow == 0)
-        .help(region == nil
-              ? "单击选中·⌘单击加选·⇧单击框选；从空格拖动 = 框选一片；选中多格后拖任一格 = 整块移动；拖动对换；双击输入姓名；右键更多"
-              : "⌘拖可整体移动小组；单击选中，⌘/⇧多选；选中多格后拖任一格 = 整块移动；双击输入姓名；右键更多（组名已即时显示在气泡中）")
+        .help("单击选中·⌘单击加选·⇧单击框选；从空格拖动 = 框选一片；选中多格后拖任一格 = 整块移动；拖动对换；双击输入姓名；右键更多")
     }
 
     /// Excel 式选择：单击单选；⌘单击加/减选；⇧单击从锚点框选一片
@@ -829,23 +686,6 @@ struct SeatingView: View {
             store.selection = [modelKey]
             selectAnchor = modelKey
         }
-    }
-
-    /// 小组改名：窗口内弹层（不再用 NSAlert，彻底解决被挡问题）
-    private func promptRenameRegion(_ rg: SeatRegion) {
-        renameDraft = rg.title
-        renameTarget = rg
-        DispatchQueue.main.async { renameFocused = true }
-        store.seatLog("座位：打开小组改名弹层「\(rg.title)」")
-    }
-
-    private func commitRename(_ rg: SeatRegion) {
-        let t = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !t.isEmpty {
-            store.renameRegion(id: rg.id, t)
-            store.seatLog("座位：小组改名完成「\(rg.title)」→「\(t)」")
-        }
-        renameTarget = nil
     }
 }
 
