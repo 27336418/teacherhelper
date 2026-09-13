@@ -391,8 +391,10 @@ final class GitHubUpdateService {
             completion(.failure("地址无效"))
             return
         }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 12
+        // 必须绕开本地 URL 缓存：jsDelivr 的清单响应缓存可达 12 小时，
+        // 否则刚发布新版本时 App 仍会读到旧清单，表现为「检测不到新版本」。
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         req.setValue(accept, forHTTPHeaderField: "Accept")
         req.setValue("TeacherHelper/\(currentVersion)", forHTTPHeaderField: "User-Agent")
         let token = GitHubRepoConfig.token.trimmingCharacters(in: .whitespacesAndNewlines)

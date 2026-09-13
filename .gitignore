@@ -15,9 +15,9 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 
-# 本机产物（只把源码与 Info.plist 模板提交；.app 体积大且会随构建重新生成）
+# 本机产物（.app 体积大且会随构建重新生成，不进仓库）
+# 发布的 dmg 需要提交进仓库根目录：在线更新从 jsDelivr/raw 直接下载它
 教师助手.app/
-教师助手_v*.dmg
 .dmg-stage-*/
 
 # 本机数据目录（不应进仓库；备份导出文件落在此处）
