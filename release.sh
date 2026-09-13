@@ -287,8 +287,13 @@ print("  download =", d["download"])
 PYEOF
 
 step "9/9 本地提交（不推送）"
+# 仓库里只保留本次发布的 dmg（jsDelivr 对仓库有 50MB 上限，堆积旧包会让新包被 403 拒发）
+git ls-files -z '*.dmg' | while IFS= read -r -d '' f; do
+  [ "$f" = "教师助手_v${NEWVER}.dmg" ] && continue
+  git rm --cached -q "$f" 2>/dev/null && echo "  已从仓库移除旧包（本地文件保留）：$f"
+done
 git add -A
-git add -f "教师助手_v${NEWVER}.dmg"   # dmg 被 .gitignore 忽略，发布时必须强制入库
+git add -f "教师助手_v${NEWVER}.dmg"   # dmg 被 .gitignore 忽略，发布时必须强制入库   # dmg 被 .gitignore 忽略，发布时必须强制入库
 if git diff --cached --quiet; then
   warn "没有需要提交的改动"
 else
