@@ -759,6 +759,86 @@ enum SelfTest {
         print(ok ? "工位对换自检全部通过 ✓" : "工位对换自检存在问题 ✗")
     }
 
+    // MARK: 师资单元格颜色自检（纯逻辑，临时数据目录，不碰真实 staff.json）
+    // 用法：ScheduleBar --selftest-staff
+    // 覆盖：单格设色/清色、按「同一个人 / 同一班型」批量设色、持久化、删列后颜色键左移、
+    //       整表清色、旧版 staff.json（没有 colors 字段）兼容。
+    static func runStaffColorCheck() {
+        let tmp = "/tmp/selftest-staff-\(UUID().uuidString.prefix(8))"
+        try? FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+        setenv("SCHEDULEBAR_DATA_DIR", tmp, 1)
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+        print("临时数据目录 = \(tmp)（真实 staff.json 不受影响）")
+
+        let store = StaffStore()
+        _ = UndoService.shared.undo()   // 清空可能残留的撤销栈
+
+        store.headers = ["班级", "班主任", "班型", "语文", "英语"]
+        store.rows = [
+            StaffRow(cells: ["1", "张三", "联招班", "张三", "李四"]),
+            StaffRow(cells: ["2", "李四", "冲刺1", "张三", "王五"]),
+            StaffRow(cells: ["3", "张三", "联招班", "赵六", "李四"]),
+        ]
+        let r0 = store.rows[0].id, r1 = store.rows[1].id, r2 = store.rows[2].id
+        var cases: [(String, Bool)] = []
+
+        // 1) 默认无自定义颜色（视图层即「默认灰」）
+        cases.append(("默认无自定义颜色", store.color(rowID: r0, col: 3) == nil))
+
+        // 2) 单格设色 / 读回 / 清除
+        store.setColor("E74C3C", rowID: r0, col: 3)
+        cases.append(("单格设色可读回", store.color(rowID: r0, col: 3) == "E74C3C"))
+        store.setColor(nil, rowID: r0, col: 3)
+        cases.append(("清除单格颜色", store.color(rowID: r0, col: 3) == nil))
+
+        // 3) 按「同一个人」批量设色：张三 共 4 格（0-班主任 / 0-语文 / 1-语文 / 2-班主任）
+        store.setColorForAllCells(text: "张三", hex: "3498DB")
+        let zhang = [(r0, 1), (r0, 3), (r1, 3), (r2, 1)]
+        cases.append(("按姓名批量设色（4 格）",
+                      zhang.allSatisfy { store.color(rowID: $0.0, col: $0.1) == "3498DB" }))
+        cases.append(("不误伤其它格", store.color(rowID: r1, col: 1) == nil
+                      && store.color(rowID: r2, col: 0) == nil))
+
+        // 4) 按「同一班型」批量设色：联招班 2 格，且容忍首尾空格
+        store.rows[2].cells[2] = " 联招班 "
+        store.setColorForAllCells(text: "联招班", hex: "2ECC71")
+        cases.append(("按班型批量设色（含首尾空格）",
+                      store.color(rowID: r0, col: 2) == "2ECC71"
+                      && store.color(rowID: r2, col: 2) == "2ECC71"
+                      && store.color(rowID: r1, col: 2) == nil))
+
+        // 5) 颜色随 staff.json 持久化
+        store.save()
+        let reloaded = StaffStore.load()
+        cases.append(("颜色随 staff.json 持久化",
+                      reloaded?.rows.first { $0.id == r0 }?.colors["1"] == "3498DB"))
+
+        // 6) 删列后颜色键整体左移（删第 3 列「语文」→ 原第 4 列「英语」变 3）
+        store.setColor("9B59B6", rowID: r1, col: 4)
+        store.removeColumn(3)
+        cases.append(("删列后颜色键左移",
+                      store.color(rowID: r1, col: 3) == "9B59B6"
+                      && store.color(rowID: r0, col: 1) == "3498DB"))
+
+        // 7) 整表清色
+        store.clearAllColors()
+        cases.append(("整表清色", store.rows.allSatisfy { $0.colors.isEmpty }))
+
+        // 8) 旧版 staff.json（没有 colors 字段）能正常读取
+        let legacy = """
+        {"headers":["班级","班主任"],"rows":[{"id":"11111111-1111-1111-1111-111111111111","cells":["1","张三"]}]}
+        """
+        if let d = try? JSONDecoder().decode(StaffData.self, from: Data(legacy.utf8)) {
+            cases.append(("旧版数据（无 colors）兼容",
+                          d.rows.count == 1 && d.rows[0].colors.isEmpty && d.rows[0].cells[1] == "张三"))
+        } else {
+            cases.append(("旧版数据（无 colors）兼容", false))
+        }
+
+        for (name, ok) in cases { print("\(ok ? "✓" : "✗") \(name)") }
+        print(cases.allSatisfy { $0.1 } ? "师资颜色自检全部通过 ✓" : "师资颜色自检存在问题 ✗")
+    }
+
     private static var supportDir: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ScheduleBar", isDirectory: true)

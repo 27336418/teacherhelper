@@ -56,6 +56,11 @@ struct ScheduleBarApp {
             SelfTest.runOfficeSeatCheck()
             return
         }
+        // 师资单元格颜色自检（纯逻辑，临时数据目录）：--selftest-staff
+        if args.contains("--selftest-staff") {
+            SelfTest.runStaffColorCheck()
+            return
+        }
 
         let app = NSApplication.shared
         let delegate = AppDelegate()

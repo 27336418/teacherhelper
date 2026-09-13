@@ -7,6 +7,23 @@ import SwiftUI
 struct StaffRow: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
     var cells: [String]     // 与 store.headers 一一对应
+    /// 单元格自定义颜色："列下标" → hex（如 ["3": "E74C3C"]）；无 = 默认灰。
+    /// 颜色跟着「行」走，所以排序、上下移动不会错位；删列时键会整体左移（见 removeColumn）。
+    var colors: [String: String] = [:]
+
+    init(id: UUID = UUID(), cells: [String], colors: [String: String] = [:]) {
+        self.id = id
+        self.cells = cells
+        self.colors = colors
+    }
+
+    // 旧版 staff.json 没有 colors 字段 → 缺省为空字典（不报错、不需要数据版本号迁移）
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        cells = try c.decodeIfPresent([String].self, forKey: .cells) ?? []
+        colors = try c.decodeIfPresent([String: String].self, forKey: .colors) ?? [:]
+    }
 }
 
 /// 存储格式：{"headers": [...], "rows": [...]}；旧版纯 [StaffRow] 自动迁移
@@ -70,6 +87,16 @@ final class StaffStore: ObservableObject {
         for i in rows.indices where index < rows[i].cells.count {
             rows[i].cells.remove(at: index)
         }
+        // 颜色键跟着列下标左移：被删列的颜色丢弃，右侧各列减一
+        for i in rows.indices {
+            var shifted: [String: String] = [:]
+            for (k, v) in rows[i].colors {
+                guard let n = Int(k) else { continue }
+                if n < index { shifted[k] = v }
+                else if n > index { shifted["\(n - 1)"] = v }
+            }
+            rows[i].colors = shifted
+        }
         UndoService.shared.register("删除列「\(removed)」") { [weak self] in
             guard let self else { return }
             self.headers = snapHeaders
@@ -81,6 +108,65 @@ final class StaffStore: ObservableObject {
     func renameColumn(_ index: Int, _ name: String) {
         guard headers.indices.contains(index) else { return }
         headers[index] = name
+    }
+
+    // MARK: 单元格颜色（默认灰；右键调色板）
+    /// 某格的自定义颜色（未设置 = nil = 默认灰）
+    func color(rowID: UUID, col: Int) -> String? {
+        rows.first { $0.id == rowID }?.colors["\(col)"]
+    }
+
+    /// 设置/清除单格颜色（nil 或空串 = 恢复默认灰）
+    func setColor(_ hex: String?, rowID: UUID, col: Int) {
+        guard let i = rows.firstIndex(where: { $0.id == rowID }) else { return }
+        let snap = rows
+        applyColor(hex, index: i, col: col)
+        UndoService.shared.register(hex == nil ? "清除单元格颜色" : "设置单元格颜色") { [weak self] in
+            guard let self else { return }
+            self.rows = snap
+            self.save()
+        }
+    }
+
+    /// 把「内容等于 text 的所有格子」一起设色 —— 与单击高亮同一套分组语义
+    /// （点某个姓名/班型看到的是哪些格，这里就一次改哪些格）。nil = 清除。
+    func setColorForAllCells(text: String, hex: String?) {
+        let key = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        let snap = rows
+        for i in rows.indices {
+            for c in rows[i].cells.indices where Self.matches(rows[i].cells[c], key) {
+                applyColor(hex, index: i, col: c)
+            }
+        }
+        UndoService.shared.register(hex == nil ? "清除「\(key)」全部颜色" : "批量设置「\(key)」颜色") { [weak self] in
+            guard let self else { return }
+            self.rows = snap
+            self.save()
+        }
+    }
+
+    func clearAllColors() {
+        guard rows.contains(where: { !$0.colors.isEmpty }) else { return }
+        let snap = rows
+        for i in rows.indices { rows[i].colors = [:] }
+        UndoService.shared.register("清除师资整表颜色") { [weak self] in
+            guard let self else { return }
+            self.rows = snap
+            self.save()
+        }
+    }
+
+    private func applyColor(_ hex: String?, index i: Int, col: Int) {
+        let key = "\(col)"
+        if let hex, !hex.isEmpty { rows[i].colors[key] = hex }
+        else { rows[i].colors.removeValue(forKey: key) }
+    }
+
+    /// 忽略大小写/首尾空格的同名判定（姓名、班型共用）
+    static func matches(_ cell: String, _ key: String) -> Bool {
+        let t = cell.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !t.isEmpty && t.localizedCaseInsensitiveCompare(key) == .orderedSame
     }
 
     func clear() {
@@ -177,7 +263,7 @@ final class StaffStore: ObservableObject {
         return nil
     }
 
-    /// 行单元格数与表头对齐
+    /// 行单元格数与表头对齐（顺带丢弃越界的颜色键）
     private static func normalize(_ d: StaffData) -> StaffData {
         var out = d
         if out.headers.isEmpty { out.headers = defaultHeaders }
@@ -188,11 +274,20 @@ final class StaffStore: ObservableObject {
             }
             if c.count > out.headers.count { c = Array(c.prefix(out.headers.count)) }
             out.rows[i].cells = c
+            out.rows[i].colors = out.rows[i].colors.filter { k, _ in
+                guard let n = Int(k) else { return false }
+                return n >= 0 && n < out.headers.count
+            }
         }
         return out
     }
 
     static func fileURL() -> URL {
+        // 自检用：SCHEDULEBAR_DATA_DIR 可把数据目录重定向到临时目录（绝不触碰真实数据）
+        if let dir = ProcessInfo.processInfo.environment["SCHEDULEBAR_DATA_DIR"], !dir.isEmpty {
+            return URL(fileURLWithPath: dir, isDirectory: true)
+                .appendingPathComponent("staff.json")
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                             in: .userDomainMask)[0]
         return base.appendingPathComponent("ScheduleBar", isDirectory: true)

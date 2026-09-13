@@ -11,12 +11,68 @@ struct StaffView: View {
     @State private var sortColumn: Int? = nil
     @State private var sortAscending: Bool = true
 
+    // 点击高亮：选中的那一格。它承载的文本就是「分组键」——同一个人（姓名）或同一个班型，
+    // 全表所有内容相同的格子一起高亮（与课表「点一格看同内容的其它格」是同一套交互）。
+    @State private var selected: StaffCellRef? = nil
+
     // 列宽：表头与数据行共用同一组宽度（列宽之和 604 + 列间距 40 ≈ 644），保证上下严格对齐。
     // ⚠️ 表头「科目列」右侧要留 16pt 放删除按钮，所以表头单元格取 colWidths[i] - 16，外层再框成 colWidths[i]。
     private var colWidths: [CGFloat] {
         let first: CGFloat = 44
         let rest = max(36, (604 - first) / CGFloat(max(1, store.headers.count - 1)))
         return [first] + Array(repeating: rest, count: max(0, store.headers.count - 1))
+    }
+
+    // MARK: 点击高亮（同一人 / 同一班型）
+    /// 单元格唯一引用：颜色跟行、高亮跟内容，所以排序/移动都不会错位
+    private struct StaffCellRef: Equatable {
+        let rowID: UUID
+        let col: Int
+    }
+
+    /// 当前高亮的分组键（选中格的文本）；空内容 = 不高亮任何格子
+    private var highlightKey: String? {
+        guard let s = selected,
+              let row = store.rows.first(where: { $0.id == s.rowID }),
+              row.cells.indices.contains(s.col) else { return nil }
+        let t = row.cells[s.col].trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
+    /// 该格是否命中当前高亮（忽略大小写、忽略首尾空格）
+    private func isHighlighted(_ row: StaffRow, _ col: Int) -> Bool {
+        guard let key = highlightKey, row.cells.indices.contains(col) else { return false }
+        return StaffStore.matches(row.cells[col], key)
+    }
+
+    /// 命中格数（提示条用）
+    private var matchCount: Int {
+        guard let key = highlightKey else { return 0 }
+        return store.rows.reduce(0) { acc, row in
+            acc + row.cells.filter { StaffStore.matches($0, key) }.count
+        }
+    }
+
+    /// 单击一格：选中并高亮同内容；再点同一格取消；点空格清空高亮。
+    /// 文本实时从 store 取（编辑完立刻单击也拿到最新值）。
+    private func select(_ ref: StaffCellRef) {
+        guard let row = store.rows.first(where: { $0.id == ref.rowID }),
+              row.cells.indices.contains(ref.col) else {
+            selected = nil
+            return
+        }
+        let t = row.cells[ref.col].trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty || selected == ref {
+            selected = nil
+        } else {
+            selected = ref
+        }
+    }
+
+    /// 单元格底色：默认灰；设置过颜色则用该色（略加深，保证文字可读）
+    private func cellFill(_ hex: String?) -> Color {
+        guard let hex, !hex.isEmpty else { return Color.gray.opacity(0.20) }
+        return Color(hexString: hex).opacity(0.55)
     }
 
     var body: some View {
@@ -100,6 +156,25 @@ struct StaffView: View {
                         }
                     }
 
+                    // 高亮提示条：一眼看出「现在按谁在筛」
+                    if let key = highlightKey {
+                        HStack(spacing: 6) {
+                            Image(systemName: "highlighter")
+                                .font(.system(size: 10))
+                            Text("高亮 \(matchCount) 处「\(key)」")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("· 再点一次或点空格取消")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                        .frame(maxWidth: 300, alignment: .leading)
+                    }
+
                     // 数据行（按排序列展示）
                     ForEach(displayedRows) { row in
                         rowView(binding(for: row.id))
@@ -114,15 +189,26 @@ struct StaffView: View {
 
     // MARK: 数据行
     private func rowView(_ row: Binding<StaffRow>) -> some View {
-        HStack(spacing: 4) {
+        let r = row.wrappedValue
+        return HStack(spacing: 4) {
             ForEach(row.cells.indices, id: \.self) { c in
+                let ref = StaffCellRef(rowID: r.id, col: c)
+                let hex = r.colors["\(c)"]
                 EditableGridCell(text: row.cells[c],
                                  width: colWidths[c],
                                  height: 28,
-                                 bold: c == 0)
+                                 bold: c == 0,
+                                 backgroundColor: cellFill(hex),
+                                 isSelected: selected == ref,
+                                 isHighlighted: isHighlighted(r, c),
+                                 onSingleTap: { select(ref) })
+                .contextMenu {
+                    cellMenu(rowID: r.id, col: c, text: r.cells[c], hex: hex)
+                }
+                .help("单击：高亮同一个人 / 同班型的全部格子；双击：编辑；右键：换颜色")
             }
             Button {
-                store.removeRow(row.wrappedValue.id)
+                store.removeRow(r.id)
             } label: {
                 Image(systemName: "minus.circle")
                     .font(.system(size: 10))
@@ -130,6 +216,32 @@ struct StaffView: View {
             }
             .buttonStyle(.plain)
             .help("删除此行")
+        }
+    }
+
+    // MARK: 单元格右键菜单（换色）
+    @ViewBuilder
+    private func cellMenu(rowID: UUID, col: Int, text: String, hex: String?) -> some View {
+        ColorPaletteMenu(current: hex) { store.setColor($0, rowID: rowID, col: col) }
+
+        let key = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !key.isEmpty {
+            Divider()
+            // 与「单击高亮」同一套分组：一次把这个人 / 这个班型的全部格子改成同一色
+            Menu("「\(key)」的全部格子一起设色") {
+                ColorPaletteMenu(current: nil, header: nil) {
+                    store.setColorForAllCells(text: key, hex: $0)
+                }
+            }
+        }
+
+        Divider()
+        Button("清除本格颜色") { store.setColor(nil, rowID: rowID, col: col) }
+            .disabled(hex == nil)
+        Button(role: .destructive) {
+            store.clearAllColors()
+        } label: {
+            Label("清除整表颜色", systemImage: "eraser")
         }
     }
 

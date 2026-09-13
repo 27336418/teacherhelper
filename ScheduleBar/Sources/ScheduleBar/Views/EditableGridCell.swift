@@ -14,14 +14,16 @@ private extension View {
     }
 }
 
-// MARK: - 通用右键调色板菜单（教室/工位/校历单日换色共用）
+// MARK: - 通用右键调色板菜单（教室/工位/校历单日/师资换色共用）
 // current = 当前 hex（nil=默认）；onPick 回传选中的 hex（nil=恢复默认）
+// header = 菜单顶部说明文字；放进子菜单时传 nil（否则会多一行不能点的标题）
 struct ColorPaletteMenu: View {
     let current: String?
+    var header: String? = "自定义颜色"
     let onPick: (String?) -> Void
 
     var body: some View {
-        Text("自定义颜色")
+        if let header { Text(header) }
         ForEach(ClassroomStore.palette, id: \.hex) { item in
             Button {
                 onPick(item.hex)
@@ -54,6 +56,8 @@ struct EditableGridCell: View {
     var tint: Color = .accentColor          // 编辑态描边色
     var backgroundColor: Color? = nil       // 自定义底色（教室颜色等）；nil=默认
     var textColor: Color? = nil             // 显示态文字色（校验红/绿等）；nil=默认
+    var isSelected: Bool = false            // 当前点中的格子：加粗描边
+    var isHighlighted: Bool = false         // 命中「同一个人 / 班型」：淡强调色底 + 描边
     var onSave: () -> Void = {}
 
     /// 外部接管编辑态（座位表用）：传入后不再自己判定双击，改由 onTap 回调决定。
@@ -61,6 +65,9 @@ struct EditableGridCell: View {
     var externalEditing: Binding<Bool>? = nil
     /// 显示态被单击时回调（仅在接管编辑态时使用）
     var onTap: (() -> Void)? = nil
+    /// 未接管编辑态时的「单击」回调（师资表用：单击高亮、双击仍进编辑）。
+    /// 传入后与 externalEditing 走同一套 clickCount 判定，单击不会再有系统延迟。
+    var onSingleTap: (() -> Void)? = nil
 
     @State private var editingInternal = false
     @State private var draft = ""
@@ -108,24 +115,43 @@ struct EditableGridCell: View {
             .gridCellFrame(width: width, height: height, flexible: flexible)
             .background(RoundedRectangle(cornerRadius: 5)
                 .fill(backgroundColor ?? Color.primary.opacity(0.01)))
-            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.primary.opacity(0.08), lineWidth: 0.5))
+            // 命中高亮：叠一层淡强调色（不盖掉格子自己的底色，仍能看出原本的颜色）
+            .overlay(RoundedRectangle(cornerRadius: 5)
+                .fill(Color.accentColor.opacity(isHighlighted ? 0.26 : 0)))
+            .overlay(RoundedRectangle(cornerRadius: 5)
+                .stroke(borderColor, lineWidth: borderWidth))
             .contentShape(Rectangle())
 
-        if externalEditing != nil {
+        if externalEditing != nil || onSingleTap != nil {
             // 单击立即响应（无判定延迟）；双击进入编辑。
             // ⚠️ 不能把 onTapGesture(count: 2) 与 onTapGesture 叠在同一视图上：
             //    单击手势总是先赢，双击永远进不去编辑态（座位表「双击输姓名」失效的真因）。
             //    改为单个手势 + 系统 clickCount 判定，单击不延迟、双击也能命中。
             base.onTapGesture {
                 if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
-                    externalEditing?.wrappedValue = true
+                    if let ext = externalEditing { ext.wrappedValue = true }
+                    else { editingInternal = true }
+                } else if let onTap {
+                    onTap()
                 } else {
-                    onTap?()
+                    onSingleTap?()
                 }
             }
         } else {
             base.onTapGesture(count: 2) { editingInternal = true }
         }
+    }
+
+    private var borderColor: Color {
+        if isSelected { return Color.accentColor.opacity(0.95) }
+        if isHighlighted { return Color.accentColor.opacity(0.75) }
+        return Color.primary.opacity(0.08)
+    }
+
+    private var borderWidth: CGFloat {
+        if isSelected { return 2 }
+        if isHighlighted { return 1.5 }
+        return 0.5
     }
 
     private func commit() {
