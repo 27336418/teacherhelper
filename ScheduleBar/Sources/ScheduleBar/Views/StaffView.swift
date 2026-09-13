@@ -156,25 +156,6 @@ struct StaffView: View {
                         }
                     }
 
-                    // 高亮提示条：一眼看出「现在按谁在筛」
-                    if let key = highlightKey {
-                        HStack(spacing: 6) {
-                            Image(systemName: "highlighter")
-                                .font(.system(size: 10))
-                            Text("高亮 \(matchCount) 处「\(key)」")
-                                .font(.system(size: 11, weight: .semibold))
-                            Text("· 再点一次或点空格取消")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                        }
-                        .foregroundStyle(Color.accentColor)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Color.accentColor.opacity(0.12)))
-                        .frame(maxWidth: 300, alignment: .leading)
-                    }
-
                     // 数据行（按排序列展示）
                     ForEach(displayedRows) { row in
                         rowView(binding(for: row.id))
@@ -184,6 +165,48 @@ struct StaffView: View {
                 .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
             }
             .padding(16)
+        }
+        // ⚠️ 计数条必须挂在 ScrollView 外面（safeAreaInset），不能放进滚动内容里：
+        //    表有 30 行，点完姓名往下滚看高亮时，放在内容顶部的提示会一起滚走，
+        //    于是「高亮的时候看不到高亮了几处」（2026-09-13 用户反馈）。
+        .safeAreaInset(edge: .bottom, spacing: 0) { highlightBar }
+    }
+
+    // MARK: 常驻高亮计数条（永远可见，滚动不影响）
+    @ViewBuilder
+    private var highlightBar: some View {
+        if let key = highlightKey {
+            HStack(spacing: 6) {
+                Image(systemName: "highlighter")
+                    .font(.system(size: 11))
+                Text("高亮 \(matchCount) 处「\(key)」")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("再点一次或点空格取消")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Button {
+                    selected = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("取消高亮")
+            }
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.accentColor.opacity(0.35), lineWidth: 1))
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+            .transition(.opacity)
         }
     }
 
