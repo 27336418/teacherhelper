@@ -288,6 +288,7 @@ PYEOF
 
 step "9/9 本地提交（不推送）"
 git add -A
+git add -f "教师助手_v${NEWVER}.dmg"   # dmg 被 .gitignore 忽略，发布时必须强制入库
 if git diff --cached --quiet; then
   warn "没有需要提交的改动"
 else

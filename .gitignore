@@ -16,9 +16,13 @@ DerivedData/
 xcuserdata/
 
 # 本机产物（.app 体积大且会随构建重新生成，不进仓库）
-# 发布的 dmg 需要提交进仓库根目录：在线更新从 jsDelivr/raw 直接下载它
 教师助手.app/
 .dmg-stage-*/
+
+# 安装包：仓库只跟踪「最新一个」
+#   jsDelivr 对 /gh/ 仓库有 50MB 总大小上限，堆 8 个旧包（100MB+）会让**新包**被 403 拒发
+#   release.sh 会用 `git add -f` 强制把当次发布的 dmg 入库；旧包本地保留，git 历史里也能取回
+教师助手*.dmg
 
 # 本机数据目录（不应进仓库；备份导出文件落在此处）
 *.bak
