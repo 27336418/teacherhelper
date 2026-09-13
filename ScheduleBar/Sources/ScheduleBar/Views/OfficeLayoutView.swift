@@ -148,15 +148,12 @@ struct OfficeLayoutView: View {
             ForEach(Array(officeRowIDs.enumerated()), id: \.offset) { _, row in
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(row, id: \.self) { id in
-                        // 宽度交给外层 HStack 等分：一行两间 → 各占半行（宽度相等的两列网格）；
-                        // 超过 4 列的宽办公室独占一行。卡片内部列宽也会等分撑满，
-                        // 因此不会出现「卡片被撑开、右侧留大片空白」的情况。
+                        // 卡片宽度由「列数 × 固定列宽」自行决定，不再拉伸铺满整行：
+                        // 列宽恒定，点「+」只是在右边多出一列。
                         OfficeCard(office: binding(for: id), keyword: appliedKeyword)
-                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    // 一行只有一间普通办公室时补一个等宽占位，让它恰好占半行，
-                    // 右半行留给下一间（而不是被自己撑满整行留出内部空白）。
-                    if row.count == 1 && !isWide(id: row[0]) {
+                    // 单张卡片独占一行时补一个弹性占位，保证卡片左对齐且不被拉伸。
+                    if row.count == 1 {
                         Color.clear.frame(maxWidth: .infinity, minHeight: 1)
                     }
                 }
@@ -235,11 +232,31 @@ struct OfficeCard: View {
     @State private var titleDraft = ""
     @FocusState private var titleFocused: Bool
 
-    // 座位宽度仅作为「列宽上限参考」：卡片内的列已改为等分撑满，
-    // 这里保留常量供门牌等固定元素使用。
+    /// 工位列的固定列宽 —— 列宽恒定，增加列时向右追加一列，不再等分撑满卡片
     private let seatWidth: CGFloat = 60
+    /// 列间距（表头 / 座位行 / 门牌行共用，保证栅格对齐）
+    private let columnSpacing: CGFloat = 4
     /// 行尾「删除本行/本列」按钮统一占位，保证表头行与座位行栅格对齐
     private let trailingButtonWidth: CGFloat = 18
+    /// 卡片可用宽度上限（面板 880 − 侧栏 170 − 内边距留白）：
+    /// 只有在列数多到会溢出时才整体收窄，平时保持固定列宽。
+    private let maxCardWidth: CGFloat = 660
+
+    /// 实际列宽：默认固定 60；仅当列数多到超出卡片可用宽度时才按比例收窄。
+    private var cellW: CGFloat {
+        let n = max(1, columnCount)
+        let needed = CGFloat(n) * seatWidth + CGFloat(n) * columnSpacing
+            + trailingButtonWidth + 16
+        guard needed > maxCardWidth else { return seatWidth }
+        let avail = maxCardWidth - trailingButtonWidth - 16 - CGFloat(n) * columnSpacing
+        return max(22, avail / CGFloat(n))
+    }
+
+    /// 卡片宽度 = 列数 × 列宽 + 列间距 + 行尾按钮 + 左右内边距
+    private var cardWidth: CGFloat {
+        let n = max(1, columnCount)
+        return CGFloat(n) * cellW + CGFloat(n) * columnSpacing + trailingButtonWidth + 16
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -295,8 +312,8 @@ struct OfficeCard: View {
             }
 
             // 列管理：每列可删除，末尾可增加一列（外部视角下显示列号镜像）
-            // 列宽等分撑满卡片，避免 4 列只占左侧、右侧留白
-            HStack(spacing: 4) {
+            // 列宽固定：加列只是向右多一列，不会把已有列挤窄
+            HStack(spacing: columnSpacing) {
                 ForEach(0..<columnCount, id: \.self) { displayCol in
                     let c = modelCol(displayCol)
                     HStack(spacing: 2) {
@@ -316,7 +333,7 @@ struct OfficeCard: View {
                         .buttonStyle(.plain)
                         .help("删除第\(c + 1)列")
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(width: cellW)
                 }
                 Button {
                     store.addColumn(office.id)
@@ -333,13 +350,13 @@ struct OfficeCard: View {
             // 座位（动态列数 × N 行；右键可换座位颜色）
             ForEach(0..<rowCount, id: \.self) { displayRow in
                 let r = modelRow(displayRow)
-                HStack(spacing: 4) {
+                HStack(spacing: columnSpacing) {
                     ForEach(0..<columnCount, id: \.self) { displayCol in
                         let c = modelCol(displayCol)
                         if office.seats.indices.contains(r), office.seats[r].indices.contains(c) {
                             seatCell(row: r, col: c)
                         } else {
-                            Color.clear.frame(maxWidth: .infinity, minHeight: 26, maxHeight: 26)
+                            Color.clear.frame(width: cellW, height: 26)
                         }
                     }
                     Button {
@@ -370,22 +387,23 @@ struct OfficeCard: View {
             }
         }
         .padding(8)
+        .frame(width: cardWidth, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
     }
 
     /// 门牌行：与座位栅格对齐——左门落在第一列、右门落在最后一列，中间留空列。
     private func doorRow(left: String, right: String) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: columnSpacing) {
             if columnCount >= 2 {
-                doorLabel(left)
+                doorLabel(left).frame(width: cellW)
                 ForEach(1..<max(1, columnCount - 1), id: \.self) { _ in
-                    Color.clear.frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
+                    Color.clear.frame(width: cellW, height: 20)
                 }
-                doorLabel(right)
+                doorLabel(right).frame(width: cellW)
             } else {
-                doorLabel(left)
-                Spacer(minLength: 8)
-                doorLabel(right)
+                // 只有一列时左右门各占半格，避免门牌撑破栅格
+                doorLabel(left).frame(width: cellW / 2)
+                doorLabel(right).frame(width: cellW / 2)
             }
             Color.clear.frame(width: trailingButtonWidth, height: 20)
         }
@@ -436,9 +454,9 @@ struct OfficeCard: View {
         let hex = office.seatColor(row: r, col: c)
         let hit = isHit(row: r, col: c)
         let cell = EditableGridCell(text: $office.seats[r][c],
-                                    width: seatWidth,
+                                    width: cellW,
                                     height: 26,
-                                    flexible: true,
+                                    flexible: false,
                                     backgroundColor: hex.map { Color(hexString: $0).opacity(0.30) },
                                     onSave: {})
         .contextMenu {
