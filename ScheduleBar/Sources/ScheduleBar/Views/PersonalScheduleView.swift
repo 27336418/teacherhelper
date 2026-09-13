@@ -186,6 +186,6 @@ struct PersonalScheduleView: View {
             onPerform: { store.swapCellTo(period, day) },
             onFinish: { store.finishCellDrag() }
         ))
-        .help("双击编辑；拖动可与其它格子对换")
+        .help("单击高亮全表同内容；再点一次取消。双击编辑；拖动可与其它格子对换")
     }
 }

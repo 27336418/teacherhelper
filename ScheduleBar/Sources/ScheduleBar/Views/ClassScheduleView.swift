@@ -8,7 +8,7 @@ struct ScheduleCellID: Hashable {
 }
 
 // MARK: - 课表单元格（个人 & 班级共用）
-// 单击 → 选中（同一科目/同一内容的其他格子保持课程色高亮，其余变灰）
+// 单击 → 选中，并把全表「同内容」的格子一起标红（个人课表按班级判同、班级课表按科目判同）
 // 双击 → 进入编辑模式（可修改文字，边输边存）
 struct ScheduleCell: View {
     let text: String
@@ -18,8 +18,9 @@ struct ScheduleCell: View {
     let color: (String) -> Color
     var extraColors: ((String) -> [Color])? = nil   // 一个格含多个班级时渲染渐变
     let isSelected: Bool
-    let isSameContent: Bool  // 与选中格是同一科目/同一内容 → 保持高亮
+    let isSameContent: Bool  // 与选中格是同一科目/同一内容 → 一起高亮
     let isEditing: Bool
+    var highlightColor: Color = .red   // 命中高亮色（与「年级师资」保持一致：红）
     let onSelect: () -> Void
     let onStartEditing: () -> Void
     let onUpdate: (String) -> Void
@@ -62,9 +63,9 @@ struct ScheduleCell: View {
                     .background(cellBackground)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(borderColor,
-                                    lineWidth: isSelected ? 1.5 : (isSameContent ? 1.0 : 0.5))
+                            .stroke(borderColor, lineWidth: 0.5)
                     )
+                    .overlay(markRing)
                     .contentShape(Rectangle())
                     // ⚠️ 单击/双击必须合到一个手势里，靠系统 clickCount 区分。
                     // 两个 onTapGesture 叠在同一视图上时，单击总是先赢，双击永远进不去编辑态。
@@ -96,10 +97,27 @@ struct ScheduleCell: View {
         }
     }
 
+    /// 命中「同内容」的格子：不画常规细描边（交给 markRing 画粗红环）
     private var borderColor: Color {
-        if isSelected { return Color.accentColor.opacity(0.9) }
-        if isSameContent { return color(text).opacity(0.8) }          // 相同内容用本色描边
+        if isSelected || isSameContent { return .clear }
         return Color.primary.opacity(0.08)
+    }
+
+    /// 「同内容」标记环：外侧红环 + 内侧白隔离环。
+    /// ⚠️ 内侧那圈白不是装饰：课程色里有正红（语文 #E74C3C）和暗红（政治 #C0392B），
+    ///    红环直接贴上去会糊成一团分不出来，必须留一圈白把红环和底色隔开（2026-09-13 实测）。
+    /// 选中的那一格红环更粗，用来区分「点的是它」和「跟着一起高亮的其他格子」。
+    @ViewBuilder
+    private var markRing: some View {
+        if isSelected || isSameContent {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(highlightColor, lineWidth: isSelected ? 3 : 2.5)
+                    .padding(-2)
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color.white.opacity(0.95), lineWidth: 1.5)
+            }
+        }
     }
 
     private func isEmpty(_ s: String) -> Bool {
@@ -357,7 +375,7 @@ struct ClassScheduleView: View {
                                 onPerform: { classStore.swapCellTo(p, d) },
                                 onFinish: { classStore.finishCellDrag() }
                             ))
-                            .help("双击编辑；拖动可与其它格子对换")
+                            .help("单击高亮全表同内容；再点一次取消。双击编辑；拖动可与其它格子对换")
                         }
                     }
                 }
