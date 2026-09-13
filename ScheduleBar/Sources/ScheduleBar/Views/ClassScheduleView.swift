@@ -19,7 +19,6 @@ struct ScheduleCell: View {
     var extraColors: ((String) -> [Color])? = nil   // 一个格含多个班级时渲染渐变
     let isSelected: Bool
     let isSameContent: Bool  // 与选中格是同一科目/同一内容 → 保持高亮
-    let isDimmed: Bool       // 选中了其他内容时，本格变灰
     let isEditing: Bool
     let onSelect: () -> Void
     let onStartEditing: () -> Void
@@ -67,22 +66,27 @@ struct ScheduleCell: View {
                                     lineWidth: isSelected ? 1.5 : (isSameContent ? 1.0 : 0.5))
                     )
                     .contentShape(Rectangle())
-                    .onTapGesture(count: 2) { onStartEditing() }
-                    .onTapGesture { onSelect() }
+                    // ⚠️ 单击/双击必须合到一个手势里，靠系统 clickCount 区分。
+                    // 两个 onTapGesture 叠在同一视图上时，单击总是先赢，双击永远进不去编辑态。
+                    .onTapGesture {
+                        if (NSApp.currentEvent?.clickCount ?? 1) >= 2 { onStartEditing() }
+                        else { onSelect() }
+                    }
             }
         }
     }
 
+    /// 每格始终按自身内容（班级/科目）着色 —— 不再因为「选中了其他格」而变灰，
+    /// 否则整张课表看上去像没上色（2026-09-13 用户反馈）。
     private var fillColor: Color {
-        if isDimmed { return Color(hex: 0xAEB6BD).opacity(0.35) }   // 其他内容变灰
-        return color(text).opacity(isEmpty(text) ? 0.12 : 0.85)      // 选中格/相同内容保持本色
+        color(text).opacity(isEmpty(text) ? 0.12 : 0.85)
     }
 
     /// 单元格底色：单班级用纯色，多班级（如「7/巡16-30」）用左右渐变
     @ViewBuilder
     private var cellBackground: some View {
         let cs = extraColors?(text) ?? []
-        if isDimmed || isEmpty(text) || cs.count < 2 {
+        if isEmpty(text) || cs.count < 2 {
             RoundedRectangle(cornerRadius: 6).fill(fillColor)
         } else {
             RoundedRectangle(cornerRadius: 6).fill(
@@ -328,7 +332,6 @@ struct ClassScheduleView: View {
                                 color: courseColor,
                                 isSelected: selected == id,
                                 isSameContent: sameContent,
-                                isDimmed: selected != nil && !sameContent,
                                 isEditing: editing == id,
                                 onSelect: {
                                     editing = nil

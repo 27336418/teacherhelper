@@ -660,6 +660,9 @@ struct SeatingView: View {
                 Divider()
             }
             if !n.isEmpty {
+                // 兜底入口：双击之外，右键也能改姓名
+                Button("编辑姓名…") { editingKey = modelKey }
+                Divider()
                 Button("标记为男生") { store.setGender(n, "男") }
                 Button("标记为女生") { store.setGender(n, "女") }
                 Button("清除性别") { store.setGender(n, nil) }
@@ -669,7 +672,7 @@ struct SeatingView: View {
                 }
                 Button("清空此座位") { store.setCell(modelKey, "") }
             } else {
-                Text("空座位：双击输入姓名")
+                Button("输入姓名…") { editingKey = modelKey }
             }
         }
         .help("单击选中·⌘单击加选·⇧单击框选（只框住坐着学生的座位）；拖动学生 = 与落点格互换；从空格拖动 = 框选一片；框选后拖到空位 = 整块移动、拖到有学生的格 = 两格互换；双击输入姓名；右键更多")

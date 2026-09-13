@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // MARK: - 通用格子尺寸：fixed=固定宽高；flexible=等分撑满可用宽度
 // 办公室工位铺满「半行」卡片时用 flexible，避免右侧留下大片空白。
@@ -111,10 +112,17 @@ struct EditableGridCell: View {
             .contentShape(Rectangle())
 
         if externalEditing != nil {
-            // 单击立即响应（无双击判定延迟）；双击进入编辑。
-            // 单/双击都挂在同一视图上，避免父子手势竞争导致的单击滞后。
-            base.onTapGesture { onTap?() }
-                .onTapGesture(count: 2) { externalEditing?.wrappedValue = true }
+            // 单击立即响应（无判定延迟）；双击进入编辑。
+            // ⚠️ 不能把 onTapGesture(count: 2) 与 onTapGesture 叠在同一视图上：
+            //    单击手势总是先赢，双击永远进不去编辑态（座位表「双击输姓名」失效的真因）。
+            //    改为单个手势 + 系统 clickCount 判定，单击不延迟、双击也能命中。
+            base.onTapGesture {
+                if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
+                    externalEditing?.wrappedValue = true
+                } else {
+                    onTap?()
+                }
+            }
         } else {
             base.onTapGesture(count: 2) { editingInternal = true }
         }

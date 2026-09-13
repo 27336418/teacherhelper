@@ -224,6 +224,11 @@ lipo -create -output /tmp/ScheduleBar-univ \
 cp /tmp/ScheduleBar-univ "$MASTER/Contents/MacOS/ScheduleBar"
 plutil -replace CFBundleShortVersionString -string "$NEWVER" "$MASTER/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$NEWBUILD" "$MASTER/Contents/Info.plist"
+# 图标以 AppIcon/课表.icns 为准（改完图标不用手动往 .app 里拷）
+if [ -f "$PROJECT/AppIcon/课表.icns" ]; then
+  cp -f "$PROJECT/AppIcon/课表.icns" "$MASTER/Contents/Resources/AppIcon.icns"
+  ok "已同步 App 图标（AppIcon/课表.icns）"
+fi
 xattr -d com.apple.FinderInfo "$MASTER" 2>/dev/null || true
 find "$MASTER" -print0 | xargs -0 xattr -c 2>/dev/null || true
 codesign --remove-signature "$MASTER" 2>/dev/null || true
@@ -265,7 +270,7 @@ ok "三份完全一致：$M0"
 step "6/9 冒烟测试"
 nohup "$MASTER/Contents/MacOS/ScheduleBar" >/tmp/smoke.log 2>&1 & SP=$!
 sleep 4
-if kill -0 $SP 2>/dev/null; then kill $SP 2>/dev/null; ok "启动正常"; else cat /tmp/smoke.log | tail -10; die "启动失败"; fi
+if kill -0 $SP 2>/dev/null; then kill $SP 2>/dev/null || true; wait $SP 2>/dev/null || true; ok "启动正常"; else cat /tmp/smoke.log | tail -10; die "启动失败"; fi
 
 step "7/9 生成 DMG"
 rm -f "$PROJECT/教师助手_v${NEWVER}.dmg"

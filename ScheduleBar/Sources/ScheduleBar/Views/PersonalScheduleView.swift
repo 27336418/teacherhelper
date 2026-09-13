@@ -162,7 +162,6 @@ struct PersonalScheduleView: View {
             color: classColor,
             isSelected: selected == id,
             isSameContent: sameContent,
-            isDimmed: selected != nil && !sameContent,
             isEditing: editing == id,
             onSelect: {
                 editing = nil
