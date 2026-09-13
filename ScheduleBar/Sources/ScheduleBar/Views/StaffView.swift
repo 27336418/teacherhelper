@@ -198,11 +198,15 @@ struct StaffView: View {
             .foregroundStyle(Color.accentColor)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
+            // ⚠️ 必须不透明：safeAreaInset 只是「滚到底时不被遮住」，滚动过程中内容会从条底下穿过，
+            //    半透明底色会让下面的班级行透上来，数字看不清。
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.accentColor.opacity(0.12))
+                    .fill(.regularMaterial)
                     .overlay(RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.accentColor.opacity(0.35), lineWidth: 1))
+                        .fill(Color.accentColor.opacity(0.16)))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.accentColor.opacity(0.45), lineWidth: 1))
             )
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
