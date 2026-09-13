@@ -57,7 +57,10 @@ struct EditableGridCell: View {
     var backgroundColor: Color? = nil       // 自定义底色（教室颜色等）；nil=默认
     var textColor: Color? = nil             // 显示态文字色（校验红/绿等）；nil=默认
     var isSelected: Bool = false            // 当前点中的格子：加粗描边
-    var isHighlighted: Bool = false         // 命中「同一个人 / 班型」：淡强调色底 + 描边
+    var isHighlighted: Bool = false         // 命中「同一个人 / 班型」：淡色底 + 描边
+    /// 高亮配色（师资表传红色）：命中「同一个人 / 班型」时底色与描边都用它。
+    /// 只影响 isSelected / isHighlighted 的观感，不动格子自定义底色。
+    var highlightColor: Color = .accentColor
     var onSave: () -> Void = {}
 
     /// 外部接管编辑态（座位表用）：传入后不再自己判定双击，改由 onTap 回调决定。
@@ -115,9 +118,9 @@ struct EditableGridCell: View {
             .gridCellFrame(width: width, height: height, flexible: flexible)
             .background(RoundedRectangle(cornerRadius: 5)
                 .fill(backgroundColor ?? Color.primary.opacity(0.01)))
-            // 命中高亮：叠一层淡强调色（不盖掉格子自己的底色，仍能看出原本的颜色）
+            // 命中高亮：叠一层淡色底（不盖掉格子自己的底色，仍能看出原本的颜色）
             .overlay(RoundedRectangle(cornerRadius: 5)
-                .fill(Color.accentColor.opacity(isHighlighted ? 0.26 : 0)))
+                .fill(highlightColor.opacity(isHighlighted ? 0.30 : 0)))
             .overlay(RoundedRectangle(cornerRadius: 5)
                 .stroke(borderColor, lineWidth: borderWidth))
             .contentShape(Rectangle())
@@ -143,8 +146,8 @@ struct EditableGridCell: View {
     }
 
     private var borderColor: Color {
-        if isSelected { return Color.accentColor.opacity(0.95) }
-        if isHighlighted { return Color.accentColor.opacity(0.75) }
+        if isSelected { return highlightColor.opacity(0.95) }
+        if isHighlighted { return highlightColor.opacity(0.75) }
         return Color.primary.opacity(0.08)
     }
 

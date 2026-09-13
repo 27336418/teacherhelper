@@ -376,10 +376,10 @@ enum SelfTest {
                       store.selection == Set(["0-0", "0-1", "0-2", "1-0"])
                       && !store.selection.contains("1-1") && !store.selection.contains("1-2")))
 
-        // 25) Excel 式列字母
-        cases.append(("列字母 A / K / Z / AA",
-                      SeatingStore.columnLabel(0) == "A" && SeatingStore.columnLabel(10) == "K"
-                      && SeatingStore.columnLabel(25) == "Z" && SeatingStore.columnLabel(26) == "AA"))
+        // 25) 列号：与行号同一套阿拉伯数字（0→1、9→10、25→26）
+        cases.append(("列号 1 / 10 / 26（原 Excel 式 A/B/C 已改成数字）",
+                      SeatingStore.columnLabel(0) == "1" && SeatingStore.columnLabel(9) == "10"
+                      && SeatingStore.columnLabel(25) == "26"))
 
         // ── 以下为 2.1.9：取消「分组」功能后的旧数据迁移 ──
 
@@ -403,9 +403,10 @@ enum SelfTest {
                       && SeatingStore.loadV2()?.regions == nil
                       && SeatingStore.loadV2()?.poolGroups == nil))
 
-        // 27) 导出格式（列字母表头 + 行号 + 讲台行）能被导入解析正确还原
+        // 27) 导出格式（列号表头 + 行号 + 讲台行）能被导入解析正确还原。
+        //     列号 2026-09-13 起改成数字（1/2/3…），但旧文件里的 Excel 式字母（A/B/C）必须照样认。
         let exportedRows: [[String]] = [
-            ["", "A", "B"],
+            ["", "1", "2"],
             ["1", "甲", "乙"],
             ["2", "丙", ""],
             ["3", "讲台", ""],
@@ -413,8 +414,20 @@ enum SelfTest {
         ]
         let reparsed = AppCoordinator.parseSeating(exportedRows)
         let reparsedNames = reparsed.groups.flatMap { $0.seats.flatMap { $0 } }.filter { !$0.isEmpty }
-        cases.append(("导出格式可再导入（列头/行号/讲台行都不当姓名，甲/乙/丙/待用己 都对）",
+        cases.append(("导出格式可再导入·新列号 1/2（列头/行号/讲台行都不当姓名，甲/乙/丙/待用己 都对）",
                       Set(reparsedNames) == Set(["甲", "乙", "丙"]) && reparsed.pool.contains("己")))
+
+        // 27b) 旧版导出（列号 A/B/C）仍能导入 —— 换了列号不能让老文件打不开
+        let legacyHeaderRows: [[String]] = [
+            ["", "A", "B"],
+            ["1", "甲", "乙"],
+            ["2", "丙", ""],
+            ["待用栏", "己"],
+        ]
+        let legacyHeaderParsed = AppCoordinator.parseSeating(legacyHeaderRows)
+        let legacyHeaderNames = legacyHeaderParsed.groups.flatMap { $0.seats.flatMap { $0 } }.filter { !$0.isEmpty }
+        cases.append(("旧版字母列头（A/B/C）仍可导入（甲/乙/丙 都在、没被当姓名吃掉）",
+                      Set(legacyHeaderNames) == Set(["甲", "乙", "丙"]) && legacyHeaderParsed.pool.contains("己")))
 
         // 28) 模板 → 导入 闭环：空模板不该解析出任何「假姓名」（表头 / 行号 / 讲台 都不算姓名）
         let (tplRows, _) = AppCoordinator.templateRows(.seating)

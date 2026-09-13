@@ -632,7 +632,7 @@ final class AppCoordinator: ObservableObject {
             var cells = row.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             // 文件首行的标题（整行只有 1 个非空格，如「班级座位表」）→ 跳过
             if isFirstRow, cells.filter({ !$0.isEmpty }).count == 1 { continue }
-            // 兼容「导出文件」格式：跳过「空 + 列号 A/B/C…」的列头行、剥掉行首行号
+            // 兼容「导出文件」格式：跳过「空 + 列号（数字 1/2/3 或旧版字母 A/B/C）」的列头行、剥掉行首行号
             if isSeatingColumnHeader(cells) { continue }
             if cells.count > 1, let f = cells.first, isRowNumber(f) {
                 cells.removeFirst()
@@ -710,11 +710,19 @@ final class AppCoordinator: ObservableObject {
     }
 
     /// 导出的座位表列头行：「首格为空 + 其余都是 1~3 个大写字母（A/B/C…）」
+    /// 列头行（首格空 + 其余全是列号）。列号有两种写法，都要认：
+    /// 新版 = 纯数字「1 / 2 / 3…」，旧版 = Excel 式字母「A / B / AA」。
+    /// 不认出来就会把整行列号当成学生姓名吃进座位表。
     private static func isSeatingColumnHeader(_ cells: [String]) -> Bool {
         guard cells.count > 1, cells[0].isEmpty else { return false }
-        let rest = cells.dropFirst()
+        let rest = Array(cells.dropFirst())
         guard rest.contains(where: { !$0.isEmpty }) else { return false }
-        return rest.allSatisfy { $0.isEmpty || ($0.count <= 3 && $0.allSatisfy { $0.isLetter && $0.isUppercase }) }
+        return rest.allSatisfy { cell in
+            if cell.isEmpty { return true }
+            guard cell.count <= 3 else { return false }
+            if cell.allSatisfy({ $0.isNumber }) { return true }               // 新版列号：1 / 2 / 3…
+            return cell.allSatisfy({ $0.isLetter && $0.isUppercase })          // 旧版列号：A / B / AA
+        }
     }
 
     /// 行号列（纯数字）：用于剥掉导出文件每行开头的 1 / 2 / 3…
@@ -741,7 +749,7 @@ final class AppCoordinator: ObservableObject {
     private func exportSeatingRows() -> [[String]] {
         let store = SeatingStore.shared
         var rows: [[String]] = []
-        // 整张表原样导出（Excel 式）：第一行是列号 A/B/C…（首格留空），之后每行 = 行号 + 各列姓名。
+        // 整张表原样导出：第一行是列号 1/2/3…（首格留空），之后每行 = 行号 + 各列姓名。
         // 讲台只在其起始格写「讲台」，被它覆盖的其余格子留空。
         rows.append([""] + (0..<store.cols).map { SeatingStore.columnLabel($0) })
         for r in 0..<store.rows {
@@ -1162,7 +1170,7 @@ final class AppCoordinator: ObservableObject {
                 + Array(repeating: Array(repeating: "", count: cols), count: 4)
             name = "办公室工位模板"
         case .seating:
-            // 与「下载」导出的格式完全一致（Excel 式）：标题行 + 列号 A/B/C… + 每行「行号 + 姓名」。
+            // 与「下载」导出的格式完全一致：标题行 + 列号 1/2/3… + 每行「行号 + 姓名」。
             // 最后一行中间 3 格写着「讲台」，用来示范「讲台在表格里面」（可自行改位置或删掉）。
             // 分组功能已取消：不再有「小组」分段，整张表就是一张座位表。
             let seatCols = SeatingStore.defaultSize

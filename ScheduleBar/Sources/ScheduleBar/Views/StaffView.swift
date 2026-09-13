@@ -76,12 +76,17 @@ struct StaffView: View {
     }
 
     var body: some View {
-        ScrollView {
+        // ⚠️ 这里原来是 ScrollView（整页滚动）→ 顶栏和表头行会被一起滚走。
+        //    2026-09-13 用户要求「冻结班级 / 班主任所在的行」+「高亮几处显示在标题旁边」，
+        //    所以改成：外层撑满内容区，顶栏与表头固定，只有数据行在内部 ScrollView 里滚。
+        VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     EditableCardTitle(icon: "person.text.rectangle", key: "staff")
                         .fixedSize(horizontal: true, vertical: false)
                         .layoutPriority(1)
+                    // 高亮计数：紧贴标题右侧，不占用别的位置（顶栏固定，滚动时一直可见）
+                    highlightBadge
                     Spacer()
                     UndoButton()
                     Menu {
@@ -156,60 +161,53 @@ struct StaffView: View {
                         }
                     }
 
-                    // 数据行（按排序列展示）
-                    ForEach(displayedRows) { row in
-                        rowView(binding(for: row.id))
+                    // 数据行（按排序列展示）——只有这一块滚动，表头行留在滚动区外面
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 4) {
+                            ForEach(displayedRows) { row in
+                                rowView(binding(for: row.id))
+                            }
+                        }
+                        .padding(.bottom, 2)
                     }
                 }
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
+                // 表格卡片撑满剩余高度：表头固定，数据行在卡片内部滚动
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
             .padding(16)
         }
-        // ⚠️ 计数条必须挂在 ScrollView 外面（safeAreaInset），不能放进滚动内容里：
-        //    表有 30 行，点完姓名往下滚看高亮时，放在内容顶部的提示会一起滚走，
-        //    于是「高亮的时候看不到高亮了几处」（2026-09-13 用户反馈）。
-        .safeAreaInset(edge: .bottom, spacing: 0) { highlightBar }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    // MARK: 常驻高亮计数条（永远可见，滚动不影响）
+    // MARK: 高亮计数徽标（紧贴「年级师资安排」标题右侧；红色，与高亮同色）
+    // 放在顶栏里 = 不占用别的版面；顶栏固定不滚动，所以往下翻表也一直看得见「高亮了几处」。
     @ViewBuilder
-    private var highlightBar: some View {
+    private var highlightBadge: some View {
         if let key = highlightKey {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 Image(systemName: "highlighter")
-                    .font(.system(size: 11))
+                    .font(.system(size: 10, weight: .bold))
                 Text("高亮 \(matchCount) 处「\(key)」")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("再点一次或点空格取消")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
+                    .font(.system(size: 11, weight: .semibold))
+                    .fixedSize()
                 Button {
                     selected = nil
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.red.opacity(0.7))
                 }
                 .buttonStyle(.plain)
-                .help("取消高亮")
+                .help("取消高亮（再点一次高亮格、点空格或按 ✕ 都行）")
             }
-            .foregroundStyle(Color.accentColor)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            // ⚠️ 必须不透明：safeAreaInset 只是「滚到底时不被遮住」，滚动过程中内容会从条底下穿过，
-            //    半透明底色会让下面的班级行透上来，数字看不清。
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(.regularMaterial)
-                    .overlay(RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.accentColor.opacity(0.16)))
-                    .overlay(RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.accentColor.opacity(0.45), lineWidth: 1))
-            )
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
+            .foregroundStyle(Color.red)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.red.opacity(0.14)))
+            .overlay(Capsule().stroke(Color.red.opacity(0.45), lineWidth: 1))
+            .fixedSize()
             .transition(.opacity)
         }
     }
@@ -228,6 +226,7 @@ struct StaffView: View {
                                  backgroundColor: cellFill(hex),
                                  isSelected: selected == ref,
                                  isHighlighted: isHighlighted(r, c),
+                                 highlightColor: .red,
                                  onSingleTap: { select(ref) })
                 .contextMenu {
                     cellMenu(rowID: r.id, col: c, text: r.cells[c], hex: hex)

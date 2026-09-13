@@ -288,7 +288,7 @@ struct SeatingView: View {
         }
     }
 
-    /// 列号表头（Excel 式 A/B/C；右键：左/右插入列、删除此列）
+    /// 列号表头（1/2/3…，与左侧行号同一套数字；右键：左/右插入列、删除此列）
     private func colHeader(dCol: Int, width: CGFloat) -> some View {
         let (_, c) = modelRC(dRow: 0, dCol: dCol)
         let mirrored = store.studentView
@@ -312,7 +312,7 @@ struct SeatingView: View {
                     Label("删除 \(label) 列（学生回待用栏）", systemImage: "minus.circle")
                 }
             }
-            .help("\(label) 列：右键可在任意位置插入/删除列（Excel 式）")
+            .help("第 \(label) 列：右键可在任意位置插入/删除列")
     }
 
     /// 行号表头（右键：上/下插入行、删除此行）

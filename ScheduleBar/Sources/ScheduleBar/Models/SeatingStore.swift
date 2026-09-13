@@ -191,16 +191,12 @@ final class SeatingStore: ObservableObject {
     static func key(_ r: Int, _ c: Int) -> CellKey { "\(r)-\(c)" }
     static func parse(_ key: CellKey) -> (Int, Int)? { parseCellKey(key) }
 
-    /// Excel 式列号：0→A、25→Z、26→AA…
+    /// 列号：0→"1"、9→"10"（与左侧行号同一套阿拉伯数字，直接念「第几列」）。
+    /// 2026-09-13 用户要求：座位表表头由 Excel 式 A/B/C 改成 1/2/3。
+    /// ⚠️ 三处必须同格式（表头显示 / 导出 / 模板）；导入端 `AppCoordinator.isSeatingColumnHeader`
+    ///    同时认识「纯数字」和「旧版字母」两种列头，老文件照样能导进来。
     static func columnLabel(_ index: Int) -> String {
-        var n = max(index, 0)
-        var s = ""
-        repeat {
-            let r = n % 26
-            s = String(UnicodeScalar(UInt8(65 + r))) + s
-            n = n / 26 - 1
-        } while n >= 0
-        return s
+        "\(max(index, 0) + 1)"
     }
 
     // MARK: - 格子读写
