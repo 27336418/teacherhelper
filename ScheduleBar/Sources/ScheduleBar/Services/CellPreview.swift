@@ -5,8 +5,10 @@ import AppKit
 //
 // 用法：ScheduleBar --render-cells /tmp/cells.png
 //
-// 为什么需要它：2026-09-13 这次 bug 是**纯视觉**的 —— 命中「同内容」的格子只是加了一圈
-// 「本身课程色」的描边（`color(text).opacity(0.8)`），而底色就是同一个颜色，肉眼完全看不出来。
+// 为什么需要它：课表高亮这一路改过三版，每版都是**纯视觉**问题 ——
+//   2.2.7 之前：命中格只加一圈「本身就是课程色」的描边，底色同色 → 肉眼完全看不出变化；
+//   2.2.7      ：改成外红环 + 内白隔离环；
+//   2.2.8      ：用户拍板「参考年级师资安排的效果」→ 命中格淡红底、其余格退回默认灰。
 // 逻辑自检全绿照样白搭，只有看到像素才算验证过。
 //
 // 而 `screencapture` 要求屏幕处于解锁可见状态；机器锁屏时截出来是全黑。`ImageRenderer`
@@ -18,56 +20,58 @@ import AppKit
 @available(macOS 13.0, *)
 enum CellPreview {
 
+    /// 与真实 7 班课表一致的样本（含正红「语文·于理想」、暗红「政治·余燕」两个最难的底色）
+    private static let sample: [[String]] = [
+        ["语文·于理想", "数学·林科",   "英语·邓雨蒙", "物理·陈乐怡"],
+        ["数学·林科",   "语文·于理想", "化学·蒙真真", "历史·赖炳森"],
+        ["英语·邓雨蒙", "政治·余燕",   "语文·于理想", "体育·王加鹏"],
+        ["政治·余燕",   "数学·林科",   "足球·王加鹏", "语文·于理想"],
+    ]
+
     @MainActor
     static func renderScheduleCells(to path: String) {
-        // 用课表里真实出现过的 9 门课（颜色固定映射），特别带上正红「语文」和暗红「政治」——
-        // 它们就是红环最容易糊掉的那两种底色，必须进样本。
-        let courses = ["语文·于理想", "数学·林科", "英语·邓雨蒙", "物理·陈乐怡", "化学·蒙真真",
-                       "历史·赖炳森", "政治·余燕", "体育·王加鹏", "足球·王加鹏"]
+        // 点中的格子（语文 第 1 行第 1 列）与它的分组键
+        let hitRow = 0, hitCol = 0
+        let hitKey = courseKey(sample[hitRow][hitCol])
 
-        var rows: [AnyView] = []
-        for (i, c) in courses.enumerated() {
-            rows.append(AnyView(
-                HStack(spacing: 8) {
-                    Text(c)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.black)
-                        .frame(width: 94, alignment: .leading)
-
-                    // ① 未命中：应该保持原样
-                    ScheduleCell(text: c, width: 94,
-                                 id: ScheduleCellID(period: "p", day: i * 3),
-                                 color: courseColor,
-                                 isSelected: false, isSameContent: false, isEditing: false,
-                                 onSelect: {}, onStartEditing: {},
-                                 onUpdate: { _ in }, onEndEditing: {})
-
-                    // ② 命中（同内容，但不是被点中的那格）
-                    ScheduleCell(text: c, width: 94,
-                                 id: ScheduleCellID(period: "p", day: i * 3 + 1),
-                                 color: courseColor,
-                                 isSelected: false, isSameContent: true, isEditing: false,
-                                 onSelect: {}, onStartEditing: {},
-                                 onUpdate: { _ in }, onEndEditing: {})
-
-                    // ③ 被点中的那一格（红环更粗）
-                    ScheduleCell(text: c, width: 94,
-                                 id: ScheduleCellID(period: "p", day: i * 3 + 2),
-                                 color: courseColor,
-                                 isSelected: true, isSameContent: true, isEditing: false,
-                                 onSelect: {}, onStartEditing: {},
-                                 onUpdate: { _ in }, onEndEditing: {})
+        func grid(selected: Bool) -> some View {
+            VStack(spacing: 4) {
+                ForEach(Array(sample.enumerated()), id: \.offset) { r, row in
+                    HStack(spacing: 6) {
+                        ForEach(Array(row.enumerated()), id: \.offset) { c, text in
+                            let marked = selected && courseKey(text) == hitKey
+                            ScheduleCell(
+                                text: text,
+                                width: 108,
+                                id: ScheduleCellID(period: "p\(r)", day: c),
+                                color: courseColor,
+                                isSelected: selected && r == hitRow && c == hitCol,
+                                isSameContent: marked,
+                                isEditing: false,
+                                isDimmed: selected,
+                                onSelect: {}, onStartEditing: {},
+                                onUpdate: { _ in }, onEndEditing: {}
+                            )
+                        }
+                    }
                 }
-            ))
+            }
         }
 
-        let content = VStack(alignment: .leading, spacing: 6) {
-            Text("① 未命中　　② 命中（同内容）　　③ 被点中那一格")
-                .font(.system(size: 10))
-                .foregroundStyle(Color.black)
-            ForEach(0..<rows.count, id: \.self) { i in rows[i] }
+        func caption(_ s: String) -> some View {
+            Text(s).font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.black)
         }
-        .padding(12)
+
+        let content = VStack(alignment: .leading, spacing: 10) {
+            caption("① 未点击：每格按自己所属科目着色")
+            grid(selected: false)
+
+            Divider().frame(width: 460)
+
+            caption("② 点一下「语文」（第 1 行第 1 格）：全表同科目的格子淡红高亮（被点中那格描边更粗），其余格子变默认灰")
+            grid(selected: true)
+        }
+        .padding(14)
         .background(Color.white)
 
         let renderer = ImageRenderer(content: content)

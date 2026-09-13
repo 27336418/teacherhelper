@@ -8,7 +8,8 @@ struct ScheduleCellID: Hashable {
 }
 
 // MARK: - 课表单元格（个人 & 班级共用）
-// 单击 → 选中，并把全表「同内容」的格子一起标红（个人课表按班级判同、班级课表按科目判同）
+// 单击 → 选中，并把全表「同内容」的格子一起高亮（个人课表按班级判同、班级课表按科目判同），
+//        其余格子退回默认灰（照搬「年级师资安排」的观感）
 // 双击 → 进入编辑模式（可修改文字，边输边存）
 struct ScheduleCell: View {
     let text: String
@@ -20,6 +21,9 @@ struct ScheduleCell: View {
     let isSelected: Bool
     let isSameContent: Bool  // 与选中格是同一科目/同一内容 → 一起高亮
     let isEditing: Bool
+    /// 整表高亮态：点了某一格时为 true —— 命中的「同内容」格淡红高亮，
+    /// **其余格子统一退回默认灰**（照搬「年级师资安排」那套观感）。
+    var isDimmed: Bool = false
     var highlightColor: Color = .red   // 命中高亮色（与「年级师资」保持一致：红）
     let onSelect: () -> Void
     let onStartEditing: () -> Void
@@ -61,11 +65,11 @@ struct ScheduleCell: View {
                     .minimumScaleFactor(0.55)
                     .frame(width: width, height: height)
                     .background(cellBackground)
+                    .overlay(markOverlay)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(borderColor, lineWidth: 0.5)
+                            .stroke(borderColor, lineWidth: borderWidth)
                     )
-                    .overlay(markRing)
                     .contentShape(Rectangle())
                     // ⚠️ 单击/双击必须合到一个手势里，靠系统 clickCount 区分。
                     // 两个 onTapGesture 叠在同一视图上时，单击总是先赢，双击永远进不去编辑态。
@@ -77,17 +81,25 @@ struct ScheduleCell: View {
         }
     }
 
-    /// 每格始终按自身内容（班级/科目）着色 —— 不再因为「选中了其他格」而变灰，
-    /// 否则整张课表看上去像没上色（2026-09-13 用户反馈）。
+    /// 单元格底色：
+    /// · 没点任何格 → 每格始终按自身内容（班级/科目）着色；
+    /// · 点了某一格 → 照搬「年级师资安排」的观感（2026-09-13 用户指定）：命中「同内容」的
+    ///   格子淡红高亮，**其余格子统一退回默认灰**，相同的几处一眼就跳出来。
+    /// ⚠️ 灰底用师资页同款 gray 0.20，不能再压暗 —— 整表转灰时压暗会让课表看上去像没上色。
     private var fillColor: Color {
-        color(text).opacity(isEmpty(text) ? 0.12 : 0.85)
+        if isDimmed { return Self.dimFill }
+        return color(text).opacity(isEmpty(text) ? 0.12 : 0.85)
     }
 
-    /// 单元格底色：单班级用纯色，多班级（如「7/巡16-30」）用左右渐变
+    /// 与「年级师资安排」`StaffView.cellFill` 的默认底色严格一致
+    private static let dimFill = Color.gray.opacity(0.20)
+
+    /// 单元格底色：单班级用纯色，多班级（如「7/巡16-30」）用左右渐变。
+    /// 高亮态（其余格转灰）统一走灰底，不再按班级渐变。
     @ViewBuilder
     private var cellBackground: some View {
         let cs = extraColors?(text) ?? []
-        if isEmpty(text) || cs.count < 2 {
+        if isDimmed || isEmpty(text) || cs.count < 2 {
             RoundedRectangle(cornerRadius: 6).fill(fillColor)
         } else {
             RoundedRectangle(cornerRadius: 6).fill(
@@ -97,26 +109,27 @@ struct ScheduleCell: View {
         }
     }
 
-    /// 命中「同内容」的格子：不画常规细描边（交给 markRing 画粗红环）
+    /// 描边：命中「同内容」的格子用红描边（选中那格更粗更实）
     private var borderColor: Color {
-        if isSelected || isSameContent { return .clear }
+        if isSelected { return highlightColor.opacity(0.95) }
+        if isSameContent { return highlightColor.opacity(0.75) }
         return Color.primary.opacity(0.08)
     }
 
-    /// 「同内容」标记环：外侧红环 + 内侧白隔离环。
-    /// ⚠️ 内侧那圈白不是装饰：课程色里有正红（语文 #E74C3C）和暗红（政治 #C0392B），
-    ///    红环直接贴上去会糊成一团分不出来，必须留一圈白把红环和底色隔开（2026-09-13 实测）。
-    /// 选中的那一格红环更粗，用来区分「点的是它」和「跟着一起高亮的其他格子」。
+    private var borderWidth: CGFloat {
+        if isSelected { return 2 }
+        if isSameContent { return 1.5 }
+        return 0.5
+    }
+
+    /// 「同内容」标记：叠一层淡红底（0.30，与师资页 `EditableGridCell` 同款），描边走 borderColor。
+    /// 底色此时已经是灰的，不会再和课程色（正红「语文」#E74C3C / 暗红「政治」#C0392B）打架，
+    /// 所以 2.2.7 那圈「内侧白隔离环」已不再需要。
     @ViewBuilder
-    private var markRing: some View {
+    private var markOverlay: some View {
         if isSelected || isSameContent {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(highlightColor, lineWidth: isSelected ? 3 : 2.5)
-                    .padding(-2)
-                RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Color.white.opacity(0.95), lineWidth: 1.5)
-            }
+            RoundedRectangle(cornerRadius: 6)
+                .fill(highlightColor.opacity(0.30))
         }
     }
 
@@ -351,6 +364,7 @@ struct ClassScheduleView: View {
                                 isSelected: selected == id,
                                 isSameContent: sameContent,
                                 isEditing: editing == id,
+                                isDimmed: selectedCourseKey != nil,
                                 onSelect: {
                                     editing = nil
                                     if selected == id { selected = nil }
@@ -375,7 +389,7 @@ struct ClassScheduleView: View {
                                 onPerform: { classStore.swapCellTo(p, d) },
                                 onFinish: { classStore.finishCellDrag() }
                             ))
-                            .help("单击高亮全表同内容；再点一次取消。双击编辑；拖动可与其它格子对换")
+                            .help("单击：高亮全表同科目，其余格子变灰；再点一次取消。双击编辑；拖动可与其它格子对换")
                         }
                     }
                 }

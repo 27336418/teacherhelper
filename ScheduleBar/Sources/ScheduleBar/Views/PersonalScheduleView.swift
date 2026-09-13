@@ -163,6 +163,7 @@ struct PersonalScheduleView: View {
             isSelected: selected == id,
             isSameContent: sameContent,
             isEditing: editing == id,
+            isDimmed: selectedKey != nil,
             onSelect: {
                 editing = nil
                 if selected == id { selected = nil } else { selected = id }
@@ -186,6 +187,6 @@ struct PersonalScheduleView: View {
             onPerform: { store.swapCellTo(period, day) },
             onFinish: { store.finishCellDrag() }
         ))
-        .help("单击高亮全表同内容；再点一次取消。双击编辑；拖动可与其它格子对换")
+        .help("单击：高亮全表同班级，其余格子变灰；再点一次取消。双击编辑；拖动可与其它格子对换")
     }
 }
