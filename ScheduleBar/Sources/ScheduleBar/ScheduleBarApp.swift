@@ -61,6 +61,18 @@ struct ScheduleBarApp {
             SelfTest.runStaffColorCheck()
             return
         }
+        // 课表单元格「同内容高亮」离屏渲染取证（不依赖屏幕是否解锁）：--render-cells <out.png>
+        // 纯视觉改动必须靠它验证 —— 逻辑自检看不出一圈「本色描边」等于没画。
+        if let i = args.firstIndex(of: "--render-cells"), i + 1 < args.count {
+            if #available(macOS 14.0, *) {
+                MainActor.assumeIsolated {
+                    CellPreview.renderScheduleCells(to: args[i + 1])
+                }
+            } else {
+                print("✗ --render-cells 需要 macOS 14+（仅诊断用，不影响 App 本体运行）")
+            }
+            return
+        }
 
         let app = NSApplication.shared
         let delegate = AppDelegate()
