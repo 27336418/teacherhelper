@@ -130,10 +130,12 @@ enum SelfTest {
     }
 
     /// 同步 GET（自检用；返回 HTTP 状态码与响应体）
+    /// 必须绕开本地缓存：否则会命中上一次的清单（CDN 缓存可达 12 小时），
+    /// 自检会误报「新版本没生效」。
     private static func syncGet(_ urlString: String, accept: String) -> (Int, Data?) {
         guard let url = URL(string: urlString) else { return (-1, nil) }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 15
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         req.setValue(accept, forHTTPHeaderField: "Accept")
         req.setValue("TeacherHelper/selftest", forHTTPHeaderField: "User-Agent")
         var out: (Int, Data?) = (-1, nil)
