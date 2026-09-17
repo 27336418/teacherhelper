@@ -189,8 +189,10 @@ final class CalendarSyncService: ObservableObject {
     private func upsertReminder(_ r: Reminder) -> UpsertResult {
         let key = r.id.uuidString
 
-        // 没勾任何星期 → 这条提醒永远不会触发，系统日历里也不要留
-        guard !r.weekdays.isEmpty else {
+        // 未勾任何星期 → 一次性提醒（只在 oneShotDay 当天那个时刻），照常写一条「不重复」的日程；
+        // 只有既没勾星期、又没记日期的老数据才算「永远不会触发」，日历里不留。
+        // （2026-09-17 改：老版本把「没勾星期」一律当死数据，用户要求改成当天提醒一次）
+        guard !(r.weekdays.isEmpty && r.oneShotDay == nil) else {
             if let eid = eventIDs[key], deleteEvent(eid) {
                 eventIDs.removeValue(forKey: key)
                 return .deleted
@@ -233,13 +235,16 @@ final class CalendarSyncService: ObservableObject {
 
     /// 把一条提醒写进 EKEvent（标题 / 时间 / 每周重复 / 网址 / 说明）
     private func applyReminder(_ r: Reminder, to ev: EKEvent, title: String) {
-        let start = Self.firstStart(from: r)
+        let start = Self.startDate(for: r)
         ev.title = title
         ev.isAllDay = false
         ev.startDate = start
         ev.endDate = start.addingTimeInterval(30 * 60)
-        ev.recurrenceRules = [Self.weeklyRule(for: r.weekdays)]
-        ev.notes = "由「教师助手 · 提醒设置」自动同步；要改时间或文字，请回到应用内编辑。"
+        // 一次性提醒（没勾星期）不写重复规则 → 日历里就只有那一天那一条
+        ev.recurrenceRules = r.weekdays.isEmpty ? nil : [Self.weeklyRule(for: r.weekdays)]
+        ev.notes = r.weekdays.isEmpty
+            ? "由「教师助手 · 提醒设置」自动同步：未勾选星期 = 只在 \(r.oneShotDay ?? "-") 当天提醒一次。要改时间或文字，请回到应用内编辑。"
+            : "由「教师助手 · 提醒设置」自动同步；要改时间或文字，请回到应用内编辑。"
         if !r.url.isEmpty, let u = URL(string: r.url) {
             ev.url = u
         } else {
@@ -290,6 +295,14 @@ final class CalendarSyncService: ObservableObject {
                                 daysOfTheYear: nil,
                                 setPositions: nil,
                                 end: nil)
+    }
+
+    /// 日程开始时间：一次性提醒（没勾星期）＝ oneShotDay 当天的 hour:minute；否则按每周重复的首次发生时间
+    static func startDate(for r: Reminder,
+                          calendar cal: Calendar = .current,
+                          now: Date = Date()) -> Date {
+        if r.weekdays.isEmpty, let d = r.oneShotDate(calendar: cal) { return d }
+        return firstStart(from: r, calendar: cal, now: now)
     }
 
     /// 首次发生时间：今天或之后、第一个命中勾选星期的 0 点 + 提醒时分

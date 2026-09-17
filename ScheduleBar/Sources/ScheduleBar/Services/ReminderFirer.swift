@@ -52,8 +52,7 @@ final class ReminderFirer {
     private func check() {
         let now = Date()
         let cal = Calendar.current
-        let weekday = cal.component(.weekday, from: now)   // 1=周日…7=周六
-        let dayKey = Self.dayFormatter.string(from: now)
+        let dayKey = Self.dayFormatter.string(from: now)   // "yyyy-MM-dd"（一次性提醒也按它判「当天」）
 
         // 清理过期记录，防止字典无限增长
         if lastFired.count > 64 {
@@ -75,22 +74,59 @@ final class ReminderFirer {
             }
         }
 
-        // 2) 常规到点提醒（每条每天同一时刻只弹一次）
-        for r in ReminderStore.shared.reminders where r.fires(on: weekday) {
-            guard let target = cal.date(bySettingHour: r.hour, minute: r.minute, second: 0, of: now),
-                  now >= target,                       // 已到点
-                  now.timeIntervalSince(target) < 180  // 3 分钟内错过仍补弹
-            else { continue }
+        // 2) 到点提醒（每条每天同一时刻只弹一次）
+        //    · 勾了星期 → 只在勾选的星期那天；错过 3 分钟内仍补弹
+        //    · 没勾星期 → **一次性**：只在「当天」提醒；当天即使已经过点也补弹一次，绝不静默跳过
+        //      （2026-09-17 用户要求：未勾星期默认为当天设定的时间提醒，而不是「不会提醒」）
+        for r in ReminderStore.shared.reminders {
+            let verdict = Self.dueCheck(r, now: now, calendar: cal)
+            guard verdict.due else { continue }
 
             let key = "\(dayKey) \(String(format: "%02d:%02d", r.hour, r.minute))"
             guard lastFired[r.id] != key else { continue }
             lastFired[r.id] = key
+            if verdict.lateMinutes >= 1 {
+                SeatingStore.seatLog("提醒：「\(r.title)」\(verdict.reason)")
+            }
             fire(r) { [weak self] action in
                 if case .snooze(let t) = action {
                     self?.snoozed[r.id] = Date().addingTimeInterval(t)
                 }
             }
         }
+    }
+
+    /// 纯函数（供自检复用）：这条提醒在 now 这一刻该不该弹、以及为什么。
+    /// · 勾了星期：命中勾选星期 + 已到点 + 错过的仍在 3 分钟补弹窗口内。
+    /// · 没勾星期：一次性 —— 只在 `oneShotDay` 当天；当天不论迟多久都补弹一次（错过一整天＝那天不再提醒）。
+    static func dueCheck(_ r: Reminder, now: Date, calendar cal: Calendar = .current)
+        -> (due: Bool, lateMinutes: Int, reason: String) {
+        let oneShot = r.weekdays.isEmpty
+
+        if oneShot {
+            guard let day = r.oneShotDay else { return (false, 0, "未设置提醒日") }
+            let today = Reminder.dayString(now)
+            guard day == today else {
+                return (false, 0, day < today ? "一次性提醒已到期（原定 \(day)）" : "还没到提醒日（\(day)）")
+            }
+        } else {
+            let weekday = cal.component(.weekday, from: now)
+            guard r.fires(on: weekday) else { return (false, 0, "今天不在勾选的星期里") }
+        }
+
+        guard let target = cal.date(bySettingHour: r.hour, minute: r.minute, second: 0, of: now) else {
+            return (false, 0, "时刻无效")
+        }
+        guard now >= target else { return (false, 0, "还没到点") }
+
+        let late = Int(now.timeIntervalSince(target) / 60)
+        if !oneShot && now.timeIntervalSince(target) >= 180 {
+            return (false, 0, "错过超过 3 分钟")
+        }
+        if oneShot {
+            return (true, late, late < 1 ? "一次性提醒到点" : "一次性提醒补弹（已过 \(late) 分钟）")
+        }
+        return (true, late, late < 1 ? "到点提醒" : "补弹（已过 \(late) 分钟）")
     }
 
     /// 用户在弹窗上的选择

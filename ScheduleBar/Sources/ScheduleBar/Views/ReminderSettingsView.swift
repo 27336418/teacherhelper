@@ -18,7 +18,7 @@ struct ReminderSettingsView: View {
                     UndoButton()
                 }
 
-                Text("到点会弹窗提醒，可点「等会处理」选择稍后再提醒；文字与网址可自定义并自动保存。")
+                Text("到点会弹窗提醒，可点「等会处理」选择稍后再提醒；文字与网址可自定义并自动保存。不勾任何星期 = 只在当天该时刻提醒一次。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -114,10 +114,21 @@ struct ReminderRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if reminder.weekdays.isEmpty {
-                        // 一天都没勾 → 永远不会弹，必须让用户看出来
-                        Text("未勾选任何星期，不会提醒")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.orange)
+                        // 一天都没勾 = **一次性提醒**（只在该天提醒一次），不再是「不会提醒」
+                        // 2026-09-17 用户要求：未勾星期默认为当天设定的时间提醒
+                        if reminder.oneShotDay == Reminder.dayString(Date()) {
+                            Text("今天提醒")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.orange)
+                        } else if reminder.oneShotDay == nil {
+                            Text("未设置提醒日")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.orange)
+                        } else {
+                            Text("已过期")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -150,9 +161,23 @@ struct ReminderRow: View {
         String(format: "%02d:%02d", reminder.hour, reminder.minute)
     }
     private var weekText: String {
+        // 一次性提醒（没勾任何星期）：显示日期，而不是星期
+        if reminder.weekdays.isEmpty {
+            guard let d = reminder.oneShotDay else { return "未设置提醒日" }
+            return "仅 \(Self.shortDay(d)) 提醒一次"
+        }
         // 按「周一…周六、周日」显示（只是显示顺序，取值仍是 1=周日…7=周六）
         let ordered = ReminderStore.weekdayDisplayOrder.filter { reminder.weekdays.contains($0) }
         return ordered.map { ReminderStore.weekdayLabel($0) }.joined(separator: " ")
+    }
+
+    /// "2026-09-17" → "9月17日"（不是今年则带上年份）
+    static func shortDay(_ day: String) -> String {
+        let parts = day.split(separator: "-")
+        guard parts.count == 3, let m = Int(parts[1]), let d = Int(parts[2]) else { return day }
+        let y = Int(parts[0]) ?? 0
+        let thisYear = Calendar.current.component(.year, from: Date())
+        return y == thisYear ? "\(m)月\(d)日" : "\(y)年\(m)月\(d)日"
     }
     private var urlAbsolute: URL { URL(string: reminder.url) ?? URL(string: "https://www.baidu.com")! }
 }
@@ -185,14 +210,14 @@ struct ReminderEditSheet: View {
                 Text("一周哪些天重复")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("每天") { reminder.weekdays = ReminderStore.weekdayEveryDay }
+                Button("每天") { reminder.weekdays = ReminderStore.weekdayEveryDay; reminder.syncOneShot() }
                     .buttonStyle(.borderless)
                     .font(.system(size: 11))
                     .help("勾选周一到周日全部七天")
-                Button("周一至周五") { reminder.weekdays = ReminderStore.weekdayWorkdays }
+                Button("周一至周五") { reminder.weekdays = ReminderStore.weekdayWorkdays; reminder.syncOneShot() }
                     .buttonStyle(.borderless)
                     .font(.system(size: 11))
-                Button("周一至周六") { reminder.weekdays = ReminderStore.weekdayMonToSat }
+                Button("周一至周六") { reminder.weekdays = ReminderStore.weekdayMonToSat; reminder.syncOneShot() }
                     .buttonStyle(.borderless)
                     .font(.system(size: 11))
                 Spacer()
@@ -205,10 +230,21 @@ struct ReminderEditSheet: View {
                         } else {
                             reminder.weekdays.insert(w)
                         }
+                        // 勾选变了 → 同步「一次性提醒」的日期（一个都没勾就记成今天）
+                        reminder.syncOneShot()
                     }
                     .buttonStyle(.bordered)
                     .tint(reminder.weekdays.contains(w) ? .accentColor : .gray)
                 }
+            }
+
+            // 未勾任何星期 → 一次性提醒（2026-09-17 用户要求：默认为当天设定的时间提醒，而不是不提醒）
+            if reminder.weekdays.isEmpty {
+                Text("未勾选星期 = 一次性提醒：只在 \(ReminderRow.shortDay(reminder.oneShotDay ?? Reminder.dayString(Date()))) "
+                     + "\(String(format: "%02d:%02d", reminder.hour, reminder.minute)) 提醒一次（不每周重复）；要每周重复请勾选上面的星期。")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             TextField("网址（可选，点击提醒打开）", text: $reminder.url)
@@ -246,6 +282,8 @@ struct ReminderEditSheet: View {
                 let cal = Calendar.current
                 reminder.hour = cal.component(.hour, from: date)
                 reminder.minute = cal.component(.minute, from: date)
+                // 改了时间 → 一次性提醒若已过期就重新定成今天（用户改时间就是要它今天提醒）
+                reminder.syncOneShot()
             }
         )
     }

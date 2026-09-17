@@ -36,6 +36,24 @@ final class NotificationScheduler: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func schedule(_ r: Reminder) {
+        let content = UNMutableNotificationContent()
+        content.title = "课表提醒"
+        content.body = r.title
+        content.sound = .default
+
+        // 未勾任何星期 → **一次性**提醒：只给「当天」排一条不重复的系统通知。
+        // （2026-09-17 之前这里直接什么都不排，等于系统通知永远不会来；用户要求改成「当天该时刻提醒一次」）
+        if r.weekdays.isEmpty {
+            guard let date = r.oneShotDate(), date > Date() else { return }
+            var comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+            comps.second = 0
+            let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+            let request = UNNotificationRequest(identifier: "\(r.id.uuidString)-oneshot",
+                                               content: content, trigger: trigger)
+            UNUserNotificationCenter.current().add(request)
+            return
+        }
+
         for day in r.weekdays {
             // UNCalendarNotificationTrigger 用 DateComponents：weekday 1=周日
             var comps = DateComponents()
@@ -43,11 +61,6 @@ final class NotificationScheduler: NSObject, UNUserNotificationCenterDelegate {
             comps.hour = r.hour
             comps.minute = r.minute
             let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
-
-            let content = UNMutableNotificationContent()
-            content.title = "课表提醒"
-            content.body = r.title
-            content.sound = .default
 
             let id = "\(r.id.uuidString)-\(day)"
             let request = UNNotificationRequest(identifier: id, content: content, trigger: trigger)
@@ -67,9 +80,8 @@ final class NotificationScheduler: NSObject, UNUserNotificationCenterDelegate {
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let id = response.notification.request.identifier
-        let day = Int(id.split(separator: "-").last ?? "0") ?? 0
-        let base = id.replacingOccurrences(of: "-\(day)", with: "")
-        if let reminder = ReminderStore.shared.reminders.first(where: { $0.id.uuidString == base }),
+        // 通知 id 形如 "<uuid>-<星期>" 或 "<uuid>-oneshot" → 用前缀匹配 uuid（别再解析后缀数字）
+        if let reminder = ReminderStore.shared.reminders.first(where: { id.hasPrefix($0.id.uuidString) }),
            let url = URL(string: reminder.url), !reminder.url.isEmpty {
             NSWorkspace.shared.open(url)
         }

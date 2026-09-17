@@ -11,9 +11,47 @@ struct Reminder: Identifiable, Codable, Equatable {
     var minute: Int            // 0-59
     var weekdays: Set<Int>     // 1=周日 ... 7=周六（与 Calendar.weekday 一致）
     var url: String            // 可选 web 地址（空则无）
+    /// 未勾选任何星期时，这条提醒 = **一次性**：只在 oneShotDay 这一天的 hour:minute 提醒一次（"yyyy-MM-dd"）。
+    /// 勾了星期则恒为 nil。
+    /// ⚠️ 2026-09-17 用户反馈：老版本「空星期 = 永远不会提醒」是错的（界面还挂着「未勾选任何星期，不会提醒」
+    ///    的橙色警告），用户要求改成「默认为当天设定的时间」，也就是按当天这个点提醒一次。
+    var oneShotDay: String? = nil
 
     /// 是否在 weekdayIndex（1-7，周日=1）当天触发
     func fires(on weekday: Int) -> Bool { weekdays.contains(weekday) }
+
+    /// 一次性提醒（没勾任何星期）
+    var isOneShot: Bool { weekdays.isEmpty }
+
+    /// "yyyy-MM-dd"（本地时区），用于一次性提醒的日期键
+    static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+    static func dayString(_ d: Date) -> String { dayFormatter.string(from: d) }
+
+    /// 一次性提醒的目标时刻（oneShotDay 当天 hour:minute）；非一次性或未设日期 → nil
+    func oneShotDate(calendar cal: Calendar = .current) -> Date? {
+        guard weekdays.isEmpty, let day = oneShotDay else { return nil }
+        let parts = day.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        var c = DateComponents()
+        c.year = parts[0]; c.month = parts[1]; c.day = parts[2]
+        c.hour = hour; c.minute = minute; c.second = 0
+        return cal.date(from: c)
+    }
+
+    /// 让「星期勾选」与「一次性日期」保持同步：
+    /// · 勾了任意星期 → 清掉 oneShotDay（回到每周重复）
+    /// · 一个都没勾 → 记下「今天」为提醒日；若原来记的日期已经过去（提醒已到期），重设为今天
+    mutating func syncOneShot(now: Date = Date()) {
+        guard weekdays.isEmpty else { oneShotDay = nil; return }
+        let today = Reminder.dayString(now)
+        if let d = oneShotDay, d >= today { return }
+        oneShotDay = today
+    }
 }
 
 final class ReminderStore: ObservableObject {
@@ -41,6 +79,19 @@ final class ReminderStore: ObservableObject {
                 SeatingStore.seatLog("提醒：已修正 \(loaded.count) 条历史提醒的星期错位（标签曾整体偏差一天）")
             }
         }
+
+        // ⚠️ 2026-09-17：老版本把「一个都没勾」当成「永远不提醒」（还挂橙色警告），用户要求改成
+        //    「默认为当天设定的时间」＝当天提醒一次。这里把历史里没勾星期的提醒补上 oneShotDay，
+        //    让它们立刻按新语义生效（幂等：补过一次后 oneShotDay 非 nil，不会再补）。
+        let needOneShot = loaded.indices.filter {
+            loaded[$0].weekdays.isEmpty && loaded[$0].oneShotDay == nil
+        }
+        if !needOneShot.isEmpty {
+            for i in needOneShot { loaded[i].oneShotDay = Reminder.dayString(Date()) }
+            ReminderStore.writeToDisk(loaded)
+            SeatingStore.seatLog("提醒：\(needOneShot.count) 条未勾选星期的提醒已改为「当天提醒一次」（不再永远不提醒）")
+        }
+
         self.reminders = loaded
     }
 

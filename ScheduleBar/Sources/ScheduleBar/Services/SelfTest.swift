@@ -705,6 +705,76 @@ enum SelfTest {
             print("\(weekNames[wd]) \(f.string(from: s)) 命中勾选星期=\(hit ? "✓" : "✗") 时:分=\(cal.component(.hour, from: s)):\(cal.component(.minute, from: s))")
         }
 
+        // ② 未勾任何星期 = 一次性提醒（2026-09-17：以前是「永远不会提醒」，用户要求改成「当天提醒一次」）
+        print("--- 未勾星期 = 一次性提醒（当天该时刻提醒一次）用例 ---")
+        var oneShotBad: [String] = []
+        let noon = cal.date(bySettingHour: 12, minute: 0, second: 0, of: Date()) ?? Date()
+        let todayKey = Reminder.dayString(noon)
+        let yKey = Reminder.dayString(cal.date(byAdding: .day, value: -1, to: noon) ?? noon)
+        let tKey = Reminder.dayString(cal.date(byAdding: .day, value: 1, to: noon) ?? noon)
+        let todayWeekday = cal.component(.weekday, from: noon)
+
+        let dueCases: [(name: String, r: Reminder, shouldFire: Bool)] = [
+            ("一次性·当天·刚过点 1 分钟 → 弹",
+                    Reminder(title: "A", hour: 11, minute: 59, weekdays: [], url: "", oneShotDay: todayKey),
+                    true),
+            ("一次性·当天·已过 4 小时 → 也补弹（需求核心）",
+                    Reminder(title: "B", hour: 8, minute: 0, weekdays: [], url: "", oneShotDay: todayKey),
+                    true),
+            ("一次性·当天·还没到点 → 不弹",
+                    Reminder(title: "C", hour: 12, minute: 10, weekdays: [], url: "", oneShotDay: todayKey),
+                    false),
+            ("一次性·昨天 → 不弹（已过期）",
+                    Reminder(title: "D", hour: 8, minute: 0, weekdays: [], url: "", oneShotDay: yKey),
+                    false),
+            ("一次性·明天 → 不弹",
+                    Reminder(title: "E", hour: 8, minute: 0, weekdays: [], url: "", oneShotDay: tKey),
+                    false),
+            ("一次性·没有日期（老数据） → 不弹",
+                    Reminder(title: "F", hour: 8, minute: 0, weekdays: [], url: "", oneShotDay: nil),
+                    false),
+            ("每周·今天命中·刚过点 1 分钟 → 弹",
+                    Reminder(title: "G", hour: 11, minute: 59, weekdays: [todayWeekday], url: ""),
+                    true),
+            ("每周·今天命中·已过 5 分钟 → 不弹（3 分钟窗口）",
+                    Reminder(title: "H", hour: 11, minute: 55, weekdays: [todayWeekday], url: ""),
+                    false),
+            ("每周·今天没勾 → 不弹",
+                    Reminder(title: "I", hour: 11, minute: 59,
+                             weekdays: [todayWeekday == 1 ? 2 : 1], url: ""),
+                    false),
+        ]
+        for c in dueCases {
+            let v = ReminderFirer.dueCheck(c.r, now: noon, calendar: cal)
+            let ok = v.due == c.shouldFire
+            if !ok { oneShotBad.append(c.name) }
+            print("  \(c.name)：判定=\(v.due ? "弹" : "不弹")（\(v.reason)）\(ok ? "✓" : "✗ 期望\(c.shouldFire ? "弹" : "不弹")")")
+        }
+
+        // syncOneShot 语义：没勾→记今天；勾了→清空；日期已过→重设为今天
+        var s1 = Reminder(title: "s1", hour: 9, minute: 0, weekdays: [], url: "")
+        s1.syncOneShot(now: noon)
+        let s1ok = s1.oneShotDay == todayKey
+        if !s1ok { oneShotBad.append("syncOneShot 未填当天") }
+        s1.syncOneShot(now: cal.date(byAdding: .day, value: 1, to: noon) ?? noon)
+        let s1b = s1.oneShotDay == tKey
+        if !s1b { oneShotBad.append("syncOneShot 过期后未重设") }
+        var s2 = Reminder(title: "s2", hour: 9, minute: 0, weekdays: [2, 3], url: "", oneShotDay: todayKey)
+        s2.syncOneShot(now: noon)
+        let s2ok = s2.oneShotDay == nil
+        if !s2ok { oneShotBad.append("勾了星期未清 oneShotDay") }
+        print("  syncOneShot：空→记今天 \(s1ok ? "✓" : "✗")；过期→重设明天 \(s1b ? "✓" : "✗")；勾了星期→清空 \(s2ok ? "✓" : "✗")")
+
+        // 旧版 reminders.json（无 oneShotDay 字段）必须还能解码
+        let legacyJSON = #"[{"id":"00000000-0000-0000-0000-0000000000AA","title":"旧数据","hour":17,"minute":43,"weekdays":[],"url":""}]"#
+        if let list = try? JSONDecoder().decode([Reminder].self, from: Data(legacyJSON.utf8)) {
+            print("  旧格式（无 oneShotDay 字段）解码 = \(list.count) 条 ✓ oneShotDay=\(list[0].oneShotDay ?? "nil")（启动时会补成当天）")
+        } else {
+            oneShotBad.append("旧格式提醒解码失败")
+            print("  旧格式（无 oneShotDay 字段）解码 = ✗")
+        }
+        print(oneShotBad.isEmpty ? "  一次性提醒判定=✓" : "  一次性提醒判定=✗ \(oneShotBad.joined(separator: "; "))")
+
         if let d = try? Data(contentsOf: Self.supportDir.appendingPathComponent("calendar_events.json")),
            let m = try? JSONDecoder().decode([String: String].self, from: d) {
             print("已同步事件映射 = \(m.count) 条（calendar_events.json）")
