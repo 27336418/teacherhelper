@@ -190,14 +190,17 @@ final class CalendarSyncService: ObservableObject {
         let key = r.id.uuidString
 
         // 未勾任何星期 → 一次性提醒（只在 oneShotDay 当天那个时刻），照常写一条「不重复」的日程；
-        // 只有既没勾星期、又没记日期的老数据才算「永远不会触发」，日历里不留。
+        // 但「没记日期的老数据」和「那天已经过去的一次性提醒」不该在日历里留垃圾 → 删掉已有事件后返回。
         // （2026-09-17 改：老版本把「没勾星期」一律当死数据，用户要求改成当天提醒一次）
-        guard !(r.weekdays.isEmpty && r.oneShotDay == nil) else {
-            if let eid = eventIDs[key], deleteEvent(eid) {
-                eventIDs.removeValue(forKey: key)
-                return .deleted
+        if r.weekdays.isEmpty {
+            let keep = (r.oneShotDay.map { $0 >= Reminder.dayString(Date()) }) ?? false
+            if !keep {
+                if let eid = eventIDs[key], deleteEvent(eid) {
+                    eventIDs.removeValue(forKey: key)
+                    return .deleted
+                }
+                return .failed
             }
-            return .failed
         }
 
         let trimmed = r.title.trimmingCharacters(in: .whitespacesAndNewlines)
