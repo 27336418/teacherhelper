@@ -85,6 +85,8 @@ final class ReminderFirer {
             let key = "\(dayKey) \(String(format: "%02d:%02d", r.hour, r.minute))"
             guard lastFired[r.id] != key else { continue }
             lastFired[r.id] = key
+            // 一次性提醒：把「今天已弹」落到 reminders.json，重启 App 不会又弹一遍
+            if r.isOneShot { ReminderStore.shared.markOneShotFired(r.id, day: dayKey) }
             if verdict.lateMinutes >= 1 {
                 SeatingStore.seatLog("提醒：「\(r.title)」\(verdict.reason)")
             }
@@ -109,6 +111,8 @@ final class ReminderFirer {
             guard day == today else {
                 return (false, 0, day < today ? "一次性提醒已到期（原定 \(day)）" : "还没到提醒日（\(day)）")
             }
+            // 弹过就落盘了 → 同一天重启 App 不再重复弹
+            if r.firedOn == today { return (false, 0, "今天已提醒过") }
         } else {
             let weekday = cal.component(.weekday, from: now)
             guard r.fires(on: weekday) else { return (false, 0, "今天不在勾选的星期里") }

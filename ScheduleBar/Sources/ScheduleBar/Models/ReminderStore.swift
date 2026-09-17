@@ -16,6 +16,9 @@ struct Reminder: Identifiable, Codable, Equatable {
     /// ⚠️ 2026-09-17 用户反馈：老版本「空星期 = 永远不会提醒」是错的（界面还挂着「未勾选任何星期，不会提醒」
     ///    的橙色警告），用户要求改成「默认为当天设定的时间」，也就是按当天这个点提醒一次。
     var oneShotDay: String? = nil
+    /// 一次性提醒**已经弹过**的那一天（"yyyy-MM-dd"）。只对一次性提醒有意义：
+    /// 用来保证「中断/重启 App 后当天不会再重复弹一遍」（弹过就落盘，重启也记得）。
+    var firedOn: String? = nil
 
     /// 是否在 weekdayIndex（1-7，周日=1）当天触发
     func fires(on weekday: Int) -> Bool { weekdays.contains(weekday) }
@@ -47,10 +50,19 @@ struct Reminder: Identifiable, Codable, Equatable {
     /// · 勾了任意星期 → 清掉 oneShotDay（回到每周重复）
     /// · 一个都没勾 → 记下「今天」为提醒日；若原来记的日期已经过去（提醒已到期），重设为今天
     mutating func syncOneShot(now: Date = Date()) {
-        guard weekdays.isEmpty else { oneShotDay = nil; return }
+        guard weekdays.isEmpty else { oneShotDay = nil; firedOn = nil; return }
         let today = Reminder.dayString(now)
         if let d = oneShotDay, d >= today { return }
         oneShotDay = today
+        firedOn = nil                     // 重新定为今天 → 允许今天再提醒一次
+    }
+
+    /// 用户改了提醒时间（或想再来一次）→ 清掉「今天已提醒过」的标记，好让今天按新时间再提醒
+    mutating func rearmOneShot(now: Date = Date()) {
+        guard weekdays.isEmpty else { return }
+        let today = Reminder.dayString(now)
+        if let d = oneShotDay, d < today { oneShotDay = today }
+        firedOn = nil
     }
 }
 
@@ -124,6 +136,14 @@ final class ReminderStore: ObservableObject {
         if let i = reminders.firstIndex(where: { $0.id == r.id }) {
             reminders[i] = r
         }
+    }
+
+    /// 一次性提醒弹过之后记一笔（写盘）→ 当天重启 App 不会再弹一遍
+    func markOneShotFired(_ id: UUID, day: String) {
+        guard let i = reminders.firstIndex(where: { $0.id == id }),
+              reminders[i].weekdays.isEmpty,
+              reminders[i].firedOn != day else { return }
+        reminders[i].firedOn = day
     }
 
     /// 清空全部提醒（保留设置，仅删除已配置的提醒项）

@@ -74,6 +74,14 @@ struct ScheduleBarApp {
             return
         }
 
+        // 提醒弹窗视觉自检：--fire-reminder-test [提示文字]
+        // 启动 1.2 秒后弹一次真实提醒窗口来取证（**不写盘、不动 reminders.json、不影响到点判断**），
+        // 锁屏/不方便手动点「测试弹窗」时用它。「未勾星期的提醒到底会不会弹」就靠它验。
+        if let i = args.firstIndex(of: "--fire-reminder-test") {
+            AppDelegate.fireTestTitle =
+                (i + 1 < args.count && !args[i + 1].hasPrefix("--")) ? args[i + 1] : "测试提醒（--fire-reminder-test）"
+        }
+
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -181,6 +189,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var needsFreshPopoverWindow = false
     /// 供独立窗口使用：打开窗口前先收起浮层（两者互斥）
     static weak var sharedPopover: NSPopover?
+    /// 命令行 --fire-reminder-test 传入的提示文字（非 nil 时启动后弹一次测试提醒，不写盘）
+    static var fireTestTitle: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let sysVer = ProcessInfo.processInfo.operatingSystemVersionString
@@ -251,6 +261,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NotificationScheduler.shared.scheduleAll()
         // 应用内弹窗轮询（到点必弹，不依赖系统通知权限）
         ReminderFirer.shared.start()
+        // 提醒弹窗视觉自检（--fire-reminder-test）：只弹一次，不写盘、不登记 lastFired
+        if let title = AppDelegate.fireTestTitle {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                let now = Date()
+                let cal = Calendar.current
+                let r = Reminder(title: title,
+                                 hour: cal.component(.hour, from: now),
+                                 minute: cal.component(.minute, from: now),
+                                 weekdays: [], url: "")
+                ReminderFirer.shared.fireTest(r)
+                writeLaunchLog("提醒：--fire-reminder-test 弹出测试提醒「\(title)」（未写入 reminders.json）")
+            }
+        }
         // 启动 3 秒后把「定时提醒」同步到 Mac 自带日历（首次会弹一次日历授权）
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             CalendarSyncService.shared.syncAllReminders(reason: "启动")
@@ -258,9 +281,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         writeLaunchLog("面板/服务初始化完成")
 
         // 启动后自动展开面板，让用户立即看到界面（点其他位置自动关闭）
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            guard let btn = self.statusItem?.button else { return }
-            self.showPopover(relativeTo: btn, reason: "启动")
+        // （--fire-reminder-test 取证时不展开，免得浮层挡住提醒窗口）
+        if Self.fireTestTitle == nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                guard let btn = self.statusItem?.button else { return }
+                self.showPopover(relativeTo: btn, reason: "启动")
+            }
         }
     }
 

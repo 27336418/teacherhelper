@@ -116,7 +116,11 @@ struct ReminderRow: View {
                     if reminder.weekdays.isEmpty {
                         // 一天都没勾 = **一次性提醒**（只在该天提醒一次），不再是「不会提醒」
                         // 2026-09-17 用户要求：未勾星期默认为当天设定的时间提醒
-                        if reminder.oneShotDay == Reminder.dayString(Date()) {
+                        if reminder.firedOn == Reminder.dayString(Date()) {
+                            Text("今天已提醒")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        } else if reminder.oneShotDay == Reminder.dayString(Date()) {
                             Text("今天提醒")
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(.orange)
@@ -282,8 +286,8 @@ struct ReminderEditSheet: View {
                 let cal = Calendar.current
                 reminder.hour = cal.component(.hour, from: date)
                 reminder.minute = cal.component(.minute, from: date)
-                // 改了时间 → 一次性提醒若已过期就重新定成今天（用户改时间就是要它今天提醒）
-                reminder.syncOneShot()
+                // 改了时间 → 一次性提醒若已过期就重新定成今天，并允许按新时间再提醒一次
+                reminder.rearmOneShot()
             }
         )
     }

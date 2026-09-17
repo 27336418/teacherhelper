@@ -743,6 +743,10 @@ enum SelfTest {
                     Reminder(title: "I", hour: 11, minute: 59,
                              weekdays: [todayWeekday == 1 ? 2 : 1], url: ""),
                     false),
+            ("一次性·当天·已经弹过（firedOn=今天） → 不弹（重启不重复）",
+                    Reminder(title: "J", hour: 11, minute: 59, weekdays: [], url: "",
+                             oneShotDay: todayKey, firedOn: todayKey),
+                    false),
         ]
         for c in dueCases {
             let v = ReminderFirer.dueCheck(c.r, now: noon, calendar: cal)
@@ -764,6 +768,14 @@ enum SelfTest {
         let s2ok = s2.oneShotDay == nil
         if !s2ok { oneShotBad.append("勾了星期未清 oneShotDay") }
         print("  syncOneShot：空→记今天 \(s1ok ? "✓" : "✗")；过期→重设明天 \(s1b ? "✓" : "✗")；勾了星期→清空 \(s2ok ? "✓" : "✗")")
+
+        // rearmOneShot：改时间 → 过期日期搬回今天，并清掉「今天已提醒」标记（好按新时间再提醒）
+        var s3 = Reminder(title: "s3", hour: 9, minute: 0, weekdays: [], url: "",
+                          oneShotDay: yKey, firedOn: yKey)
+        s3.rearmOneShot(now: noon)
+        let s3ok = (s3.oneShotDay == todayKey && s3.firedOn == nil)
+        if !s3ok { oneShotBad.append("rearmOneShot 未重置") }
+        print("  rearmOneShot：过期日期→今天 且 清掉已提醒标记 \(s3ok ? "✓" : "✗")（oneShotDay=\(s3.oneShotDay ?? "nil") firedOn=\(s3.firedOn ?? "nil")）")
 
         // 旧版 reminders.json（无 oneShotDay 字段）必须还能解码
         let legacyJSON = #"[{"id":"00000000-0000-0000-0000-0000000000AA","title":"旧数据","hour":17,"minute":43,"weekdays":[],"url":""}]"#
