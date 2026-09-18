@@ -76,6 +76,11 @@ final class SaveHub: ObservableObject {
             scheduleFallback()          // 同一板块连续编辑：只续兜底计时
             return
         }
+        if ProcessInfo.processInfo.environment["SCHEDULEBAR_TRACE_DIRTY"] != nil {
+            let frames = Thread.callStackSymbols.dropFirst().prefix(6)
+                .map { $0.split(separator: " ").dropFirst(3).joined(separator: " ") }
+            Self.log("脏来源：\(area) ← \(frames.joined(separator: " | "))")
+        }
         dirtyAreas.insert(area)
         justSaved = false
         scheduleFallback()

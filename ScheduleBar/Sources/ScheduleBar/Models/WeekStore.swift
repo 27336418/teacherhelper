@@ -14,6 +14,7 @@ final class WeekStore: ObservableObject {
 
     init() {
         self.rawStart = WeekStore.load() ?? WeekStore.defaultStart()
+        isInitializing = false   // 装载结束，之后的改动才算用户编辑
     }
 
     /// 内置默认：第 1 周开始日期（见 DefaultData.swift）
@@ -58,9 +59,17 @@ final class WeekStore: ObservableObject {
     }
 
     // MARK: 持久化
+    /// 装载/规范化期间为 true —— 此时对属性的赋值不是「用户编辑」，不该让保存按钮亮起来。
+    /// ⚠️ `@Published` 属性的 `didSet` 在 `init` 里**也会触发**（赋值走的是属性包装器的
+    ///    setter，不是纯初始化路径），所以必须有这道闸门：否则 App 一启动就有
+    ///    「个人课表 / 学生座位 / 当前周」三个板块显示「有未保存的改动」
+    ///    （2026-09-18 实测）。init 末尾把它置回 false。
+    private var isInitializing = true
+
     /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
     /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
     func scheduleSave() {
+        guard !isInitializing else { return }   // 装载期不算用户编辑
         SaveHub.shared.markDirty("当前周")
     }
 

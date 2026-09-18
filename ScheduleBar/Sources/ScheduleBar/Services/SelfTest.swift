@@ -798,12 +798,15 @@ enum SelfTest {
     // MARK: 工位拖动对换自检（纯逻辑，不启 UI）：校验「单次 drop 只换一次 + 可撤销 + 可重拖 + 自身防护」
     // 用法：ScheduleBar --selftest-offices
     static func runOfficeSeatCheck() {
-        let url = OfficeLayoutStore.fileURL()
-        let original = try? Data(contentsOf: url)
-        defer {
-            if let orig = original { try? orig.write(to: url) }
-            else { try? FileManager.default.removeItem(at: url) }
-        }
+        // 用临时数据目录（与师资自检同一做法）。原来是「读真实 offices.json → 写入测试数据
+        // → 事后还原」，一旦中途崩了/被强杀，用户的工位表就会变成「办公室A / 甲 / 乙」。
+        // 统一走 AppPaths 之后改成全程隔离，真实文件一个字节都不碰。
+        let tmp = "/tmp/selftest-offices-\(UUID().uuidString.prefix(8))"
+        try? FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+        setenv("SCHEDULEBAR_DATA_DIR", tmp, 1)
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+        print("临时数据目录 = \(tmp)（真实 offices.json 不受影响）")
+
         let store = OfficeLayoutStore()
         let o1 = UUID(), o2 = UUID()
         store.offices = [
