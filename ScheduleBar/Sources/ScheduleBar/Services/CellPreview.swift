@@ -91,4 +91,63 @@ enum CellPreview {
             print("✗ 写入失败：\(error)")
         }
     }
+
+    // MARK: 保存按钮两种状态（临时取证用）
+    //
+    // ⚠️ 必须**分开渲染两次**：`SaveButton` 读的是 `SaveHub.shared` 的当前状态，
+    //    而在同一个视图树里两处按钮会在渲染的同一刻取值 → 两张会画成一样。
+    @MainActor
+    static func renderSaveButton(to path: String) {
+        let hub = SaveHub.shared
+        hub.clearDirty()
+        guard let clean = shot(clean: true) else { hub.clearDirty(); print("✗ 渲染失败"); return }
+        hub.markDirty("学生座位")
+        hub.markDirty("个人课表")
+        guard let dirty = shot(clean: false) else { hub.clearDirty(); print("✗ 渲染失败"); return }
+        hub.clearDirty()
+
+        let gap: CGFloat = 14
+        let size = NSSize(width: max(clean.size.width, dirty.size.width),
+                          height: clean.size.height + gap + dirty.size.height)
+        let out = NSImage(size: size)
+        out.lockFocus()
+        NSColor.white.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        clean.draw(in: NSRect(x: 0, y: dirty.size.height + gap,
+                              width: clean.size.width, height: clean.size.height))   // ① 在上
+        dirty.draw(in: NSRect(origin: .zero, size: dirty.size))                       // ② 在下
+        out.unlockFocus()
+
+        guard let tiff = out.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            print("✗ 合成失败")
+            return
+        }
+        try? png.write(to: URL(fileURLWithPath: path))
+        print("✓ 已输出保存按钮预览：\(path)")
+    }
+
+    @MainActor
+    private static func shot(clean: Bool) -> NSImage? {
+        let content = VStack(alignment: .leading, spacing: 10) {
+            Text(clean ? "① 没有未保存的改动"
+                       : "② 改动了两个板块（学生座位 + 个人课表）")
+                .font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.black)
+            HStack(spacing: 12) {
+                SaveButton()
+                Text(clean ? "灰色「已保存」；点它也会强制写一次盘（确认用）"
+                           : "按钮变成实心强调色的「保存」：点一下立即写入磁盘（等同 ⌘S）")
+                    .font(.system(size: 11)).foregroundStyle(Color.gray)
+            }
+            Text(clean ? "（停手 8 秒 / 收起面板 / 关闭窗口 / 退出前的兜底保存不受影响）"
+                       : "（不点也不会丢：停手 8 秒、收起面板、关窗口、退出前都会自动落盘）")
+                .font(.system(size: 10)).foregroundStyle(Color.secondary)
+        }
+        .padding(18)
+        .background(Color.white)
+        let r = ImageRenderer(content: content)
+        r.scale = 2
+        return r.nsImage
+    }
 }
