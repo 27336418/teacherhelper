@@ -60,12 +60,18 @@ final class ExtendScheduleStore: ObservableObject {
     func clearAll() {
         let snap = blocks
         blocks = ExtendScheduleStore.defaultBlocks()
-        save()
+        scheduleSave()
         UndoService.shared.register("清空延时&监考数据") { [weak self] in
             guard let self else { return }
             self.blocks = snap
-            self.save()
+            self.scheduleSave()
         }
+    }
+
+    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
+    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
+    func scheduleSave() {
+        SaveHub.shared.markDirty("延时监考")
     }
 
     func save() {
@@ -87,10 +93,9 @@ final class ExtendScheduleStore: ObservableObject {
     }
 
     static func fileURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                            in: .userDomainMask)[0]
-        return base.appendingPathComponent("ScheduleBar", isDirectory: true)
-                  .appendingPathComponent("extend.json")
+        // 统一走 AppPaths：自检可用 SCHEDULEBAR_DATA_DIR 把数据目录重定向到
+        // 临时目录 —— 所有 store 都必须支持，否则它在 init 里的迁移会写真实数据。
+        AppPaths.file("extend.json")
     }
 
     // MARK: - 预填示例开关（默认关闭，发布给其他人时不应预填真实数据）

@@ -81,10 +81,16 @@ final class CardTitleStore: ObservableObject {
         } else {
             titles[key] = trimmed
         }
-        save()
+        scheduleSave()
     }
 
     // MARK: 持久化
+    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
+    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
+    func scheduleSave() {
+        SaveHub.shared.markDirty("板块标题")
+    }
+
     func save() {
         do {
             let url = Self.fileURL()
@@ -107,9 +113,7 @@ final class CardTitleStore: ObservableObject {
     }
 
     static func fileURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                           in: .userDomainMask)[0]
-        return base.appendingPathComponent("ScheduleBar", isDirectory: true)
-                  .appendingPathComponent("titles.json")
+        // 统一走 AppPaths（自检可重定向到临时目录，绝不触碰真实数据）
+        AppPaths.file("titles.json")
     }
 }

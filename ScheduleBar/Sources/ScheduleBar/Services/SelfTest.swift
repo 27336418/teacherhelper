@@ -939,6 +939,162 @@ enum SelfTest {
             .appendingPathComponent("ScheduleBar", isDirectory: true)
     }
 
+    // MARK: - 统一保存中心自检（全程在临时目录，绝不触碰真实数据）
+    //
+    // 用法：教师助手.app/Contents/MacOS/ScheduleBar --selftest-save
+    //
+    // 覆盖「编辑只标脏 → 点保存/⌘S → 落盘」这条链：
+    //   ① 只标脏时**不写盘**（用户要能看见「有未保存的改动」这个状态）
+    //   ② saveNow / saveIfNeeded 才真正落盘，且落盘后脏状态清空
+    //   ③ 无改动时 saveIfNeeded 不产生无谓 IO
+    //   ④ 每个可编辑板块都能把自己标脏（名字与数量必须与 SaveHub.writeAll 的覆盖面一致）
+    //   ⑤ 最后把替身换回真实实现，确认 json **真的**写出了文件
+    //
+    // ⚠️ 自检必须把数据目录重定向走（SCHEDULEBAR_DATA_DIR）：任何 store 的 init 里
+    //    都可能有历史迁移，读到真实目录就会写用户的真实数据。
+    //    2026-09-18 就是因为「提醒」的迁移用了 UserDefaults 开关、且裸二进制偏好域不同，
+    //    被自检进程当成首次运行重跑，把用户的提醒星期整体搬错了一天。
+    static func runSaveCheck() {
+        let tmp = NSTemporaryDirectory() + "sb-save-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+        setenv("SCHEDULEBAR_DATA_DIR", tmp, 1)      // 必须在任何 store 被创建之前
+        defer {
+            unsetenv("SCHEDULEBAR_DATA_DIR")
+            try? FileManager.default.removeItem(atPath: tmp)
+        }
+
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            print("  \(ok ? "✓" : "✗") \(name)\(detail.isEmpty ? "" : "  [\(detail)]")")
+            ok ? (pass += 1) : (fail += 1)
+        }
+
+        let hub = SaveHub.shared
+        var writes = 0
+        hub.useStubWriter { writes += 1 }
+        hub.clearDirty()
+        defer {
+            hub.clearDirty()
+            hub.useDefaultWriter()
+        }
+
+        print("保存中心自检 —— 兜底延时 \(Int(SaveHub.fallbackDelay)) 秒，数据目录=\(tmp)")
+
+        // ① 初始干净
+        check("初始状态无未保存改动", !hub.hasUnsaved, "unsavedCount=\(hub.unsavedCount)")
+
+        // ② 编辑 → 只标脏，不写盘
+        ScheduleStore.shared.scheduleSave()
+        check("编辑个人课表后：标记为有未保存改动", hub.hasUnsaved)
+        check("板块名正确（按钮提示文案用的就是它）", hub.dirtyAreas.contains("个人课表"),
+              "dirtyAreas=\(hub.dirtyAreas.sorted().joined(separator: "、"))")
+        check("只标脏、未落盘（没点保存前不写文件）", writes == 0, "writes=\(writes)")
+
+        // ③ 同一板块连续编辑只算一处
+        let n1 = hub.unsavedCount
+        ScheduleStore.shared.scheduleSave()
+        check("同一板块连续编辑不新增待保存项", hub.unsavedCount == n1, "unsavedCount=\(hub.unsavedCount)")
+
+        // ④ 多个板块累积
+        StaffStore.shared.scheduleSave()
+        check("第二个板块也标脏 → 共 2 处", hub.unsavedCount == 2, "unsavedList=\(hub.unsavedList)")
+        check("多板块时仍未落盘", writes == 0, "writes=\(writes)")
+
+        // ⑤ saveNow：落盘一次 + 清空脏状态
+        let before = hub.saveNow(reason: "自检")
+        check("saveNow 报告「落盘前有 2 处未保存」", before == 2, "返回=\(before)")
+        check("saveNow 触发了一次落盘动作", writes == 1, "writes=\(writes)")
+        check("落盘后脏状态清空（按钮转「已保存」）", !hub.hasUnsaved, "unsavedCount=\(hub.unsavedCount)")
+        check("落盘后记录保存时间", hub.lastSavedAt != nil)
+        check("落盘后显示「已保存」瞬时标记", hub.justSaved)
+
+        // ⑥ 无改动时 saveIfNeeded 不做无谓 IO
+        hub.saveIfNeeded(reason: "自检·无改动")
+        check("无改动时 saveIfNeeded 不写盘", writes == 1, "writes=\(writes)")
+
+        // ⑦ 有改动时 saveIfNeeded 会兜底落盘（关面板 / 关窗口 / 退出走的就是这条）
+        CalendarRemarkStore.shared.scheduleSave()
+        check("标记一处新的未保存改动", hub.hasUnsaved)
+        hub.saveIfNeeded(reason: "自检·兜底")
+        check("有改动时 saveIfNeeded 兜底落盘", writes == 2, "writes=\(writes)")
+        check("兜底落盘后脏状态清空", !hub.hasUnsaved)
+
+        // ⑧ 每个可编辑板块都能把自己标脏（名字必须与 writeAll 的覆盖面一致）
+        let areas: [(String, () -> Void)] = [
+            ("个人课表", { ScheduleStore.shared.scheduleSave() }),
+            ("班级课表", { ClassScheduleStore.shared.scheduleSave() }),
+            ("学生座位", { SeatingStore.shared.scheduleSave() }),
+            ("年级师资", { StaffStore.shared.scheduleSave() }),
+            ("学生信息", { StudentStore.shared.scheduleSave() }),
+            ("教师工位", { OfficeLayoutStore.shared.scheduleSave() }),
+            ("教室布局", { ClassroomStore.shared.scheduleSave() }),
+            ("延时监考", { ExtendScheduleStore.shared.scheduleSave() }),
+            ("日程提醒", { ReminderStore.shared.scheduleSave() }),
+            ("校历备注", { CalendarRemarkStore.shared.scheduleSave() }),
+            ("校历配色", { CalendarDayColorStore.shared.scheduleSave() }),
+            ("导航排序", { NavPrefsStore.shared.scheduleSave() }),
+            ("当前周", { WeekStore.shared.scheduleSave() }),
+            ("板块标题", { CardTitleStore.shared.scheduleSave() }),
+        ]
+        // 必须与 SaveHub.writeAll 覆盖的 store 数量一致（漏一个就会有板块改了不落盘）
+        let expectedAreaCount = 14
+        var missing: [String] = []
+        for (name, mark) in areas {
+            hub.clearDirty()
+            mark()
+            if !hub.dirtyAreas.contains(name) { missing.append(name) }
+        }
+        check("每个可编辑板块都能把自己标脏", missing.isEmpty,
+              missing.isEmpty ? "共 \(areas.count) 个" : "缺失=\(missing.joined(separator: "、"))")
+        check("标脏板块数量与 SaveHub.writeAll 覆盖面一致",
+              areas.count == expectedAreaCount, "\(areas.count) / 期望 \(expectedAreaCount)")
+
+        // ⑨ 单板块清除不影响其他
+        hub.clearDirty()
+        ScheduleStore.shared.scheduleSave()
+        StaffStore.shared.scheduleSave()
+        hub.clearDirty("个人课表")
+        check("clearDirty(板块) 只清一个", hub.dirtyAreas.contains("年级师资") && !hub.dirtyAreas.contains("个人课表"),
+              "unsavedList=\(hub.unsavedList)")
+
+        // ⑩ 兜底延时必须是「有意义的一段时间」，不能被误改成 0（那样每个按键都写盘）
+        check("兜底自动保存延时在 3~30 秒之间", (3...30).contains(SaveHub.fallbackDelay),
+              "\(Int(SaveHub.fallbackDelay)) 秒")
+
+        // ⑪ 端到端：换成「真的写文件」的落盘实现，确认 json 确实落到了磁盘
+        //    ⚠️ 这里不能用 SaveHub 的默认 writeAll：它会调 ReminderStore.save()，
+        //       而那条链要建系统通知（UNUserNotificationCenter）——命令行进程没有 App bundle，
+        //       会直接抛 NSException 崩掉（不是数据问题，是 CLI 无 bundle 的固有限制）。
+        hub.useStubWriter {
+            ScheduleStore.shared.save()
+            StaffStore.shared.save()
+            SeatingStore.shared.save()
+        }
+        hub.clearDirty()
+        ScheduleStore.shared.scheduleSave()
+        StaffStore.shared.scheduleSave()
+        SeatingStore.shared.scheduleSave()
+        let n = hub.saveNow(reason: "自检·端到端")
+        check("端到端 saveNow 报告 3 处", n == 3, "返回=\(n)")
+        let fm = FileManager.default
+        var produced: [String] = []
+        for f in ["personal.json", "staff.json", "seating.json"] {
+            let path = tmp + "/" + f
+            if let attrs = try? fm.attributesOfItem(atPath: path),
+               let size = attrs[.size] as? Int, size > 2 {
+                produced.append("\(f)(\(size)B)")
+            }
+        }
+        check("真实落盘：三个 json 都写出了非空文件", produced.count == 3,
+              produced.joined(separator: " "))
+        check("AppPaths 重定向生效（写的是临时目录，不是真实数据目录）",
+              AppPaths.dataDir.path == tmp, AppPaths.dataDir.path)
+
+        hub.clearDirty()
+        print("保存中心自检：\(pass) 项通过，\(fail) 项失败 \(fail == 0 ? "✓" : "✗")")
+        if fail > 0 { exit(1) }
+    }
+
     static func runImport(path: String) {
         do {
             let grid = try XLSX.read(URL(fileURLWithPath: path))

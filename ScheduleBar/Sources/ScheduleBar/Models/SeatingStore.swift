@@ -114,7 +114,6 @@ final class SeatingStore: ObservableObject {
     /// 开关一旦被写脏就再也回不去，而 version 随文件走，且用户后续的调整会被尊重）。
     static let dataVersion = 4
 
-    private let saver = Debouncer()
     private var loading = false
 
     var rows: Int { max(grid.count, 1) }
@@ -649,7 +648,7 @@ final class SeatingStore: ObservableObject {
         UndoService.shared.register("移除待用学生") { [weak self] in
             guard let self else { return }
             self.pool = snapPool
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -662,11 +661,11 @@ final class SeatingStore: ObservableObject {
         loading = true
         pool = newPool
         loading = false
-        save()
+        scheduleSave()
         UndoService.shared.register("移除 \(snapPool.count - newPool.count) 个待用学生") { [weak self] in
             guard let self else { return }
             self.pool = snapPool
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -688,7 +687,7 @@ final class SeatingStore: ObservableObject {
         var newPool = pool
         for n in names where !newPool.contains(n) { newPool.append(n) }
         pool = newPool
-        save()
+        scheduleSave()
         registerUndo("全部转待用", snap)
     }
 
@@ -736,7 +735,7 @@ final class SeatingStore: ObservableObject {
             podium = PodiumPlacement(row: a.0, col: a.1, span: 3)
         }
         loading = false
-        save()
+        scheduleSave()
         seatLog("座位：已清空全部数据（保留 \(SeatingStore.defaultSize)×\(SeatingStore.defaultSize) 空表 + 讲台 \(podium?.compactLabel ?? "无")）")
     }
 
@@ -889,7 +888,7 @@ final class SeatingStore: ObservableObject {
             podium = PodiumPlacement(row: a.0, col: a.1, span: 3)
             loading = false
         }
-        save()
+        scheduleSave()
         seatLog("座位：导入完成 → 表 \(rows)×\(cols)，讲台 \(podium?.compactLabel ?? "无")")
         UndoService.shared.register("导入座位安排") { [weak self] in
             guard let self else { return }
@@ -912,7 +911,7 @@ final class SeatingStore: ObservableObject {
             guard let self else { return }
             self.pool = snapPool
             self.genders = snapGenders
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -953,7 +952,7 @@ final class SeatingStore: ObservableObject {
         }
         seatLog("座位自检：待用 \(cleanPool.count) 人 / 在座 \(seatedCount) 人 / 讲台 \(podium?.compactLabel ?? "无")，需修正=\(changed)")
         if changed {
-            save()
+            scheduleSave()
             seatLog("座位自检：已自动清理重复姓名 / 无效数据")
         }
     }
@@ -968,7 +967,7 @@ final class SeatingStore: ObservableObject {
         pool = s.pool
         podium = s.podium
         loading = false
-        save()
+        scheduleSave()
     }
     private func registerUndo(_ label: String, _ s: Snap) {
         UndoService.shared.register(label) { [weak self] in
@@ -979,9 +978,11 @@ final class SeatingStore: ObservableObject {
 
     // MARK: - 持久化
 
+    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
+    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
     func scheduleSave() {
         guard !loading else { return }
-        saver.schedule { self.save() }
+        SaveHub.shared.markDirty("学生座位")
     }
 
     func save() {
@@ -1050,15 +1051,9 @@ final class SeatingStore: ObservableObject {
     }
 
     static func fileURL() -> URL {
-        // 自检用：SCHEDULEBAR_DATA_DIR 可把数据目录重定向到临时目录（绝不触碰真实数据）
-        if let dir = ProcessInfo.processInfo.environment["SCHEDULEBAR_DATA_DIR"], !dir.isEmpty {
-            return URL(fileURLWithPath: dir, isDirectory: true)
-                .appendingPathComponent("seating.json")
-        }
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                            in: .userDomainMask)[0]
-        return base.appendingPathComponent("ScheduleBar", isDirectory: true)
-                  .appendingPathComponent("seating.json")
+        // 统一走 AppPaths：自检可用 SCHEDULEBAR_DATA_DIR 把数据目录重定向到
+        // 临时目录 —— 所有 store 都必须支持，否则它在 init 里的迁移会写真实数据。
+        AppPaths.file("seating.json")
     }
 
     // MARK: - 日志

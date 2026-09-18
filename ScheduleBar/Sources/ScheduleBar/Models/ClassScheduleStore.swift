@@ -222,7 +222,6 @@ final class ClassScheduleStore: ObservableObject {
     /// 所有班级的数据（不进视图，避免整表重绘）
     private var bank: [String: ClassData] = [:]
 
-    private let saver = Debouncer()
     /// 正在切换班级 / 批量替换数据时为 true，屏蔽中途落盘
     private var loading = false
 
@@ -258,7 +257,7 @@ final class ClassScheduleStore: ObservableObject {
             bank = [name: m]
             groups = m.groups
             cells = m.cells
-            save()
+            scheduleSave()
         } else {
             classes = []
             defaultClass = ""
@@ -281,7 +280,7 @@ final class ClassScheduleStore: ObservableObject {
         guard name != current, bank[name] != nil || classes.contains(name) else { return }
         flushCurrent()
         applyCurrent(name)
-        save()
+        scheduleSave()
     }
 
     /// 设为默认班级（下次打开 App 直接显示它）
@@ -289,7 +288,7 @@ final class ClassScheduleStore: ObservableObject {
         let n = (name ?? current).trimmingCharacters(in: .whitespaces)
         guard !n.isEmpty else { return }
         defaultClass = n
-        save()
+        scheduleSave()
     }
 
     /// 新建一个空班级并切换过去
@@ -308,7 +307,7 @@ final class ClassScheduleStore: ObservableObject {
         classes.append(name)
         if defaultClass.isEmpty { defaultClass = name }
         applyCurrent(name)
-        save()
+        scheduleSave()
         return name
     }
 
@@ -322,14 +321,14 @@ final class ClassScheduleStore: ObservableObject {
         if defaultClass == name { defaultClass = classes.first ?? "" }
         let next = classes.first ?? ""
         applyCurrent(next)
-        save()
+        scheduleSave()
         UndoService.shared.register("删除班级「\(name)」") { [weak self] in
             guard let self else { return }
             self.classes = snapClasses
             self.defaultClass = snapDefault
             self.bank = snapBank
             self.applyCurrent(snapCurrent)
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -356,7 +355,7 @@ final class ClassScheduleStore: ObservableObject {
         classes = order
         defaultClass = pick
         applyCurrent(pick)
-        save()
+        scheduleSave()
 
         UndoService.shared.register("导入全校班级课表") { [weak self] in
             guard let self else { return }
@@ -364,7 +363,7 @@ final class ClassScheduleStore: ObservableObject {
             self.defaultClass = snapDefault
             self.bank = snapBank
             self.applyCurrent(snapCurrent)
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -418,7 +417,7 @@ final class ClassScheduleStore: ObservableObject {
         }
         cells[period]?[day] = value
         // 班级课表的每次编辑都立即写入当前班级数据，避免切换班级或退出前丢失。
-        save()
+        scheduleSave()
     }
 
     // MARK: - 单元格拖动对换（当前班级内）
@@ -453,7 +452,7 @@ final class ClassScheduleStore: ObservableObject {
             cells[period] = dstRow
         }
         // 交换后立即落盘：拖拽结束前即使窗口被关闭，也不会丢失位置调整。
-        save()
+        scheduleSave()
         // 来源位置跟着被拖动的内容走，避免 dropEntered 连续触发时来回抖动
         cellDragSource = ScheduleCellID(period: period, day: day)
     }
@@ -464,7 +463,7 @@ final class ClassScheduleStore: ObservableObject {
         UndoService.shared.register("调整课表位置") { [weak self] in
             guard let self else { return }
             self.cells = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -518,7 +517,7 @@ final class ClassScheduleStore: ObservableObject {
             guard let self else { return }
             self.groups = snapGroups
             self.cells = snapCells
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -539,7 +538,7 @@ final class ClassScheduleStore: ObservableObject {
             guard let self else { return }
             self.groups = snapGroups
             self.cells = snapCells
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -547,12 +546,12 @@ final class ClassScheduleStore: ObservableObject {
         let snapGroups = groups, snapCells = cells
         groups = ClassLayout.defaultGroups
         cells = Self.emptyCells(for: groups)
-        save()
+        scheduleSave()
         UndoService.shared.register("重置班级课表") { [weak self] in
             guard let self else { return }
             self.groups = snapGroups
             self.cells = snapCells
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -566,13 +565,15 @@ final class ClassScheduleStore: ObservableObject {
         groups = ClassLayout.defaultGroups
         cells = Self.emptyCells(for: ClassLayout.defaultGroups)
         loading = false
-        save()
+        scheduleSave()
     }
 
     // MARK: - 持久化（输入去抖）
+    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
+    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
     func scheduleSave() {
         guard !loading else { return }
-        saver.schedule { self.save() }
+        SaveHub.shared.markDirty("班级课表")
     }
 
     func save() {
@@ -633,10 +634,9 @@ final class ClassScheduleStore: ObservableObject {
     }
 
     static func fileURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                            in: .userDomainMask)[0]
-        return base.appendingPathComponent("ScheduleBar", isDirectory: true)
-                  .appendingPathComponent("classes.json")
+        // 统一走 AppPaths：自检可用 SCHEDULEBAR_DATA_DIR 把数据目录重定向到
+        // 临时目录 —— 所有 store 都必须支持，否则它在 init 里的迁移会写真实数据。
+        AppPaths.file("classes.json")
     }
 
     static func legacyFileURL() -> URL {

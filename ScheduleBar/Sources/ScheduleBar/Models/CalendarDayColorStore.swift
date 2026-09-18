@@ -6,7 +6,7 @@ final class CalendarDayColorStore: ObservableObject {
     static let shared = CalendarDayColorStore()
 
     @Published var colors: [String: String] = [:] {   // 日期 → hex（如 "2026-09-10" → "E74C3C"）
-        didSet { save() }
+        didSet { scheduleSave() }
     }
 
     private init() { load() }
@@ -35,9 +35,9 @@ final class CalendarDayColorStore: ObservableObject {
 
     // MARK: 持久化
     private static var fileURL: URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ScheduleBar", isDirectory: true)
-        return dir.appendingPathComponent("calendar_day_colors.json")
+        // 统一走 AppPaths：自检可用 SCHEDULEBAR_DATA_DIR 把数据目录重定向到
+        // 临时目录 —— 所有 store 都必须支持，否则它在 init 里的迁移会写真实数据。
+        AppPaths.file("calendar_day_colors.json")
     }
 
     private func load() {
@@ -50,7 +50,13 @@ final class CalendarDayColorStore: ObservableObject {
         colors = decoded
     }
 
-    private func save() {
+    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
+    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
+    func scheduleSave() {
+        SaveHub.shared.markDirty("校历配色")
+    }
+
+    func save() {
         do {
             try FileManager.default.createDirectory(at: Self.fileURL.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)

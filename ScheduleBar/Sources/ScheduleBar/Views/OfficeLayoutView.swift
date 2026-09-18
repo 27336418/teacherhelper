@@ -55,6 +55,7 @@ struct OfficeLayoutView: View {
                     EditableCardTitle(icon: "person.3.fill", key: "office")
                     Spacer()
                     UndoButton()
+                    SaveButton()
                     Menu {
                         Button("导入 xlsx") { coordinator.importOffice() }
                         Button("下载填写模板") { coordinator.downloadTemplate(.office) }

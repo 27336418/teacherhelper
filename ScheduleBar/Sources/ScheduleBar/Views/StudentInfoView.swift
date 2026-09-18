@@ -34,6 +34,7 @@ struct StudentInfoView: View {
                     .layoutPriority(1)
                 Spacer()
                 UndoButton()
+                SaveButton()
                 Menu {
                     Button("学生信息") { coordinator.importStudentFile() }
                     Divider()

@@ -46,7 +46,7 @@ final class OfficeLayoutStore: ObservableObject {
     static let shared = OfficeLayoutStore()
 
     @Published var offices: [OfficeBlock] {
-        didSet { save() }
+        didSet { scheduleSave() }
     }
 
     /// 工位视图：false = 教师视角，true = 学生视角（整张办公室工位表 180° 镜像）
@@ -125,7 +125,7 @@ final class OfficeLayoutStore: ObservableObject {
         UndoService.shared.register("调整工位位置") { [weak self] in
             guard let self else { return }
             self.offices = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -161,7 +161,7 @@ final class OfficeLayoutStore: ObservableObject {
         UndoService.shared.register("删除\(title.isEmpty ? "办公室" : "「\(title)」")") { [weak self] in
             guard let self else { return }
             self.offices = snap
-            self.save()
+            self.scheduleSave()
         }
     }
     func addRow(_ officeID: UUID) {
@@ -182,7 +182,7 @@ final class OfficeLayoutStore: ObservableObject {
         UndoService.shared.register("增加工位列") { [weak self] in
             guard let self else { return }
             self.offices = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -208,7 +208,7 @@ final class OfficeLayoutStore: ObservableObject {
         UndoService.shared.register("删除工位列") { [weak self] in
             guard let self else { return }
             self.offices = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -220,7 +220,7 @@ final class OfficeLayoutStore: ObservableObject {
         UndoService.shared.register("删除工位行") { [weak self] in
             guard let self else { return }
             self.offices = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -286,6 +286,12 @@ final class OfficeLayoutStore: ObservableObject {
     }
 
     // MARK: 持久化
+    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
+    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
+    func scheduleSave() {
+        SaveHub.shared.markDirty("教师工位")
+    }
+
     func save() {
         do {
             let url = Self.fileURL()
@@ -303,8 +309,8 @@ final class OfficeLayoutStore: ObservableObject {
     }
 
     static func fileURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("ScheduleBar", isDirectory: true)
-                  .appendingPathComponent("offices.json")
+        // 统一走 AppPaths：自检可用 SCHEDULEBAR_DATA_DIR 把数据目录重定向到
+        // 临时目录 —— 所有 store 都必须支持，否则它在 init 里的迁移会写真实数据。
+        AppPaths.file("offices.json")
     }
 }

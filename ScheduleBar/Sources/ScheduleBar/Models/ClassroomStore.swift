@@ -154,7 +154,7 @@ final class ClassroomStore: ObservableObject {
     static let shared = ClassroomStore()
 
     @Published var floors: [ClassroomFloor] {
-        didSet { save() }
+        didSet { scheduleSave() }
     }
 
     /// 拖动中的来源位置（松手时一次性提交对换）；非 @Published，不触发视图刷新
@@ -194,7 +194,7 @@ final class ClassroomStore: ObservableObject {
         UndoService.shared.register("删除\(title.isEmpty ? "楼层" : "「\(title)」")") { [weak self] in
             guard let self else { return }
             self.floors = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -234,7 +234,7 @@ final class ClassroomStore: ObservableObject {
         UndoService.shared.register("调整教室位置") { [weak self] in
             guard let self else { return }
             self.floors = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -274,11 +274,11 @@ final class ClassroomStore: ObservableObject {
     func replaceAll(_ newFloors: [ClassroomFloor]) {
         let snap = floors
         floors = newFloors
-        save()
+        scheduleSave()
         UndoService.shared.register("导入教室分布") { [weak self] in
             guard let self else { return }
             self.floors = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -329,6 +329,12 @@ final class ClassroomStore: ObservableObject {
     }
 
     // MARK: 持久化
+    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
+    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
+    func scheduleSave() {
+        SaveHub.shared.markDirty("教室布局")
+    }
+
     func save() {
         do {
             let url = Self.fileURL()
@@ -349,8 +355,8 @@ final class ClassroomStore: ObservableObject {
     }
 
     static func fileURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("ScheduleBar", isDirectory: true)
-                  .appendingPathComponent("classrooms.json")
+        // 统一走 AppPaths：自检可用 SCHEDULEBAR_DATA_DIR 把数据目录重定向到
+        // 临时目录 —— 所有 store 都必须支持，否则它在 init 里的迁移会写真实数据。
+        AppPaths.file("classrooms.json")
     }
 }

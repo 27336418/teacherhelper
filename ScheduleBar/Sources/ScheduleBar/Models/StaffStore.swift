@@ -44,7 +44,6 @@ final class StaffStore: ObservableObject {
         didSet { scheduleSave() }
     }
 
-    private let saver = Debouncer()
 
     init() {
         let data = StaffStore.load()
@@ -64,7 +63,7 @@ final class StaffStore: ObservableObject {
         UndoService.shared.register("删除班级行\(name.isEmpty ? "" : "「\(name)」")") { [weak self] in
             guard let self else { return }
             self.rows = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -101,7 +100,7 @@ final class StaffStore: ObservableObject {
             guard let self else { return }
             self.headers = snapHeaders
             self.rows = snapRows
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -124,7 +123,7 @@ final class StaffStore: ObservableObject {
         UndoService.shared.register(hex == nil ? "清除单元格颜色" : "设置单元格颜色") { [weak self] in
             guard let self else { return }
             self.rows = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -142,7 +141,7 @@ final class StaffStore: ObservableObject {
         UndoService.shared.register(hex == nil ? "清除「\(key)」全部颜色" : "批量设置「\(key)」颜色") { [weak self] in
             guard let self else { return }
             self.rows = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -153,7 +152,7 @@ final class StaffStore: ObservableObject {
         UndoService.shared.register("清除师资整表颜色") { [weak self] in
             guard let self else { return }
             self.rows = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -174,12 +173,12 @@ final class StaffStore: ObservableObject {
         // 「清空」= 移除全部行（保留表头），便于他人直接双击编辑填写
         headers = StaffStore.defaultHeaders
         rows = []
-        save()
+        scheduleSave()
         UndoService.shared.register("清空师资安排") { [weak self] in
             guard let self else { return }
             self.headers = snapHeaders
             self.rows = snapRows
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -233,8 +232,10 @@ final class StaffStore: ObservableObject {
     }
 
     // MARK: 持久化（输入去抖）
+    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
+    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
     func scheduleSave() {
-        saver.schedule { self.save() }
+        SaveHub.shared.markDirty("年级师资")
     }
 
     func save() {
@@ -283,14 +284,8 @@ final class StaffStore: ObservableObject {
     }
 
     static func fileURL() -> URL {
-        // 自检用：SCHEDULEBAR_DATA_DIR 可把数据目录重定向到临时目录（绝不触碰真实数据）
-        if let dir = ProcessInfo.processInfo.environment["SCHEDULEBAR_DATA_DIR"], !dir.isEmpty {
-            return URL(fileURLWithPath: dir, isDirectory: true)
-                .appendingPathComponent("staff.json")
-        }
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                            in: .userDomainMask)[0]
-        return base.appendingPathComponent("ScheduleBar", isDirectory: true)
-                  .appendingPathComponent("staff.json")
+        // 统一走 AppPaths：自检可用 SCHEDULEBAR_DATA_DIR 把数据目录重定向到
+        // 临时目录 —— 所有 store 都必须支持，否则它在 init 里的迁移会写真实数据。
+        AppPaths.file("staff.json")
     }
 }

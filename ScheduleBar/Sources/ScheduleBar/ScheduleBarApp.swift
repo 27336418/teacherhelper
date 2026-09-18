@@ -61,6 +61,11 @@ struct ScheduleBarApp {
             SelfTest.runStaffColorCheck()
             return
         }
+        // 统一保存中心自检（纯逻辑，不触碰真实数据文件）：--selftest-save
+        if args.contains("--selftest-save") {
+            SelfTest.runSaveCheck()
+            return
+        }
         // 课表单元格「同内容高亮」离屏渲染取证（不依赖屏幕是否解锁）：--render-cells <out.png>
         // 纯视觉改动必须靠它验证 —— 逻辑自检看不出一圈「本色描边」等于没画。
         if let i = args.firstIndex(of: "--render-cells"), i + 1 < args.count {
@@ -168,6 +173,7 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        SaveHub.shared.saveIfNeeded(reason: "关闭独立窗口")
         window = nil
         DockPrefs.apply()
     }
@@ -191,6 +197,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     static weak var sharedPopover: NSPopover?
     /// 命令行 --fire-reminder-test 传入的提示文字（非 nil 时启动后弹一次测试提醒，不写盘）
     static var fireTestTitle: String?
+
+    /// 退出前兜底：把还没保存的改动写盘（忘了点「保存」也绝不丢数据）
+    func applicationWillTerminate(_ notification: Notification) {
+        SaveHub.shared.saveIfNeeded(reason: "退出应用")
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let sysVer = ProcessInfo.processInfo.operatingSystemVersionString
@@ -246,6 +257,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                                   keyEquivalent: "z")
         undoItem.target = self
         editMenu.addItem(undoItem)
+        editMenu.addItem(NSMenuItem.separator())
+        // 保存：把各板块的改动立刻写入磁盘（不点也不会丢 —— 停手 8 秒 / 收起面板 / 退出前自动保存）
+        let saveItem = NSMenuItem(title: "保存改动",
+                                  action: #selector(saveAllNow),
+                                  keyEquivalent: "s")
+        saveItem.target = self
+        editMenu.addItem(saveItem)
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
         NSApp.mainMenu = mainMenu
@@ -324,6 +342,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         writeLaunchLog("\(reason)：面板已展开（App 激活 + 窗口 key）")
     }
 
+    // ⌘S：立刻把全部板块的未保存改动写入磁盘
+    @objc private func saveAllNow() {
+        SaveHub.shared.saveNow(reason: "菜单 ⌘S")
+    }
+
     // ⌘Z：回退最近一次删除 / 清空 / 隐藏等重要操作
     @objc private func undoLastAction() {
         UndoService.shared.undo()
@@ -375,6 +398,7 @@ extension AppDelegate: NSPopoverDelegate {
     /// 面板收起 → 任何半途中的拖动都作废，清掉残影，避免下一轮换错位置；
     /// 若确实有一次被打断的拖动，下次展开时换一个全新窗口，彻底复位拖拽会话。
     func popoverDidClose(_ notification: Notification) {
+        SaveHub.shared.saveIfNeeded(reason: "面板收起")
         let interrupted = DragSessionGuard.consumeDragInterrupted()
         let hadDrag = DragSessionGuard.resetDragState(reason: "面板收起")
         if interrupted || hadDrag { needsFreshPopoverWindow = true }

@@ -44,7 +44,6 @@ final class ScheduleStore: ObservableObject {
         didSet { scheduleSave() }
     }
 
-    private let saver = Debouncer()
 
     init() {
         let data = ScheduleStore.load()
@@ -107,7 +106,7 @@ final class ScheduleStore: ObservableObject {
     func setCell(_ period: String, _ day: Int, _ value: String) {
         guard let r = flatIndex(of: period), r < grid.count, day < grid[r].count else { return }
         grid[r][day] = value
-        save()
+        scheduleSave()
     }
 
     // MARK: 单元格拖动对换（同一张个人课表内）
@@ -132,7 +131,7 @@ final class ScheduleStore: ObservableObject {
         let tmp = grid[sr][src.day]
         grid[sr][src.day] = grid[dr][day]
         grid[dr][day] = tmp
-        save()
+        scheduleSave()
         // 来源位置跟着被拖动的内容走，避免 dropEntered 连续触发时来回抖动
         cellDragSource = ScheduleCellID(period: period, day: day)
     }
@@ -143,7 +142,7 @@ final class ScheduleStore: ObservableObject {
         UndoService.shared.register("调整课表位置") { [weak self] in
             guard let self else { return }
             self.grid = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -194,7 +193,7 @@ final class ScheduleStore: ObservableObject {
             guard let self else { return }
             self.groups = snapGroups
             self.grid = snapGrid
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -234,18 +233,20 @@ final class ScheduleStore: ObservableObject {
         let snapGroups = groups, snapGrid = grid
         groups = ScheduleStore.defaultGroups
         grid = ScheduleStore.emptyGrid(periods: orderedPeriods)
-        save()
+        scheduleSave()
         UndoService.shared.register("重置个人课表") { [weak self] in
             guard let self else { return }
             self.groups = snapGroups
             self.grid = snapGrid
-            self.save()
+            self.scheduleSave()
         }
     }
 
     // MARK: 持久化（JSON，存于 Application Support/ScheduleBar；输入去抖）
+    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
+    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
     func scheduleSave() {
-        saver.schedule { self.save() }
+        SaveHub.shared.markDirty("个人课表")
     }
 
     func save() {
@@ -347,9 +348,8 @@ final class ScheduleStore: ObservableObject {
     }
 
     static func fileURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                            in: .userDomainMask)[0]
-        return base.appendingPathComponent("ScheduleBar", isDirectory: true)
-                  .appendingPathComponent("personal.json")
+        // 统一走 AppPaths：自检可用 SCHEDULEBAR_DATA_DIR 把数据目录重定向到
+        // 临时目录 —— 所有 store 都必须支持，否则它在 init 里的迁移会写真实数据。
+        AppPaths.file("personal.json")
     }
 }

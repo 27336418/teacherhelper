@@ -72,6 +72,7 @@ struct SeatingView: View {
 
             HStack(spacing: 8) {
                 UndoButton()
+                SaveButton()
 
                 if !store.selection.isEmpty {
                     Button("取消选择") { store.selection = [] }

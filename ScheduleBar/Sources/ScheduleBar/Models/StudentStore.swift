@@ -25,7 +25,6 @@ final class StudentStore: ObservableObject {
         didSet { scheduleSave() }
     }
 
-    private let saver = Debouncer()
 
     init() {
         let data = StudentStore.load()
@@ -50,7 +49,7 @@ final class StudentStore: ObservableObject {
         UndoService.shared.register("删除学生\(name.isEmpty ? "" : "「\(name)」")") { [weak self] in
             guard let self else { return }
             self.rows = snap
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -78,7 +77,7 @@ final class StudentStore: ObservableObject {
             guard let self else { return }
             self.headers = snapHeaders
             self.rows = snapRows
-            self.save()
+            self.scheduleSave()
         }
     }
     func renameColumn(_ index: Int, _ name: String) {
@@ -122,18 +121,20 @@ final class StudentStore: ObservableObject {
         let snapHeaders = headers, snapRows = rows
         headers = StudentDefaultData.headers
         rows = StudentStore.defaults()
-        save()
+        scheduleSave()
         UndoService.shared.register("重置学生信息") { [weak self] in
             guard let self else { return }
             self.headers = snapHeaders
             self.rows = snapRows
-            self.save()
+            self.scheduleSave()
         }
     }
 
     // MARK: 持久化（输入去抖）
+    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
+    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
     func scheduleSave() {
-        saver.schedule { self.save() }
+        SaveHub.shared.markDirty("学生信息")
     }
 
     func save() {
@@ -176,9 +177,8 @@ final class StudentStore: ObservableObject {
     }
 
     static func fileURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                            in: .userDomainMask)[0]
-        return base.appendingPathComponent("ScheduleBar", isDirectory: true)
-                  .appendingPathComponent("students.json")
+        // 统一走 AppPaths：自检可用 SCHEDULEBAR_DATA_DIR 把数据目录重定向到
+        // 临时目录 —— 所有 store 都必须支持，否则它在 init 里的迁移会写真实数据。
+        AppPaths.file("students.json")
     }
 }

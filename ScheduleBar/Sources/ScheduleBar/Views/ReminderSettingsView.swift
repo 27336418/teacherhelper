@@ -16,6 +16,7 @@ struct ReminderSettingsView: View {
                         .font(.headline)
                     Spacer()
                     UndoButton()
+                    SaveButton()
                 }
 
                 Text("到点会弹窗提醒，可点「等会处理」选择稍后再提醒；文字与网址可自定义并自动保存。不勾任何星期 = 只在当天该时刻提醒一次。")

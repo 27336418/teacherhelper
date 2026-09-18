@@ -7,7 +7,6 @@ final class CalendarRemarkStore: ObservableObject {
 
     @Published var overrides: [String: String] = [:]   // 键 = "week-N"（保存去抖，见 set）
 
-    private let saver = Debouncer()
     private init() { load() }
 
     // 该周当前显示的备注：用户改写过则用用户的，否则用默认
@@ -17,7 +16,7 @@ final class CalendarRemarkStore: ObservableObject {
 
     func set(_ value: String, forWeek n: Int) {
         overrides["week-\(n)"] = value
-        saver.schedule { self.save() }   // 输入时去抖，0.4s 后统一落盘
+        scheduleSave()   // 用户编辑 → 只标脏（落盘交给 SaveHub）
     }
 
     // MARK: 按天备注（右键日历某天 → 备注；键 = "day-yyyy-MM-dd"；自动同步到系统日历）
@@ -31,7 +30,7 @@ final class CalendarRemarkStore: ObservableObject {
         let oldEventID = overrides[ekKey]
         let t = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if t.isEmpty { overrides.removeValue(forKey: key) } else { overrides[key] = t }
-        saver.schedule { self.save() }
+        scheduleSave()   // 用户编辑 → 只标脏（落盘交给 SaveHub）
 
         // 自动同步到系统日历（全天事件）；拿到事件标识后记录，下次改备注更新同一条事件
         CalendarSyncService.shared.syncDayRemark(t, day: d, eventID: oldEventID) { [weak self] newID in
@@ -41,7 +40,7 @@ final class CalendarRemarkStore: ObservableObject {
             } else {
                 self.overrides.removeValue(forKey: ekKey)
             }
-            self.save()
+            self.scheduleSave()
         }
     }
 
@@ -81,9 +80,9 @@ final class CalendarRemarkStore: ObservableObject {
 
     // MARK: 持久化
     private static var fileURL: URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ScheduleBar", isDirectory: true)
-        return dir.appendingPathComponent("calendar_remarks.json")
+        // 统一走 AppPaths：自检可用 SCHEDULEBAR_DATA_DIR 把数据目录重定向到
+        // 临时目录 —— 所有 store 都必须支持，否则它在 init 里的迁移会写真实数据。
+        AppPaths.file("calendar_remarks.json")
     }
 
     private func load() {
@@ -105,7 +104,13 @@ final class CalendarRemarkStore: ObservableObject {
         overrides = migrated
     }
 
-    private func save() {
+    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
+    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
+    func scheduleSave() {
+        SaveHub.shared.markDirty("校历备注")
+    }
+
+    func save() {
         let url = Self.fileURL
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),

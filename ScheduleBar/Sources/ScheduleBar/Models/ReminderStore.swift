@@ -70,27 +70,22 @@ final class ReminderStore: ObservableObject {
     static let shared = ReminderStore()
 
     @Published var reminders: [Reminder] {
-        didSet { save() }
+        didSet { scheduleSave() }
     }
 
     init() {
         var loaded = ReminderStore.load() ?? ReminderStore.defaults()
-        // ⚠️ 一次性修正历史数据的「星期错位一天」（详见 weekdayLabel 的说明）：
-        //    旧版本的星期按钮标签整体错位一天（按钮写「周六」实际存的是 6 = 周五），
-        //    所以老数据要把每个值搬回它**标签所代表的**那一天，用户当初的勾选意图才不变。
-        let fixedKey = "reminderWeekdayLabelFixed"
-        if !UserDefaults.standard.bool(forKey: fixedKey) {
-            UserDefaults.standard.set(true, forKey: fixedKey)
-            if !loaded.isEmpty {
-                loaded = loaded.map { r in
-                    var m = r
-                    m.weekdays = Set(r.weekdays.map { ReminderStore.correctedWeekday($0) })
-                    return m
-                }
-                ReminderStore.writeToDisk(loaded)
-                SeatingStore.seatLog("提醒：已修正 \(loaded.count) 条历史提醒的星期错位（标签曾整体偏差一天）")
-            }
-        }
+
+        // ⚠️ 2026-09-18 删除了一段「星期错位一次性修正」迁移（历史事故，勿再写回）：
+        //    原先它用 `UserDefaults.standard.bool(forKey: "reminderWeekdayLabelFixed")` 当开关，
+        //    但直接运行 `.build/…/ScheduleBar`（无 App bundle）时偏好域与正常 App 不同，
+        //    开关读不到 → 迁移被当成「首次运行」重跑 → 用户提醒的星期**整体又错位一天**。
+        //    （2026-09-18 实测：自检进程把「周一~周五 [2,3,4,5,6]」改成了 [3,4,5,6,7]。）
+        //
+        //    结论：这段修正**已经**在引入它的版本里跑过一次，使命完成；留着只会在
+        //    偏域不同的进程里二次生效。一次性迁移要用「数据本身」表达幂等，
+        //    绝对不要用 UserDefaults 开关。
+        //    下面这段 oneShotDay 补写就是正确做法的样例（补过一次后非 nil，天然幂等）。
 
         // ⚠️ 2026-09-17：老版本把「一个都没勾」当成「永远不提醒」（还挂橙色警告），用户要求改成
         //    「默认为当天设定的时间」＝当天提醒一次。这里把历史里没勾星期的提醒补上 oneShotDay，
@@ -107,7 +102,11 @@ final class ReminderStore: ObservableObject {
         self.reminders = loaded
     }
 
-    /// 旧数据 → 正确星期：按钮标签是 `[w % 7]`，所以标签代表的那一天 = `(w % 7) + 1`
+    /// 旧数据 → 正确星期：按钮标签是 `[w % 7]`，所以标签代表的那一天 = `(w % 7) + 1`。
+    ///
+    /// ⚠️ **绝对不要再对用户数据自动调用它**（见 `init` 里的历史事故说明）：
+    ///    这段映射已经在修正版本里跑过一次，再跑一次就是把星期又搬错一天。
+    ///    保留它只是为了在需要人工核对/修复时能看到当初的映射关系（逆映射＝`((v + 5) % 7) + 1`）。
     static func correctedWeekday(_ w: Int) -> Int {
         guard (1...7).contains(w) else { return w }
         return (w % 7) + 1
@@ -128,7 +127,7 @@ final class ReminderStore: ObservableObject {
         UndoService.shared.register("删除提醒\(title.isEmpty ? "" : "「\(title)」")") { [weak self] in
             guard let self else { return }
             self.reminders = snap
-            self.save()
+            self.scheduleSave()
             NotificationScheduler.shared.scheduleAll()
         }
     }
@@ -170,6 +169,12 @@ final class ReminderStore: ObservableObject {
     static let weekdayMonToSat: Set<Int> = [2, 3, 4, 5, 6, 7]   // 周一~周六
 
     // MARK: 持久化
+    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
+    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
+    func scheduleSave() {
+        SaveHub.shared.markDirty("日程提醒")
+    }
+
     func save() {
         ReminderStore.writeToDisk(reminders)
         // 提醒列表变化后重建系统通知
@@ -199,9 +204,8 @@ final class ReminderStore: ObservableObject {
     }
 
     static func fileURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                           in: .userDomainMask)[0]
-        return base.appendingPathComponent("ScheduleBar", isDirectory: true)
-                  .appendingPathComponent("reminders.json")
+        // 统一走 AppPaths：自检可用 SCHEDULEBAR_DATA_DIR 把数据目录重定向到
+        // 临时目录 —— 所有 store 都必须支持，否则它在 init 里的迁移会写真实数据。
+        AppPaths.file("reminders.json")
     }
 }

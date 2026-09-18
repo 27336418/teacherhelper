@@ -58,6 +58,7 @@ struct PersonalScheduleView: View {
                 EditableCardTitle(icon: "person.crop.rectangle", key: "personal")
                 Spacer()
                 UndoButton()
+                SaveButton()
                 // 与班级课表风格一致：右上角「导入」下拉 + 「下载」
                 Menu {
                     Button("个人课表") { coordinator.importPersonalFile() }

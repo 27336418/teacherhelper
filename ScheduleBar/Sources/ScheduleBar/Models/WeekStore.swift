@@ -9,7 +9,7 @@ final class WeekStore: ObservableObject {
 
     /// 用户设置的第 1 周开始日（存入时已对齐为当天所在周的周一）
     @Published var rawStart: Date? {
-        didSet { save() }
+        didSet { scheduleSave() }
     }
 
     init() {
@@ -58,6 +58,12 @@ final class WeekStore: ObservableObject {
     }
 
     // MARK: 持久化
+    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
+    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
+    func scheduleSave() {
+        SaveHub.shared.markDirty("当前周")
+    }
+
     func save() {
         do {
             let url = Self.fileURL()
@@ -85,9 +91,7 @@ final class WeekStore: ObservableObject {
     }()
 
     static func fileURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                           in: .userDomainMask)[0]
-        return base.appendingPathComponent("ScheduleBar", isDirectory: true)
-                  .appendingPathComponent("week.json")
+        // 统一走 AppPaths（自检可重定向到临时目录，绝不触碰真实数据）
+        AppPaths.file("week.json")
     }
 }

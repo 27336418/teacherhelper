@@ -28,6 +28,7 @@ struct ExtendScheduleView: View {
                 EditableCardTitle(icon: "clock.fill", key: "extend")
                 Spacer()
                 UndoButton()
+                SaveButton()
                 Menu {
                     Button("延时&监考") { coordinator.importExtendFile() }
                     Divider()
@@ -56,7 +57,7 @@ struct ExtendScheduleView: View {
                                         accent: extendDelayPalette[j % extendDelayPalette.count],
                                         currentWeek: weekStore.currentWeek,
                                         isCollapsed: collapsed.contains(extStore.blocks[i].id),
-                                        save: { extStore.save() },
+                                        save: { extStore.scheduleSave() },
                                         onToggle: { toggleBlock(extStore.blocks[i].id) })
                             .frame(width: colWidth, alignment: .top)   // 固定等宽列+顶对齐，保证各标题齐平
                     }
@@ -73,7 +74,7 @@ struct ExtendScheduleView: View {
                     accent: extendExamAccent,
                     currentWeek: weekStore.currentWeek,
                     isCollapsed: collapsed.contains(extStore.blocks[i].id),
-                    save: { extStore.save() },
+                    save: { extStore.scheduleSave() },
                     onToggle: { toggleBlock(extStore.blocks[i].id) }
                 )
             }
@@ -248,7 +249,7 @@ struct DelayColumnView: View {
                             save()
                             UndoService.shared.register("删除「\(block.title)」行") {
                                 extStore.blocks = snap
-                                extStore.save()
+                                extStore.scheduleSave()
                             }
                         } label: {
                             Image(systemName: "trash")
@@ -353,7 +354,7 @@ struct ExtendBlockView: View {
                             save()
                             UndoService.shared.register("删除「\(block.title)」行") {
                                 extStore.blocks = snap
-                                extStore.save()
+                                extStore.scheduleSave()
                             }
                         } label: {
                             Image(systemName: "trash")
