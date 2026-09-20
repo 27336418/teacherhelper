@@ -215,23 +215,25 @@ final class OfficeLayoutStore: ObservableObject {
     func moveCard(_ id: UUID, to targetID: UUID) {
         guard id != targetID,
               let from = offices.firstIndex(where: { $0.id == id }),
-              offices.contains(where: { $0.id == targetID }) else { return }
+              let targetIdx = offices.firstIndex(where: { $0.id == targetID }) else { return }
+        let fromTitle = offices[from].title
+        let targetTitle = offices[targetIdx].title
         var moved = offices.remove(at: from)
-        guard let at = offices.firstIndex(where: { $0.id == targetID }) else {
-            offices.insert(moved, at: min(from, offices.count))
-            return
-        }
-        moved.floor = offices[at].floor          // 落到哪一层就是哪一层
+        let at = offices.firstIndex(where: { $0.id == targetID }) ?? min(from, offices.count)
+        if at < offices.count { moved.floor = offices[at].floor }   // 落到哪一层就是哪一层
         offices.insert(moved, at: at)
+        DragSessionGuard.log("办公室卡片：「\(fromTitle)」插到「\(targetTitle)」之前（第 \(from) → \(at) 位，楼层=\(moved.floor.isEmpty ? "未分组" : moved.floor)）")
     }
 
     /// 落点 = 楼层标题：把卡片挪到该楼层末尾（楼层为空串 = 未分组）
     func moveCard(_ id: UUID, toFloor floor: String) {
         guard let from = offices.firstIndex(where: { $0.id == id }) else { return }
+        let title = offices[from].title
         var moved = offices.remove(at: from)
         moved.floor = floor
         let insertAt = offices.lastIndex(where: { $0.floor == floor }).map { $0 + 1 } ?? offices.count
         offices.insert(moved, at: min(insertAt, offices.count))
+        DragSessionGuard.log("办公室卡片：把「\(title)」挪到「\(floor.isEmpty ? "未分组" : floor)」末尾（第 \(from) → \(min(insertAt, offices.count)) 位）")
     }
 
     /// 松手：与快照比对，真的变了才登记撤销

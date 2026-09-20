@@ -152,7 +152,6 @@ struct OfficeLayoutView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 toolbar
-                if floorEditKind != nil { floorEditorRow }
                 searchRow
                 floorsSection
             }
@@ -160,57 +159,59 @@ struct OfficeLayoutView: View {
         }
     }
 
-    // MARK: 顶部工具栏
+    // MARK: 顶部标题 + 操作（两行布局，避免按钮文字被截断 —— 与学生座位同一做法）
     private var toolbar: some View {
-        HStack {
-            EditableCardTitle(icon: "person.3.fill", key: "office")
-            Spacer()
-            UndoButton()
-            SaveButton()
-            Menu {
-                Button("导入 xlsx") { coordinator.importOffice() }
-                Button("下载填写模板") { coordinator.downloadTemplate(.office) }
-            } label: {
-                Label("导入", systemImage: "square.and.arrow.down")
-            }
-            .help("导入工位布局；可先下载模板（每段先写「楼层」，再写「办公室」+ 每排座位）填写")
-            Button("下载") { coordinator.exportOffice() }
-            Picker("", selection: $store.studentView) {
-                Text("内部视角").tag(false)
-                Text("外部视角").tag(true)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .help("内部视角：从办公室内部看，左右门在工位上方；外部视角：从办公室外部看，整张工位表 180° 镜像，左右门移到工位下方")
-            Toggle("显示左右门", isOn: $store.showDoors)
-                .toggleStyle(.checkbox)
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                EditableCardTitle(icon: "person.3.fill", key: "office")
+                Spacer()
+                Picker("", selection: $store.studentView) {
+                    Text("内部视角").tag(false)
+                    Text("外部视角").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
                 .fixedSize()
-                .help("隐藏或显示办公室的左右门标识（内部视角在工位上方，外部视角在工位下方）")
-            Button {
-                beginNewFloor()
-            } label: {
-                Label("新建楼层", systemImage: "rectangle.stack.badge.plus")
+                .help("内部视角：从办公室内部看，左右门在工位上方；外部视角：从办公室外部看，整张工位表 180° 镜像，左右门移到工位下方")
+                Toggle("显示左右门", isOn: $store.showDoors)
+                    .toggleStyle(.checkbox)
+                    .fixedSize()
+                    .help("隐藏或显示办公室的左右门标识（内部视角在工位上方，外部视角在工位下方）")
             }
-            .buttonStyle(.bordered)
-            .help("新建一个楼层，卡片就会按楼层分成一节一节；之后把卡片拖进某一节即可归到该楼层")
-            if store.hasFloors {
+
+            HStack(spacing: 8) {
+                UndoButton()
+                SaveButton()
+                Spacer()
                 Menu {
-                    ForEach(store.floorNames, id: \.self) { f in
-                        Button(f.isEmpty ? "未分组" : f) { store.addOffice(floor: f) }
-                    }
+                    Button("导入 xlsx") { coordinator.importOffice() }
+                    Button("下载填写模板") { coordinator.downloadTemplate(.office) }
                 } label: {
-                    Label("添加办公室", systemImage: "plus")
+                    Label("导入", systemImage: "square.and.arrow.down")
                 }
                 .fixedSize()
-                .help("新办公室放在哪个楼层")
-            } else {
-                Button {
-                    store.addOffice()
-                } label: {
-                    Label("添加办公室", systemImage: "plus")
+                .help("导入工位布局；可先下载模板（每段先写「楼层」，再写「办公室」+ 每排座位）填写")
+                Button("下载") { coordinator.exportOffice() }
+                    .fixedSize()
+                    .help("把当前工位布局导出成 xlsx（含「楼层」行）")
+                if store.hasFloors {
+                    Menu {
+                        ForEach(store.floorNames, id: \.self) { f in
+                            Button(f.isEmpty ? "未分组" : f) { store.addOffice(floor: f) }
+                        }
+                    } label: {
+                        Label("添加办公室", systemImage: "plus")
+                    }
+                    .fixedSize()
+                    .help("新办公室放在哪个楼层")
+                } else {
+                    Button {
+                        store.addOffice()
+                    } label: {
+                        Label("添加办公室", systemImage: "plus")
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
             }
         }
     }
@@ -277,14 +278,62 @@ struct OfficeLayoutView: View {
                         cardRows(store.offices(inFloor: floor))
                     }
                 }
+                newFloorRow
             }
         } else {
-            cardRows(store.offices)
+            VStack(alignment: .leading, spacing: 12) {
+                cardRows(store.offices)
+                newFloorRow
+            }
+        }
+    }
+
+    /// 列表末尾的「＋ 新建楼层」；点一下就地变成输入框（**不用弹窗**：NSAlert 会先把 popover 关掉）
+    @ViewBuilder
+    private var newFloorRow: some View {
+        if floorEditKind == .new {
+            floorEditorRow(isNew: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Button {
+                beginNewFloor()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus.circle")
+                    Text("新建楼层")
+                    Text("（建好后把卡片拖进去即归到该楼层）")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                        .foregroundStyle(Color.secondary.opacity(0.5))
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("新建一个楼层，把办公室按楼层分开显示")
         }
     }
 
     /// 楼层标题条：也是「整张卡片」的落点（把卡片拖到这一条上 = 挪到该楼层）
+    @ViewBuilder
     private func floorHeader(_ floor: String) -> some View {
+        if floorEditKind == .rename(floor) {
+            floorEditorRow(isNew: false)
+        } else {
+            floorHeaderBar(floor)
+        }
+    }
+
+    private func floorHeaderBar(_ floor: String) -> some View {
         let count = store.offices(inFloor: floor).count
         let people = store.headcount(inFloor: floor)
         let isTarget = store.floorDropTarget == floor
@@ -296,62 +345,46 @@ struct OfficeLayoutView: View {
             Image(systemName: "building.2.fill")
                 .font(.system(size: 12))
                 .foregroundStyle(isTarget ? Color.accentColor : Color.secondary)
-            if floorEditKind == .rename(floor) {
-                TextField("楼层名称", text: $floorDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12))
-                    .frame(width: 150)
-                    .focused($floorFieldFocused)
-                    .onSubmit { commitFloorEdit() }
-                Button("保存") { commitFloorEdit() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                Button("取消") { cancelFloorEdit() }
-                    .controlSize(.small)
-            } else {
-                Text(label)
-                    .font(.system(size: 13, weight: .bold))
-                Text("\(count) 间 · \(people) 人")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
+            Text(label)
+                .font(.system(size: 13, weight: .bold))
+            Text("\(count) 间 · \(people) 人")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
             Spacer(minLength: 0)
-            if floorEditKind == nil {
-                Button { store.moveFloor(floor, by: -1) } label: {
-                    Image(systemName: "chevron.up").font(.system(size: 10))
-                }
-                .buttonStyle(.plain)
-                .disabled(!canUp)
-                .help("把「\(label)」整层上移")
-                Button { store.moveFloor(floor, by: 1) } label: {
-                    Image(systemName: "chevron.down").font(.system(size: 10))
-                }
-                .buttonStyle(.plain)
-                .disabled(!canDown)
-                .help("把「\(label)」整层下移")
-                Button { store.addOffice(floor: floor) } label: {
-                    Image(systemName: "plus.circle")
-                        .font(.system(size: 12))
-                }
-                .buttonStyle(.plain)
-                .help("在「\(label)」加一间办公室")
-                Menu {
-                    Button("重命名…") { beginRenameFloor(floor) }
-                    if !floor.isEmpty {
-                        Button("移出楼层（保留办公室）") { store.clearFloor(floor) }
-                        Divider()
-                        Button("删除本楼层（含 \(count) 间办公室）", role: .destructive) {
-                            store.deleteFloor(floor)
-                        }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle").font(.system(size: 12))
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("楼层操作")
+            Button { store.moveFloor(floor, by: -1) } label: {
+                Image(systemName: "chevron.up").font(.system(size: 10))
             }
+            .buttonStyle(.plain)
+            .disabled(!canUp)
+            .help("把「\(label)」整层上移")
+            Button { store.moveFloor(floor, by: 1) } label: {
+                Image(systemName: "chevron.down").font(.system(size: 10))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canDown)
+            .help("把「\(label)」整层下移")
+            Button { store.addOffice(floor: floor) } label: {
+                Image(systemName: "plus.circle")
+                    .font(.system(size: 12))
+            }
+            .buttonStyle(.plain)
+            .help("在「\(label)」加一间办公室")
+            Menu {
+                Button("重命名…") { beginRenameFloor(floor) }
+                if !floor.isEmpty {
+                    Button("移出楼层（保留办公室）") { store.clearFloor(floor) }
+                    Divider()
+                    Button("删除本楼层（含 \(count) 间办公室）", role: .destructive) {
+                        store.deleteFloor(floor)
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.system(size: 12))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("楼层操作")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -364,23 +397,26 @@ struct OfficeLayoutView: View {
         .help("把办公室卡片拖到这一条上，就能把它挪到「\(label)」")
     }
 
-    /// 楼层编辑行（新建 / 改名都在这里行内输入）
-    private var floorEditorRow: some View {
+    /// 楼层名称输入行：新建（列表末尾）/ 改名（楼层标题处）共用
+    private func floorEditorRow(isNew: Bool) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "building.2")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-            Text(floorEditKind == .new ? "新建楼层：" : "楼层改名：")
+            Text(isNew ? "新建楼层：" : "改名：")
                 .font(.system(size: 12))
             TextField("楼层名称（例如：三楼、X栋4楼）", text: $floorDraft)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 200)
+                .font(.system(size: 12))
+                .frame(width: 190)
                 .focused($floorFieldFocused)
                 .onSubmit { commitFloorEdit() }
-            Button(floorEditKind == .new ? "创建" : "保存") { commitFloorEdit() }
+            Button(isNew ? "创建" : "保存") { commitFloorEdit() }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.small)
             Button("取消") { cancelFloorEdit() }
-            if let a = floorAssign, let o = store.offices.first(where: { $0.id == a }) {
+                .controlSize(.small)
+            if isNew, let a = floorAssign, let o = store.offices.first(where: { $0.id == a }) {
                 Text("（「\(o.title)」将移入该楼层）")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -388,8 +424,8 @@ struct OfficeLayoutView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.10)))
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.12)))
     }
 
     private func beginNewFloor(assign id: UUID? = nil) {
