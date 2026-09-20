@@ -12,30 +12,123 @@ struct OfficeSeatSwapDelegate: DropDelegate {
 
     /// 本落点是否该管家下的这次拖拽（不是工位模块 → 一概不理，
     /// 尤其不能顺手清掉 DragContext，否则「拖了没换」之后下一拖也没有来源）
-    private var isOurs: Bool { DragContext.belongs(to: DragPayload.officeSeat) }
+    private var isSeatDrag: Bool { DragContext.belongs(to: DragPayload.officeSeat) }
+    /// ⚠️ 「整张卡片」拖动经过座位区时也要接住：卡片中间的座位格占了大半面积，
+    ///    如果只有标题条能落，用户会以为「卡片拖不动」。
+    private var isCardDrag: Bool { DragContext.belongs(to: DragPayload.officeCard) }
+
+    private var isOurs: Bool { isSeatDrag || isCardDrag }
 
     func validateDrop(info: DropInfo) -> Bool { isOurs }
 
+    private func highlight() {
+        if isCardDrag { store.setCardDropTarget(officeID) }
+        else { store.setDropHighlight(officeID: officeID, row: row, col: col) }
+    }
+
     func dropEntered(info: DropInfo) {
         guard isOurs else { return }
-        store.setDropHighlight(officeID: officeID, row: row, col: col)
+        highlight()
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         guard isOurs else { return nil }
-        store.setDropHighlight(officeID: officeID, row: row, col: col)
+        highlight()
         return DropProposal(operation: .move)
     }
 
     // 唯一提交点：**同步**执行一次交换并登记撤销，随后清除高亮。
     // （不能放进 loadObject 的异步回调：macOS 26 上拖拽会话会因此不复位，之后再也拖不动）
     func performDrop(info: DropInfo) -> Bool {
-        guard isOurs else { DragContext.reject(DragPayload.officeSeat); return false }
+        if isCardDrag { return OfficeCardDrop.perform(store: store, targetID: officeID) }
+        guard isSeatDrag else { DragContext.reject(DragPayload.officeSeat); return false }
         store.swapSeatTo(officeID: officeID, row: row, col: col)
         store.clearDropHighlight()
         store.finishSeatDrag()
         DragContext.finish(reason: "工位")
         return true
+    }
+}
+
+// MARK: - 「整张卡片」拖动的落点（卡片 / 楼层标题共用提交逻辑）
+enum OfficeCardDrop {
+    /// 落点 = 某张卡片：插到它的位置并跟随它的楼层
+    static func perform(store: OfficeLayoutStore, targetID: UUID) -> Bool {
+        guard let src = DragPayload.officeCardID(from: DragContext.payload) else {
+            DragContext.reject(DragPayload.officeCard)
+            return false
+        }
+        store.moveCard(src, to: targetID)
+        return commit(store: store)
+    }
+
+    /// 落点 = 楼层标题：挪到该楼层末尾
+    static func perform(store: OfficeLayoutStore, floor: String) -> Bool {
+        guard let src = DragPayload.officeCardID(from: DragContext.payload) else {
+            DragContext.reject(DragPayload.officeCard)
+            return false
+        }
+        store.moveCard(src, toFloor: floor)
+        return commit(store: store)
+    }
+
+    private static func commit(store: OfficeLayoutStore) -> Bool {
+        store.clearCardDropTargets()
+        store.finishCardDrag()
+        DragContext.finish(reason: "办公室卡片")
+        return true
+    }
+}
+
+/// 落点 = 某张办公室卡片（整卡高亮）
+struct OfficeCardDropDelegate: DropDelegate {
+    let targetID: UUID
+    let store: OfficeLayoutStore
+
+    private var isOurs: Bool { DragContext.belongs(to: DragPayload.officeCard) }
+
+    func validateDrop(info: DropInfo) -> Bool { isOurs }
+
+    func dropEntered(info: DropInfo) {
+        guard isOurs else { return }
+        store.setCardDropTarget(targetID)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard isOurs else { return nil }
+        store.setCardDropTarget(targetID)
+        return DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard isOurs else { DragContext.reject(DragPayload.officeCard); return false }
+        return OfficeCardDrop.perform(store: store, targetID: targetID)
+    }
+}
+
+/// 落点 = 楼层标题条（把卡片挪到这一层）
+struct OfficeFloorDropDelegate: DropDelegate {
+    let floor: String
+    let store: OfficeLayoutStore
+
+    private var isOurs: Bool { DragContext.belongs(to: DragPayload.officeCard) }
+
+    func validateDrop(info: DropInfo) -> Bool { isOurs }
+
+    func dropEntered(info: DropInfo) {
+        guard isOurs else { return }
+        store.setFloorDropTarget(floor)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard isOurs else { return nil }
+        store.setFloorDropTarget(floor)
+        return DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard isOurs else { DragContext.reject(DragPayload.officeCard); return false }
+        return OfficeCardDrop.perform(store: store, floor: floor)
     }
 }
 
@@ -48,110 +141,301 @@ struct OfficeLayoutView: View {
     @State private var appliedKeyword = ""     // 去抖后的关键字（避免每次键入都重算）
     @State private var searchWork: DispatchWorkItem?
 
+    /// 楼层编辑状态（行内输入，**不弹窗**：NSAlert 会先把 popover 关掉，用户就得重新打开面板）
+    enum FloorEditKind: Equatable { case new, rename(String) }
+    @State private var floorEditKind: FloorEditKind? = nil
+    @State private var floorDraft = ""
+    @State private var floorAssign: UUID? = nil      // 新建楼层时要把哪张卡片挪进去
+    @FocusState private var floorFieldFocused: Bool
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    EditableCardTitle(icon: "person.3.fill", key: "office")
-                    Spacer()
-                    UndoButton()
-                    SaveButton()
-                    Menu {
-                        Button("导入 xlsx") { coordinator.importOffice() }
-                        Button("下载填写模板") { coordinator.downloadTemplate(.office) }
-                    } label: {
-                        Label("导入", systemImage: "square.and.arrow.down")
-                    }
-                    .help("导入工位布局；可先下载模板（办公室分段 + 每排座位）填写")
-                    Button("下载") { coordinator.exportOffice() }
-                    Picker("", selection: $store.studentView) {
-                        Text("内部视角").tag(false)
-                        Text("外部视角").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                    .help("内部视角：从办公室内部看，左右门在工位上方；外部视角：从办公室外部看，整张工位表 180° 镜像，左右门移到工位下方")
-                    Toggle("显示左右门", isOn: $store.showDoors)
-                        .toggleStyle(.checkbox)
-                        .fixedSize()
-                        .help("隐藏或显示办公室的左右门标识（内部视角在工位上方，外部视角在工位下方）")
-                    Button {
-                        store.addOffice()
-                    } label: {
-                        Label("添加办公室", systemImage: "plus")
-                    }
-                    .buttonStyle(.bordered)
-                }
-
-                // 姓名查询（左半行）+ 所有办公室人数之和（右半行）
-                HStack(spacing: 8) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(.secondary)
-                        TextField("输入姓名查找工位", text: $keyword)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12))
-                            .onChange(of: keyword) { v in
-                                searchWork?.cancel()
-                                let w = DispatchWorkItem { appliedKeyword = v }
-                                searchWork = w
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: w)
-                            }
-                        if !keyword.isEmpty {
-                            Button {
-                                keyword = ""
-                                appliedKeyword = ""
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        if !appliedKeyword.trimmingCharacters(in: .whitespaces).isEmpty {
-                            Text("找到 \(hitCount) 个工位")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
-                    .frame(maxWidth: .infinity)
-
-                    HStack(spacing: 6) {
-                        Image(systemName: "person.3.fill")
-                            .foregroundStyle(.secondary)
-                        Text("办公室共 \(totalHeadcount) 人")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
-                    .frame(maxWidth: .infinity)
-                }
-
-                // 每间办公室独立决定是否占满一行：宽办公室单独占一行，
-                // 其它办公室继续两列排列，后面的办公室自然向下移动。
-                officeRows
+                toolbar
+                if floorEditKind != nil { floorEditorRow }
+                searchRow
+                floorsSection
             }
             .padding(16)
         }
     }
 
-    /// 把办公室按两列分组；超过 4 列的办公室单独占一行，
-    /// 但不会改变其它办公室的排列方式。
+    // MARK: 顶部工具栏
+    private var toolbar: some View {
+        HStack {
+            EditableCardTitle(icon: "person.3.fill", key: "office")
+            Spacer()
+            UndoButton()
+            SaveButton()
+            Menu {
+                Button("导入 xlsx") { coordinator.importOffice() }
+                Button("下载填写模板") { coordinator.downloadTemplate(.office) }
+            } label: {
+                Label("导入", systemImage: "square.and.arrow.down")
+            }
+            .help("导入工位布局；可先下载模板（每段先写「楼层」，再写「办公室」+ 每排座位）填写")
+            Button("下载") { coordinator.exportOffice() }
+            Picker("", selection: $store.studentView) {
+                Text("内部视角").tag(false)
+                Text("外部视角").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("内部视角：从办公室内部看，左右门在工位上方；外部视角：从办公室外部看，整张工位表 180° 镜像，左右门移到工位下方")
+            Toggle("显示左右门", isOn: $store.showDoors)
+                .toggleStyle(.checkbox)
+                .fixedSize()
+                .help("隐藏或显示办公室的左右门标识（内部视角在工位上方，外部视角在工位下方）")
+            Button {
+                beginNewFloor()
+            } label: {
+                Label("新建楼层", systemImage: "rectangle.stack.badge.plus")
+            }
+            .buttonStyle(.bordered)
+            .help("新建一个楼层，卡片就会按楼层分成一节一节；之后把卡片拖进某一节即可归到该楼层")
+            if store.hasFloors {
+                Menu {
+                    ForEach(store.floorNames, id: \.self) { f in
+                        Button(f.isEmpty ? "未分组" : f) { store.addOffice(floor: f) }
+                    }
+                } label: {
+                    Label("添加办公室", systemImage: "plus")
+                }
+                .fixedSize()
+                .help("新办公室放在哪个楼层")
+            } else {
+                Button {
+                    store.addOffice()
+                } label: {
+                    Label("添加办公室", systemImage: "plus")
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    // MARK: 姓名查询（左半行）+ 所有办公室人数之和（右半行）
+    private var searchRow: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("输入姓名查找工位", text: $keyword)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .onChange(of: keyword) { v in
+                        searchWork?.cancel()
+                        let w = DispatchWorkItem { appliedKeyword = v }
+                        searchWork = w
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: w)
+                    }
+                if !keyword.isEmpty {
+                    Button {
+                        keyword = ""
+                        appliedKeyword = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                if !appliedKeyword.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Text("找到 \(hitCount) 个工位")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+            .frame(maxWidth: .infinity)
+
+            HStack(spacing: 6) {
+                Image(systemName: "person.3.fill")
+                    .foregroundStyle(.secondary)
+                Text("办公室共 \(totalHeadcount) 人")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    // MARK: 楼层分组（没设过楼层时退化成原来的「一张张平铺」）
     @ViewBuilder
-    private var officeRows: some View {
+    private var floorsSection: some View {
+        if store.hasFloors {
+            VStack(alignment: .leading, spacing: 16) {
+                ForEach(store.floorNames, id: \.self) { floor in
+                    VStack(alignment: .leading, spacing: 10) {
+                        floorHeader(floor)
+                        cardRows(store.offices(inFloor: floor))
+                    }
+                }
+            }
+        } else {
+            cardRows(store.offices)
+        }
+    }
+
+    /// 楼层标题条：也是「整张卡片」的落点（把卡片拖到这一条上 = 挪到该楼层）
+    private func floorHeader(_ floor: String) -> some View {
+        let count = store.offices(inFloor: floor).count
+        let people = store.headcount(inFloor: floor)
+        let isTarget = store.floorDropTarget == floor
+        let index = store.floorNames.firstIndex(of: floor) ?? 0
+        let canUp = index > 0
+        let canDown = index < store.floorNames.count - 1
+        let label = floor.isEmpty ? "未分组" : floor
+        return HStack(spacing: 8) {
+            Image(systemName: "building.2.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(isTarget ? Color.accentColor : Color.secondary)
+            if floorEditKind == .rename(floor) {
+                TextField("楼层名称", text: $floorDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                    .frame(width: 150)
+                    .focused($floorFieldFocused)
+                    .onSubmit { commitFloorEdit() }
+                Button("保存") { commitFloorEdit() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                Button("取消") { cancelFloorEdit() }
+                    .controlSize(.small)
+            } else {
+                Text(label)
+                    .font(.system(size: 13, weight: .bold))
+                Text("\(count) 间 · \(people) 人")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            if floorEditKind == nil {
+                Button { store.moveFloor(floor, by: -1) } label: {
+                    Image(systemName: "chevron.up").font(.system(size: 10))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canUp)
+                .help("把「\(label)」整层上移")
+                Button { store.moveFloor(floor, by: 1) } label: {
+                    Image(systemName: "chevron.down").font(.system(size: 10))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canDown)
+                .help("把「\(label)」整层下移")
+                Button { store.addOffice(floor: floor) } label: {
+                    Image(systemName: "plus.circle")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.plain)
+                .help("在「\(label)」加一间办公室")
+                Menu {
+                    Button("重命名…") { beginRenameFloor(floor) }
+                    if !floor.isEmpty {
+                        Button("移出楼层（保留办公室）") { store.clearFloor(floor) }
+                        Divider()
+                        Button("删除本楼层（含 \(count) 间办公室）", role: .destructive) {
+                            store.deleteFloor(floor)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle").font(.system(size: 12))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("楼层操作")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8)
+            .fill(isTarget ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .stroke(isTarget ? Color.accentColor : Color.primary.opacity(0.10), lineWidth: isTarget ? 2 : 1))
+        .contentShape(Rectangle())
+        .onDrop(of: [.text], delegate: OfficeFloorDropDelegate(floor: floor, store: store))
+        .help("把办公室卡片拖到这一条上，就能把它挪到「\(label)」")
+    }
+
+    /// 楼层编辑行（新建 / 改名都在这里行内输入）
+    private var floorEditorRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "building.2")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            Text(floorEditKind == .new ? "新建楼层：" : "楼层改名：")
+                .font(.system(size: 12))
+            TextField("楼层名称（例如：三楼、X栋4楼）", text: $floorDraft)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 200)
+                .focused($floorFieldFocused)
+                .onSubmit { commitFloorEdit() }
+            Button(floorEditKind == .new ? "创建" : "保存") { commitFloorEdit() }
+                .buttonStyle(.borderedProminent)
+            Button("取消") { cancelFloorEdit() }
+            if let a = floorAssign, let o = store.offices.first(where: { $0.id == a }) {
+                Text("（「\(o.title)」将移入该楼层）")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.10)))
+    }
+
+    private func beginNewFloor(assign id: UUID? = nil) {
+        floorAssign = id
+        floorDraft = ""
+        floorEditKind = .new
+        DispatchQueue.main.async { floorFieldFocused = true }
+    }
+
+    private func beginRenameFloor(_ floor: String) {
+        floorAssign = nil
+        floorDraft = floor
+        floorEditKind = .rename(floor)
+        DispatchQueue.main.async { floorFieldFocused = true }
+    }
+
+    private func cancelFloorEdit() {
+        floorEditKind = nil
+        floorDraft = ""
+        floorAssign = nil
+    }
+
+    private func commitFloorEdit() {
+        guard let kind = floorEditKind else { return }
+        let name = floorDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        floorEditKind = nil
+        defer { floorDraft = ""; floorAssign = nil }
+        guard !name.isEmpty else { return }
+        switch kind {
+        case .new:            store.addFloor(named: name, assigning: floorAssign)
+        case .rename(let o):  store.renameFloor(o, to: name)
+        }
+    }
+
+    /// 一组卡片（同一楼层内）按两列排布；超过 4 列的卡片单独占一行
+    @ViewBuilder
+    private func cardRows(_ list: [OfficeBlock]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(officeRowIDs.enumerated()), id: \.offset) { _, row in
+            ForEach(Array(rowIDs(list).enumerated()), id: \.offset) { _, row in
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(row, id: \.self) { id in
                         // 卡片宽度由「列数 × 固定列宽」自行决定，不再拉伸铺满整行：
                         // 列宽恒定，点「+」只是在右边多出一列。
-                        OfficeCard(office: binding(for: id), keyword: appliedKeyword)
+                        OfficeCard(office: binding(for: id),
+                                   keyword: appliedKeyword,
+                                   onNewFloor: { beginNewFloor(assign: $0) })
                     }
                     // 单张卡片独占一行时补一个弹性占位，保证卡片左对齐且不被拉伸。
                     if row.count == 1 {
@@ -162,16 +446,18 @@ struct OfficeLayoutView: View {
         }
     }
 
-    private var officeRowIDs: [[UUID]] {
+    /// 把办公室按两列分组；超过 4 列的办公室单独占一行，
+    /// 但不会改变其它办公室的排列方式。
+    private func rowIDs(_ list: [OfficeBlock]) -> [[UUID]] {
         var rows: [[UUID]] = []
         var index = 0
-        while index < store.offices.count {
-            let office = store.offices[index]
+        while index < list.count {
+            let office = list[index]
             if isWide(office) {
                 rows.append([office.id])
                 index += 1
-            } else if index + 1 < store.offices.count && !isWide(store.offices[index + 1]) {
-                rows.append([office.id, store.offices[index + 1].id])
+            } else if index + 1 < list.count && !isWide(list[index + 1]) {
+                rows.append([office.id, list[index + 1].id])
                 index += 2
             } else {
                 rows.append([office.id])
@@ -179,11 +465,6 @@ struct OfficeLayoutView: View {
             }
         }
         return rows
-    }
-
-    private func isWide(id: UUID) -> Bool {
-        guard let office = store.offices.first(where: { $0.id == id }) else { return false }
-        return isWide(office)
     }
 
     private func isWide(_ office: OfficeBlock) -> Bool {
@@ -199,15 +480,7 @@ struct OfficeLayoutView: View {
 
     /// 所有办公室人数之和（空白与「水池」不计入）。
     private var totalHeadcount: Int {
-        store.offices.reduce(0) { $0 + headcount(of: $1) }
-    }
-
-    /// 实际姓名人数：空白和固定设施不计入。
-    private func headcount(of office: OfficeBlock) -> Int {
-        office.seats.flatMap { $0 }
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0 != "水池" }
-            .count
+        store.offices.reduce(0) { $0 + $1.headcount }
     }
 
     /// 命中的工位数（所有办公室合计）
@@ -229,6 +502,8 @@ struct OfficeCard: View {
     @Binding var office: OfficeBlock
     @EnvironmentObject var store: OfficeLayoutStore
     var keyword: String = ""                 // 查询姓名（已去抖）；命中的工位高亮闪烁
+    /// 「新建楼层…」（从卡片上的楼层菜单触发，把这张卡片一起挪进新楼层）
+    var onNewFloor: (UUID) -> Void = { _ in }
     @State private var titleEditing = false
     @State private var titleDraft = ""
     @FocusState private var titleFocused: Bool
@@ -261,41 +536,32 @@ struct OfficeCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // 标题行：双击改名 + 删除办公室
+            // 标题行：左边「手柄 + 标题」= 整张卡片的抓取区（拖动换位置 / 换楼层），双击标题改名
             HStack(spacing: 6) {
-                if titleEditing {
-                    TextField("", text: $titleDraft)
-                        .focused($titleFocused)
-                        .textFieldStyle(.plain)
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .onAppear {
-                            titleDraft = office.title
-                            DispatchQueue.main.async { titleFocused = true }
-                        }
-                        .onChange(of: titleFocused) { f in
-                            if !f {
-                                titleEditing = false
-                                office.title = titleDraft
-                            }
-                        }
-                        .onSubmit { titleFocused = false }
-                } else {
-                    Text(office.title)
-                        .font(.headline)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity)
-                        .contentShape(Rectangle())
-                        .onTapGesture(count: 2) { titleEditing = true }
-                        .help("双击重命名")
+                HStack(spacing: 4) {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    titleView
                 }
-                Text("\(headcount)人")
+                .contentShape(Rectangle())
+                .onDrag {
+                    // 拿起时同步登记来源模块（见 DragSwapSupport.swift 的说明）
+                    store.beginCardDrag(office.id)
+                    let payload = DragPayload.officeCardPayload(office.id)
+                    DragContext.begin(module: DragPayload.officeCard, payload: payload)
+                    return NSItemProvider(object: payload as NSString)
+                }
+                .help("按住这里拖动：整张卡片换位置、换楼层；双击标题可改名")
+
+                Text("\(office.headcount)人")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
                     .background(Capsule().fill(Color.accentColor.opacity(0.12)))
                     .help("当前办公室实际人数")
+                floorMenu
                 Button {
                     store.removeOffice(office.id)
                 } label: {
@@ -390,6 +656,84 @@ struct OfficeCard: View {
         .padding(8)
         .frame(width: cardWidth, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
+        // 整张卡片 = 「整张卡片拖动」的落点：座位格会先接住，这里兜住标题/按钮/留白区，
+        // 于是「卡片任意位置都能互相拖」。
+        .onDrop(of: [.text], delegate: OfficeCardDropDelegate(targetID: office.id, store: store))
+        .overlay(
+            Group {
+                if store.cardDropTarget == office.id {
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.accentColor, lineWidth: 2.5)
+                        .background(RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.accentColor.opacity(0.06)))
+                }
+            }
+        )
+        // 正在被拖动的卡片画淡一点，便于看清「哪张在动、要落到哪」
+        .opacity(store.cardDragSourceID == office.id ? 0.45 : 1)
+    }
+
+    /// 标题（双击进入行内改名）
+    @ViewBuilder
+    private var titleView: some View {
+        if titleEditing {
+            TextField("", text: $titleDraft)
+                .focused($titleFocused)
+                .textFieldStyle(.plain)
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .onAppear {
+                    titleDraft = office.title
+                    DispatchQueue.main.async { titleFocused = true }
+                }
+                .onChange(of: titleFocused) { f in
+                    if !f {
+                        titleEditing = false
+                        office.title = titleDraft
+                    }
+                }
+                .onSubmit { titleFocused = false }
+        } else {
+            Text(office.title)
+                .font(.headline)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { titleEditing = true }
+                .help("双击重命名")
+        }
+    }
+
+    /// 卡片上的楼层菜单：点一下就能换楼层 / 建新楼层（也可以直接把卡片拖到别的楼层去）
+    private var floorMenu: some View {
+        Menu {
+            ForEach(store.floorNames, id: \.self) { f in
+                Button {
+                    store.setFloor(office.id, to: f)
+                } label: {
+                    if f == office.floor {
+                        Label(f.isEmpty ? "未分组" : f, systemImage: "checkmark")
+                    } else {
+                        Text(f.isEmpty ? "未分组" : f)
+                    }
+                }
+            }
+            Divider()
+            if !office.floor.isEmpty {
+                Button("移出楼层（未分组）") { store.setFloor(office.id, to: "") }
+            }
+            Button("新建楼层…") { onNewFloor(office.id) }
+        } label: {
+            Image(systemName: office.floor.isEmpty ? "building.2" : "building.2.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(office.floor.isEmpty ? Color.secondary : Color.accentColor)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(office.floor.isEmpty
+              ? "所属楼层：未分组（点此选择或新建楼层）"
+              : "所属楼层：\(office.floor)（点此更换）")
     }
 
     /// 门牌行：与座位栅格对齐——左门落在第一列、右门落在最后一列，中间留空列。
@@ -418,13 +762,6 @@ struct OfficeCard: View {
             .minimumScaleFactor(0.7)
             .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
             .background(RoundedRectangle(cornerRadius: 4).fill(Color.yellow.opacity(0.35)))
-    }
-
-    private var headcount: Int {
-        office.seats.flatMap { $0 }
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0 != "水池" }
-            .count
     }
 
     private var columnCount: Int {

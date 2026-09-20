@@ -39,6 +39,13 @@ final class UndoService: ObservableObject {
         return true
     }
 
+    /// 清空撤销栈（**自检脚本专用**：上一条用例登记的撤销闭包会把刚摆好的测试数据改回去，
+    /// 所以每条用例之间必须先清栈；正常界面流程不会调用它）
+    func clear() {
+        stack.removeAll()
+        publish()
+    }
+
     private func publish() {
         canUndo = !stack.isEmpty
         lastLabel = stack.last?.label

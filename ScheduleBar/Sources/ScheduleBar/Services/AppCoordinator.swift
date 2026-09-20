@@ -506,9 +506,13 @@ final class AppCoordinator: ObservableObject {
     }
 
     /// 解析工位：以「办公室」开头的行分段，随后每行 = 一排座位；「颜色」段可读回自定义色
-    static func parseOffices(_ grid: [[String]]) -> [OfficeBlock] {        var out: [OfficeBlock] = []
+    /// 「楼层」行（`楼层, 三楼`）写在「办公室」行的**上一行**，给紧随其后的办公室定楼层；
+    /// 旧模板没有楼层行 → 全部落在「未分组」。
+    static func parseOffices(_ grid: [[String]]) -> [OfficeBlock] {
+        var out: [OfficeBlock] = []
         var current: OfficeBlock? = nil
         var inColorSection = false
+        var pendingFloor = ""
         let cols = OfficeLayoutStore.seatColumns
 
         func flush() {
@@ -522,11 +526,16 @@ final class AppCoordinator: ObservableObject {
         for row in grid {
             let cells = row.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             guard let first = cells.first else { continue }
+            if first == "楼层" || first == "层" {
+                pendingFloor = cells.count > 1 ? cells[1] : ""
+                continue
+            }
             if first == "办公室" {
                 flush()
                 inColorSection = false
                 let title = cells.count > 1 ? cells[1] : "办公室\(out.count + 1)"
-                current = OfficeBlock(title: title, seats: [])
+                current = OfficeBlock(title: title, seats: [], floor: pendingFloor)
+                pendingFloor = ""
                 // 同一行后面若还有姓名，视为第一排
                 let extra = Array(cells.dropFirst(2)).filter { !$0.isEmpty }
                 if !extra.isEmpty { current?.seats.append(padded(extra, cols)) }
@@ -573,6 +582,8 @@ final class AppCoordinator: ObservableObject {
     private func exportOfficeRows() -> [[String]] {
         var rows: [[String]] = []
         for o in OfficeLayoutStore.shared.offices {
+            // 「楼层」写在同一间办公室的上一行；未分组则不写（旧模板/旧版本照样能读）
+            if !o.floor.isEmpty { rows.append(["楼层", o.floor]) }
             rows.append(["办公室", o.title])
             for r in o.seats { rows.append(r) }
             rows.append([""])
@@ -1164,9 +1175,10 @@ final class AppCoordinator: ObservableObject {
             name = "年级师资安排模板"
         case .office:
             let cols = OfficeLayoutStore.seatColumns
-            rows = [["办公室", "办公室1"]]
+            // 「楼层」行可选：写了，紧跟其后的办公室就归到该楼层（不写 = 未分组）
+            rows = [["楼层", "三楼"], ["办公室", "办公室1"]]
                 + Array(repeating: Array(repeating: "", count: cols), count: 4)
-                + [[""], ["办公室", "办公室2"]]
+                + [[""], ["楼层", "四楼"], ["办公室", "办公室2"]]
                 + Array(repeating: Array(repeating: "", count: cols), count: 4)
             name = "办公室工位模板"
         case .seating:

@@ -9,23 +9,34 @@ struct OfficeBlock: Identifiable, Codable, Equatable {
     var title: String
     var seats: [[String]]        // 行 × 动态列数座位（旧数据默认 4 列）
     var seatColors: [String: String] = [:]   // "行-列" → 自定义颜色 hex（如 "2-3" → "3498DB"）
+    /// 所属楼层（空字符串 = 未分组）。**旧数据没有这个字段** → decodeIfPresent 兼容成未分组。
+    /// 楼层不单独存盘、也没有独立的楼层表：楼层 = 卡片上的一个标签，
+    /// 楼层顺序 = 卡片顺序（首次出现的先后），所以拖动卡片就能同时调整
+    /// 「楼层内顺序」「跨楼层」和「楼层的先后」。
+    var floor: String = ""
 
     init(id: UUID = UUID(), title: String, seats: [[String]],
-         seatColors: [String: String] = [:]) {
+         seatColors: [String: String] = [:], floor: String = "") {
         self.id = id
         self.title = title
         self.seats = seats
         self.seatColors = seatColors
+        self.floor = floor
     }
 
-    // 旧版 offices.json 无 seatColors 字段 → 默认空字典
+    // 旧版 offices.json 无 seatColors / floor 字段 → 默认空
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         title = try c.decode(String.self, forKey: .title)
         seats = try c.decode([[String]].self, forKey: .seats)
         seatColors = try c.decodeIfPresent([String: String].self, forKey: .seatColors) ?? [:]
+        floor = (try c.decodeIfPresent(String.self, forKey: .floor) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// 楼层显示名（未分组用「未分组」）
+    var floorLabel: String { floor.isEmpty ? "未分组" : floor }
 
     /// 某座位的自定义颜色（无则 nil）
     func seatColor(row r: Int, col c: Int) -> String? {
@@ -39,6 +50,14 @@ struct OfficeBlock: Identifiable, Codable, Equatable {
         } else {
             seatColors.removeValue(forKey: key)
         }
+    }
+
+    /// 实际人数：空白与固定设施（水池）不计入
+    var headcount: Int {
+        seats.flatMap { $0 }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "水池" }
+            .count
     }
 }
 
@@ -67,6 +86,17 @@ final class OfficeLayoutStore: ObservableObject {
     /// 当前 drop 高亮目标（仅 hover 视觉反馈，不改数据）；格式 (officeID, row, col)
     struct SeatTarget: Equatable { let officeID: UUID; let row: Int; let col: Int }
     @Published var dropHighlight: SeatTarget? = nil
+
+    // MARK: 整张卡片拖动（卡片式整体拖动：换位置 / 换楼层）
+    /// 正在被拖动的卡片（用于把来源卡片画淡一点）；拖动开始时赋值一次，全程不变。
+    @Published private(set) var cardDragSourceID: UUID? = nil
+    /// 当前悬停的「落点卡片」（整张卡片高亮）
+    @Published var cardDropTarget: UUID? = nil
+    /// 当前悬停的「落点楼层标题」（把卡片挪到该楼层末尾）
+    @Published var floorDropTarget: String? = nil
+    /// 卡片拖动快照（松手时与现状比对，变了才登记撤销）
+    private var cardOrigin: UUID?
+    private var cardSnapshot: [OfficeBlock]?
 
     init() {
         self.studentView = UserDefaults.standard.bool(forKey: Self.viewKey)
@@ -150,10 +180,191 @@ final class OfficeLayoutStore: ObservableObject {
         }
     }
 
+    // MARK: 整张卡片拖动（卡片式整体拖动）
+    // 与学生座位/工位的「格子对换」同一套约定（见 DragSwapSupport.swift）：
+    //   拿起 → 只登记来源 + 快照；经过 → 只改高亮（@Published 必须去重，否则整页反复重绘、
+    //   拖拽会话被打断）；松手 → **同步**改一次数据 + 登记撤销。
+
+    func beginCardDrag(_ id: UUID) {
+        guard offices.contains(where: { $0.id == id }) else { return }
+        cardSnapshot = offices
+        cardOrigin = id
+        cardDropTarget = nil
+        floorDropTarget = nil
+        cardDragSourceID = id
+    }
+
+    /// 悬停高亮（必须去重：dropUpdated 每帧都会调用）
+    func setCardDropTarget(_ id: UUID?) {
+        if cardDropTarget != id { cardDropTarget = id }
+        if floorDropTarget != nil { floorDropTarget = nil }
+    }
+
+    func setFloorDropTarget(_ floor: String?) {
+        if floorDropTarget != floor { floorDropTarget = floor }
+        if cardDropTarget != nil { cardDropTarget = nil }
+    }
+
+    func clearCardDropTargets() {
+        if cardDropTarget != nil { cardDropTarget = nil }
+        if floorDropTarget != nil { floorDropTarget = nil }
+    }
+
+    /// 落点 = 某张卡片：把拖动卡插到该卡片的位置（并跟随它的楼层）。
+    /// 「插到目标之前」在上下两个方向拖动时结果都确定，不会出现来回跳。
+    func moveCard(_ id: UUID, to targetID: UUID) {
+        guard id != targetID,
+              let from = offices.firstIndex(where: { $0.id == id }),
+              offices.contains(where: { $0.id == targetID }) else { return }
+        var moved = offices.remove(at: from)
+        guard let at = offices.firstIndex(where: { $0.id == targetID }) else {
+            offices.insert(moved, at: min(from, offices.count))
+            return
+        }
+        moved.floor = offices[at].floor          // 落到哪一层就是哪一层
+        offices.insert(moved, at: at)
+    }
+
+    /// 落点 = 楼层标题：把卡片挪到该楼层末尾（楼层为空串 = 未分组）
+    func moveCard(_ id: UUID, toFloor floor: String) {
+        guard let from = offices.firstIndex(where: { $0.id == id }) else { return }
+        var moved = offices.remove(at: from)
+        moved.floor = floor
+        let insertAt = offices.lastIndex(where: { $0.floor == floor }).map { $0 + 1 } ?? offices.count
+        offices.insert(moved, at: min(insertAt, offices.count))
+    }
+
+    /// 松手：与快照比对，真的变了才登记撤销
+    func finishCardDrag() {
+        defer { cardOrigin = nil; cardSnapshot = nil; cardDragSourceID = nil }
+        guard let snap = cardSnapshot, snap != offices else { return }
+        UndoService.shared.register("移动办公室卡片") { [weak self] in
+            guard let self else { return }
+            self.offices = snap
+            self.scheduleSave()
+        }
+    }
+
+    /// 拖动被外部打断（切走 App / 面板收起）→ 只复位状态，不动数据、不登记撤销
+    @discardableResult
+    func cancelCardDrag() -> Bool {
+        let had = cardOrigin != nil
+        cardOrigin = nil
+        cardSnapshot = nil
+        cardDragSourceID = nil
+        cardDropTarget = nil
+        floorDropTarget = nil
+        return had
+    }
+
     static let seatColumns = 4
 
-    func addOffice() {
-        offices.append(OfficeBlock(title: "新办公室", seats: Array(repeating: Array(repeating: "", count: Self.seatColumns), count: 4)))
+    func addOffice(floor: String = "") {
+        offices.append(OfficeBlock(title: "新办公室",
+                                   seats: Array(repeating: Array(repeating: "", count: Self.seatColumns), count: 4),
+                                   floor: floor))
+    }
+
+    // MARK: 楼层（不单独存盘，完全由每张卡片的 floor 字段推导）
+    // 好处：楼层顺序 = 卡片顺序 = 用户拖出来的顺序，不需要维护第二份数据、
+    //       也不会有「楼层表和卡片对不上」的同步问题。
+
+    /// 楼层列表：按卡片顺序取首次出现的楼层（拖动卡片即可改楼层先后）。
+    /// 全都没楼层时返回 [""]（视图据此走「不显示楼层标题」的原有样子）。
+    var floorNames: [String] {
+        var seen: [String] = []
+        for o in offices where !seen.contains(o.floor) { seen.append(o.floor) }
+        return seen.isEmpty ? [""] : seen
+    }
+
+    /// 是否已经有卡片设了楼层 → 视图开始按楼层分组显示
+    var hasFloors: Bool { offices.contains { !$0.floor.isEmpty } }
+
+    func offices(inFloor floor: String) -> [OfficeBlock] {
+        offices.filter { $0.floor == floor }
+    }
+
+    func headcount(inFloor floor: String) -> Int {
+        offices(inFloor: floor).reduce(0) { $0 + $1.headcount }
+    }
+
+    /// 新建楼层：把指定卡片挪进新楼层；没有指定卡片就追加一间新办公室
+    /// （楼层靠卡片存在 —— 不保留「一间办公室都没有的空楼层」）
+    func addFloor(named name: String, assigning id: UUID? = nil) {
+        let floor = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !floor.isEmpty else { return }
+        let snap = offices
+        if let id, offices.contains(where: { $0.id == id }) {
+            applyFloor(id, to: floor)
+        } else {
+            addOffice(floor: floor)
+        }
+        registerFloorUndo("新建楼层「\(floor)」", snapshot: snap)
+    }
+
+    /// 把某张卡片改到指定楼层（挪到该楼层末尾）
+    func setFloor(_ id: UUID, to floor: String) {
+        let snap = offices
+        applyFloor(id, to: floor)
+        registerFloorUndo("调整楼层", snapshot: snap)
+    }
+
+    private func applyFloor(_ id: UUID, to floor: String) {
+        guard let i = offices.firstIndex(where: { $0.id == id }), offices[i].floor != floor else { return }
+        var moved = offices.remove(at: i)
+        moved.floor = floor
+        let at = offices.lastIndex(where: { $0.floor == floor }).map { $0 + 1 } ?? offices.count
+        offices.insert(moved, at: min(at, offices.count))
+    }
+
+    /// 楼层改名（该楼层下所有卡片一起改）
+    func renameFloor(_ old: String, to new: String) {
+        let name = new.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != old, offices.contains(where: { $0.floor == old }) else { return }
+        let snap = offices
+        for i in offices.indices where offices[i].floor == old { offices[i].floor = name }
+        registerFloorUndo("楼层改名", snapshot: snap)
+    }
+
+    /// 移出楼层：该楼层的卡片全部回到「未分组」，一间办公室都不删
+    func clearFloor(_ floor: String) {
+        guard !floor.isEmpty, offices.contains(where: { $0.floor == floor }) else { return }
+        let snap = offices
+        for i in offices.indices where offices[i].floor == floor { offices[i].floor = "" }
+        registerFloorUndo("移出楼层", snapshot: snap)
+    }
+
+    /// 删除楼层 = 删掉该楼层下的所有办公室（整层一次撤销可完整恢复）
+    func deleteFloor(_ floor: String) {
+        guard !floor.isEmpty else { return }
+        let victims = offices.filter { $0.floor == floor }
+        guard !victims.isEmpty else { return }
+        let snap = offices
+        offices.removeAll { $0.floor == floor }
+        registerFloorUndo("删除楼层「\(floor)」（\(victims.count) 间办公室）", snapshot: snap)
+    }
+
+    /// 楼层整体上移 / 下移（delta = -1 / +1）：该楼层的卡片整块与相邻楼层换位
+    func moveFloor(_ floor: String, by delta: Int) {
+        var order = floorNames
+        guard let i = order.firstIndex(of: floor) else { return }
+        let j = i + delta
+        guard order.indices.contains(j), order[i] != order[j] else { return }
+        order.swapAt(i, j)
+        let snap = offices
+        var buckets: [String: [OfficeBlock]] = [:]
+        for o in offices { buckets[o.floor, default: []].append(o) }
+        offices = order.flatMap { buckets[$0] ?? [] }
+        registerFloorUndo("移动楼层", snapshot: snap)
+    }
+
+    private func registerFloorUndo(_ name: String, snapshot: [OfficeBlock]) {
+        guard snapshot != offices else { return }
+        UndoService.shared.register(name) { [weak self] in
+            guard let self else { return }
+            self.offices = snapshot
+            self.scheduleSave()
+        }
     }
     func removeOffice(_ id: UUID) {
         let snap = offices

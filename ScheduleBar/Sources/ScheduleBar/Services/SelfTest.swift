@@ -588,6 +588,24 @@ enum SelfTest {
                 bad.append("读回/\(label)")
             }
         }
+        // 办公室工位：模板（含「楼层」行）→ 写盘 → 读回 → parseOffices，楼层要能读回来
+        // （导出 / 模板 / 导入三处必须同格式：加字段就要三处一起加，这里就是那道防回归的闸门）
+        print("--- 办公室工位：模板 → xlsx → parseOffices（楼层行）---")
+        do {
+            let (rows, name) = AppCoordinator.templateRows(.office)
+            let url = tmpDir.appendingPathComponent("\(name)-楼层.xlsx")
+            try XLSX.write(rows, to: url)
+            let back = try XLSX.read(url)
+            let parsed = AppCoordinator.parseOffices(back)
+            let floors = parsed.map(\.floor)
+            let officeOk = parsed.count == 2 && floors == ["三楼", "四楼"]
+            if !officeOk { bad.append("办公室工位/楼层行") }
+            print("  办公室数=\(parsed.count)  标题=\(parsed.map(\.title))  楼层=\(floors)  判定=\(officeOk ? "✓" : "✗")")
+        } catch {
+            print("  ERROR \(error.localizedDescription)")
+            bad.append("办公室工位/楼层行")
+        }
+
         // 教室分布：模板 → 解析回环
         print("--- 教室分布 解析回环 ---")
         let (cRows, _) = AppCoordinator.templateRows(.classroom)
@@ -853,8 +871,127 @@ enum SelfTest {
         print("跨办公室对换:   \(cross ? "✓" : "✗")")
         print("自身拖放不变:   \(selfNoOp ? "✓" : "✗")")
         print("越界安全忽略:   \(outNoOp ? "✓" : "✗")")
+
+        // ===== 楼层 + 「整张卡片」拖动 =====
+        // 换成一组可控的卡片：A/B 在「三楼」、C 在「四楼」、D 未分组
+        let oa = UUID(), ob = UUID(), oc = UUID(), od = UUID()
+        func resetCards() {
+            store.offices = [
+                OfficeBlock(id: oa, title: "A", seats: [["甲"]], floor: "三楼"),
+                OfficeBlock(id: ob, title: "B", seats: [["乙"]], floor: "三楼"),
+                OfficeBlock(id: oc, title: "C", seats: [["丙"]], floor: "四楼"),
+                OfficeBlock(id: od, title: "D", seats: [["丁"]]),
+            ]
+            UndoService.shared.clear()   // 清撤销栈（必须是 clear，不能 undo —— undo 会把快照打回来）
+        }
+        func order() -> [UUID] { store.offices.map(\.id) }
+        func floorOf(_ id: UUID) -> String { store.offices.first(where: { $0.id == id })?.floor ?? "?" }
+
+        resetCards()
+
+        // 6) 楼层顺序 = 卡片顺序里首次出现
+        let floorOrder = store.floorNames == ["三楼", "四楼", ""] && store.hasFloors
+
+        // 7) 同楼层重排 / 跨楼层跟随：把 C（四楼）拖到 A（三楼）上 → C 插到 A 之前并归到三楼
+        store.beginCardDrag(oc)
+        store.moveCard(oc, to: oa)
+        store.finishCardDrag()
+        let cardMove = order() == [oc, oa, ob, od] && floorOf(oc) == "三楼"
+        resetCards()
+
+        // 8) 拖到「楼层标题」上 → 挪到该楼层末尾
+        store.beginCardDrag(oa)
+        store.moveCard(oa, toFloor: "四楼")
+        store.finishCardDrag()
+        let toFloor = order() == [ob, oc, oa, od] && floorOf(oa) == "四楼"
+        resetCards()
+
+        // 9) 拖到未分组的卡片上 → 自己也变成未分组
+        store.beginCardDrag(ob)
+        store.moveCard(ob, to: od)
+        store.finishCardDrag()
+        let toUngrouped = order() == [oa, oc, ob, od] && floorOf(ob).isEmpty
+        resetCards()
+
+        // 10) 卡片拖动可整体撤销
+        store.beginCardDrag(oc)
+        store.moveCard(oc, to: oa)
+        store.finishCardDrag()
+        _ = UndoService.shared.undo()
+        let cardUndo = order() == [oa, ob, oc, od] && floorOf(oc) == "四楼"
+
+        // 11) 楼层整体上移
+        store.moveFloor("四楼", by: -1)
+        let floorMove = order() == [oc, oa, ob, od] && store.floorNames == ["四楼", "三楼", ""]
+        _ = UndoService.shared.undo()
+
+        // 12) 新建楼层（把已有卡片挪进去，不额外造办公室）
+        store.addFloor(named: "五楼", assigning: ob)
+        let newFloor = order() == [oa, oc, od, ob]
+            && floorOf(ob) == "五楼"
+            && store.floorNames == ["三楼", "四楼", "", "五楼"]
+        _ = UndoService.shared.undo()
+
+        // 13) 楼层改名（整层一起改）
+        store.renameFloor("四楼", to: "四楼东")
+        let renameFloor = store.floorNames.contains("四楼东") && floorOf(oc) == "四楼东"
+        _ = UndoService.shared.undo()
+
+        // 14) 删除楼层 = 删掉该层所有办公室，一次撤销可恢复
+        store.deleteFloor("四楼")
+        let delFloor = store.offices.count == 3 && !store.floorNames.contains("四楼")
+        _ = UndoService.shared.undo()
+        let delFloorUndo = store.offices.count == 4 && store.floorNames.contains("四楼")
+
+        // 15) 移出楼层：只清楼层标签，一间办公室都不删
+        store.clearFloor("三楼")
+        let clearFloor = store.offices.count == 4 && !store.floorNames.contains("三楼")
+        _ = UndoService.shared.undo()
+
+        // 16) 自身落点 / 未登记的卡片拖动 → 不改数据
+        let beforeCard = store.offices
+        store.beginCardDrag(oa)
+        store.moveCard(oa, to: oa)
+        store.finishCardDrag()
+        let selfCardNoOp = store.offices == beforeCard
+
+        // 17) 老 offices.json（没有 floor / seatColors 字段）→ 读成「未分组」，不报错
+        let legacy = "[{\"id\":\"\(UUID().uuidString)\",\"title\":\"老办公室\",\"seats\":[[\"甲\",\"乙\"],[\"丙\",\"\"]]}]"
+        try? legacy.data(using: .utf8)?.write(to: OfficeLayoutStore.fileURL())
+        let reloaded = OfficeLayoutStore()
+        let legacyOK = reloaded.offices.count == 1
+            && reloaded.offices[0].floor == ""
+            && reloaded.offices[0].seatColors.isEmpty
+            && reloaded.floorNames == [""]
+            && !reloaded.hasFloors
+
+        print("楼层顺序推导:   \(floorOrder ? "✓" : "✗")")
+        print("卡片拖动换位:   \(cardMove ? "✓" : "✗")")
+        print("拖到楼层标题:   \(toFloor ? "✓" : "✗")")
+        print("拖成未分组:     \(toUngrouped ? "✓" : "✗")")
+        print("卡片拖动撤销:   \(cardUndo ? "✓" : "✗")")
+        print("楼层整体上移:   \(floorMove ? "✓" : "✗")")
+        print("新建楼层:       \(newFloor ? "✓" : "✗")")
+        print("楼层改名:       \(renameFloor ? "✓" : "✗")")
+        print("删除楼层+撤销:  \(delFloor && delFloorUndo ? "✓" : "✗")")
+        print("移出楼层:       \(clearFloor ? "✓" : "✗")")
+        print("自身落点不变:   \(selfCardNoOp ? "✓" : "✗")")
+        print("老 JSON 兼容:   \(legacyOK ? "✓" : "✗")")
+
+        // 18) 拖拽载荷：卡片 / 工位两个模块必须互不误判（否则座位对换会去搬整张卡片）
+        let seatPayload = DragPayload.office(oa, row: 1, col: 2)
+        let cardPayload = DragPayload.officeCardPayload(oa)
+        let payloadOK = DragPayload.officeCardID(from: cardPayload) == oa
+            && DragPayload.officeCardID(from: seatPayload) == nil
+            && !DragPayload.belongs(seatPayload, to: DragPayload.officeCard)
+            && !DragPayload.belongs(cardPayload, to: DragPayload.officeSeat)
+        print("拖拽载荷区分:   \(payloadOK ? "✓" : "✗")")
+
         let ok = swap1 && restore && cross && selfNoOp && outNoOp
-        print(ok ? "工位对换自检全部通过 ✓" : "工位对换自检存在问题 ✗")
+            && floorOrder && cardMove && toFloor && toUngrouped && cardUndo
+            && floorMove && newFloor && renameFloor && delFloor && delFloorUndo
+            && clearFloor && selfCardNoOp && legacyOK && payloadOK
+        print(ok ? "工位对换/楼层自检全部通过 ✓" : "工位对换/楼层自检存在问题 ✗")
     }
 
     // MARK: 师资单元格颜色自检（纯逻辑，临时数据目录，不碰真实 staff.json）

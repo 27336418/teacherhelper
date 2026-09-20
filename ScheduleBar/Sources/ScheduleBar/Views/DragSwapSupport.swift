@@ -26,6 +26,10 @@ enum DragPayload {
     static let classroomCell = "classroom"
     /// 办公室工位前缀
     static let officeSeat = "office"
+    /// 办公室「整张卡片」前缀（拖动卡片换位置 / 换楼层）
+    /// ⚠️ 与 officeSeat 靠 `|` 分隔符区分：载荷分别是 `office|seat|…` 与 `officecard|card|…`，
+    ///    `belongs` 用 `table + "|"` 前缀匹配，两者不会互相误判。
+    static let officeCard = "officecard"
     /// 学生座位（单元格 / 待用 / 待用小组 / 小组区域）统一模块名
     static let seating = "seating"
 
@@ -39,6 +43,18 @@ enum DragPayload {
 
     static func office(_ office: UUID, row: Int, col: Int) -> String {
         "\(officeSeat)|seat|\(office.uuidString)|\(row)|\(col)"
+    }
+
+    static func officeCardPayload(_ office: UUID) -> String {
+        "\(officeCard)|card|\(office.uuidString)"
+    }
+
+    /// 从载荷里取回「被拖动的办公室」id（不是卡片载荷 → nil）
+    static func officeCardID(from raw: String?) -> UUID? {
+        guard let raw, belongs(raw, to: officeCard) else { return nil }
+        let parts = raw.split(separator: "|")
+        guard parts.count >= 3 else { return nil }
+        return UUID(uuidString: String(parts[2]))
     }
 
     /// 载荷是否属于某个模块（前缀匹配）
