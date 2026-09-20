@@ -987,10 +987,26 @@ enum SelfTest {
             && !DragPayload.belongs(cardPayload, to: DragPayload.officeSeat)
         print("拖拽载荷区分:   \(payloadOK ? "✓" : "✗")")
 
+        // 18) 新建办公室可撤销（与「删除办公室」对等）
+        resetCards()
+        store.addOffice(floor: "三楼")
+        let addCount = store.offices.count == 5 && store.offices.last?.floor == "三楼"
+        _ = UndoService.shared.undo()
+        let addOfficeUndo = store.offices.count == 4 && order() == [oa, ob, oc, od]
+        print("新建办公室可撤销: \(addOfficeUndo ? "✓" : "✗")")
+
+        // 19) 新建楼层仍只压一条撤销（撤销一次就完全回到原样，不会「退一半」）
+        resetCards()
+        store.addFloor(named: "五楼")
+        _ = UndoService.shared.undo()
+        let newFloorOneStep = store.offices.count == 4 && store.floorNames == ["三楼", "四楼", ""]
+        print("新建楼层一步撤销: \(newFloorOneStep ? "✓" : "✗")")
+
         let ok = swap1 && restore && cross && selfNoOp && outNoOp
             && floorOrder && cardMove && toFloor && toUngrouped && cardUndo
             && floorMove && newFloor && renameFloor && delFloor && delFloorUndo
             && clearFloor && selfCardNoOp && legacyOK && payloadOK
+            && addCount && addOfficeUndo && newFloorOneStep
         print(ok ? "工位对换/楼层自检全部通过 ✓" : "工位对换/楼层自检存在问题 ✗")
     }
 

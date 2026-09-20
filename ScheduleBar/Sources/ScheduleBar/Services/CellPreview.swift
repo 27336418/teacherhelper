@@ -129,8 +129,7 @@ enum CellPreview {
     }
 
     @MainActor
-    private static func shot(clean: Bool) -> NSImage? {
-        let content = VStack(alignment: .leading, spacing: 10) {
+    private static func shot(clean: Bool) -> NSImage? {        let content = VStack(alignment: .leading, spacing: 10) {
             Text(clean ? "① 没有未保存的改动"
                        : "② 改动了两个板块（学生座位 + 个人课表）")
                 .font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.black)
@@ -149,5 +148,86 @@ enum CellPreview {
         let r = ImageRenderer(content: content)
         r.scale = 2
         return r.nsImage
+    }
+
+    // MARK: 教师工位工具栏（三行布局）离屏渲染取证
+    //
+    // 用法：ScheduleBar --render-office-toolbar /tmp/office-toolbar.png
+    // ⚠️ 与 SaveButton 同理：`UndoButton` / `SaveButton` 读的都是**全局单例**的当前状态，
+    //    同一棵视图树里渲染两次会得到同样的结果 → 必须分两次渲染再合成。
+    @MainActor
+    static func renderOfficeToolbar(to path: String) {
+        let store = OfficeLayoutStore.shared
+        let titles = CardTitleStore.shared
+        let hub = SaveHub.shared
+        let undo = UndoService.shared
+
+        // ⚠️ `markDirty` 会启动 8 秒兜底落盘，而这里操作的是**全局单例**——
+        //    不换成替身就会在渲染结束后把真实 json 重写一遍（内容虽同，仍属越界）。
+        hub.useStubWriter {}
+
+        /// 面板内宽 = 窗口 906 − 左右各 16 内边距
+        let panelWidth: CGFloat = 874
+
+        func shot(caption: String, dirty: Bool) -> NSImage? {
+            hub.clearDirty()
+            undo.clear()
+            if dirty {
+                hub.markDirty("教师工位")
+                undo.register("拖动了办公室卡片") {}
+            }
+            let content = VStack(alignment: .leading, spacing: 10) {
+                Text(caption)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.black)
+                OfficeToolbar(
+                    store: store,
+                    keyword: .constant(""),
+                    appliedKeyword: .constant(""),
+                    onImport: {}, onTemplate: {}, onDownload: {}, onNewFloor: {}
+                )
+                .environmentObject(titles)
+                .frame(width: panelWidth)
+            }
+            .padding(16)
+            .background(Color.white)
+            let r = ImageRenderer(content: content)
+            r.scale = 2
+            return r.nsImage
+        }
+
+        let head = shot(caption: "① 第一行＝标题；第二行＝撤销 + 保存 + 内部/外部视角；第三行＝导入 / 下载 / 新建 + 查找工位 + 办公室共多少人",
+                        dirty: true)
+        let body = shot(caption: "② 没有未保存改动时，「保存」变回灰色「已保存」（没有可撤销操作时「撤销」按钮不出现）",
+                        dirty: false)
+        hub.clearDirty()
+        undo.clear()
+        hub.useDefaultWriter()   // 恢复真实落盘（进程随后退出，不影响 App 运行）
+
+        guard let head, let body else { print("✗ 离屏渲染失败"); return }
+        let gap: CGFloat = 18
+        let size = NSSize(width: max(head.size.width, body.size.width),
+                          height: head.size.height + gap + body.size.height)
+        let out = NSImage(size: size)
+        out.lockFocus()
+        NSColor.white.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        head.draw(in: NSRect(x: 0, y: body.size.height + gap,
+                             width: head.size.width, height: head.size.height))
+        body.draw(in: NSRect(origin: .zero, size: body.size))
+        out.unlockFocus()
+
+        guard let tiff = out.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            print("✗ 合成失败")
+            return
+        }
+        do {
+            try png.write(to: URL(fileURLWithPath: path))
+            print("✓ 已输出教师工位工具栏预览：\(path)")
+        } catch {
+            print("✗ 写入失败：\(error)")
+        }
     }
 }

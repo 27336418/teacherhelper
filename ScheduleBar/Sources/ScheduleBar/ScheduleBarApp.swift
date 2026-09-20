@@ -88,6 +88,18 @@ struct ScheduleBarApp {
             return
         }
 
+        // 教师工位工具栏（三行布局）离屏渲染取证：--render-office-toolbar <out.png>
+        if let i = args.firstIndex(of: "--render-office-toolbar"), i + 1 < args.count {
+            if #available(macOS 14.0, *) {
+                MainActor.assumeIsolated {
+                    CellPreview.renderOfficeToolbar(to: args[i + 1])
+                }
+            } else {
+                print("✗ --render-office-toolbar 需要 macOS 14+（仅诊断用，不影响 App 本体运行）")
+            }
+            return
+        }
+
         // 提醒弹窗视觉自检：--fire-reminder-test [提示文字]
         // 启动 1.2 秒后弹一次真实提醒窗口来取证（**不写盘、不动 reminders.json、不影响到点判断**），
         // 锁屏/不方便手动点「测试弹窗」时用它。「未勾星期的提醒到底会不会弹」就靠它验。

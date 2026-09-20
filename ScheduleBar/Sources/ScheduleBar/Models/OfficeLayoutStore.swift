@@ -261,7 +261,16 @@ final class OfficeLayoutStore: ObservableObject {
 
     static let seatColumns = 4
 
+    /// 新建一间办公室（可指定楼层）；登记撤销，和「删除办公室」对等
     func addOffice(floor: String = "") {
+        let snap = offices
+        appendOffice(floor: floor)
+        registerFloorUndo("新建办公室", snapshot: snap)
+    }
+
+    /// 只追加、**不登记撤销**：供 addFloor 这类「自己已经登记过撤销」的流程复用，
+    /// 否则一次新建楼层会压进两条撤销记录，撤销一次只退回一半。
+    private func appendOffice(floor: String) {
         offices.append(OfficeBlock(title: "新办公室",
                                    seats: Array(repeating: Array(repeating: "", count: Self.seatColumns), count: 4),
                                    floor: floor))
@@ -290,6 +299,11 @@ final class OfficeLayoutStore: ObservableObject {
         offices(inFloor: floor).reduce(0) { $0 + $1.headcount }
     }
 
+    /// 全部办公室人数之和（空白与「水池」不计入，由 OfficeBlock.headcount 定义）
+    var totalHeadcount: Int {
+        offices.reduce(0) { $0 + $1.headcount }
+    }
+
     /// 新建楼层：把指定卡片挪进新楼层；没有指定卡片就追加一间新办公室
     /// （楼层靠卡片存在 —— 不保留「一间办公室都没有的空楼层」）
     func addFloor(named name: String, assigning id: UUID? = nil) {
@@ -299,7 +313,7 @@ final class OfficeLayoutStore: ObservableObject {
         if let id, offices.contains(where: { $0.id == id }) {
             applyFloor(id, to: floor)
         } else {
-            addOffice(floor: floor)
+            appendOffice(floor: floor)   // 不登记撤销：本方法末尾统一登记，避免压两条
         }
         registerFloorUndo("新建楼层「\(floor)」", snapshot: snap)
     }

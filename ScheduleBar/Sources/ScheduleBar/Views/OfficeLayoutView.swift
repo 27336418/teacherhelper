@@ -132,6 +132,152 @@ struct OfficeFloorDropDelegate: DropDelegate {
     }
 }
 
+// MARK: - 顶部工具栏（三行：标题 ／ 撤销·保存 + 视角 ／ 导入·下载·新建 + 查找 + 人数）
+//
+// 抽成独立 View 的原因：它只依赖 `store` + `CardTitleStore` + 几个动作闭包，
+// 不碰 `AppCoordinator`，所以能用 `ImageRenderer` 离屏渲染取证（机器锁屏时
+// `screencapture` 只会得到全黑图，离屏渲染不受影响）。
+struct OfficeToolbar: View {
+    @ObservedObject var store: OfficeLayoutStore
+    @Binding var keyword: String
+    @Binding var appliedKeyword: String
+    var onImport: () -> Void
+    var onTemplate: () -> Void
+    var onDownload: () -> Void
+    var onNewFloor: () -> Void
+
+    @State private var searchWork: DispatchWorkItem?
+
+    var body: some View {
+        VStack(spacing: 8) {
+            // 第一行：板块标题 + 显示左右门
+            HStack(spacing: 8) {
+                EditableCardTitle(icon: "person.3.fill", key: "office")
+                Spacer()
+                Toggle("显示左右门", isOn: $store.showDoors)
+                    .toggleStyle(.checkbox)
+                    .fixedSize()
+                    .help("隐藏或显示办公室的左右门标识（内部视角在工位上方，外部视角在工位下方）")
+            }
+
+            // 第二行：撤销 / 保存 + 内部·外部视角
+            HStack(spacing: 8) {
+                UndoButton()
+                SaveButton()
+                Spacer()
+                Picker("", selection: $store.studentView) {
+                    Text("内部视角").tag(false)
+                    Text("外部视角").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .help("内部视角：从办公室内部看，左右门在工位上方；外部视角：从办公室外部看，整张工位表 180° 镜像，左右门移到工位下方")
+            }
+
+            // 第三行：导入 / 下载 / 新建 + 查找工位 + 办公室总人数
+            HStack(spacing: 8) {
+                Menu {
+                    Button("导入 xlsx") { onImport() }
+                    Button("下载填写模板") { onTemplate() }
+                } label: {
+                    Label("导入", systemImage: "square.and.arrow.down")
+                }
+                .fixedSize()
+                .help("导入工位布局；可先下载模板（每段先写「楼层」，再写「办公室」+ 每排座位）填写")
+                Button("下载") { onDownload() }
+                    .fixedSize()
+                    .help("把当前工位布局导出成 xlsx（含「楼层」行）")
+                // 「新建」= 原来的「新建楼层」+「添加办公室」合并成一个入口
+                Menu {
+                    if store.hasFloors {
+                        ForEach(store.floorNames, id: \.self) { f in
+                            Button("新建办公室（\(f.isEmpty ? "未分组" : f)）") { store.addOffice(floor: f) }
+                        }
+                    } else {
+                        Button("新建办公室") { store.addOffice() }
+                    }
+                    Divider()
+                    Button("新建楼层…") { onNewFloor() }
+                } label: {
+                    Label("新建", systemImage: "plus")
+                }
+                .fixedSize()
+                .help("新建办公室（可选楼层）或新建楼层")
+
+                searchField
+                headcountBadge
+            }
+        }
+    }
+
+    // MARK: 姓名查询框（第三行）
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("输入姓名查找工位", text: $keyword)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .onChange(of: keyword) { v in
+                    searchWork?.cancel()
+                    let w = DispatchWorkItem { appliedKeyword = v }
+                    searchWork = w
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: w)
+                }
+            if !keyword.isEmpty {
+                Button {
+                    keyword = ""
+                    appliedKeyword = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            if !appliedKeyword.trimmingCharacters(in: .whitespaces).isEmpty {
+                Text("找到 \(hitCount) 个工位")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+        .frame(minWidth: 120, maxWidth: .infinity)
+    }
+
+    // MARK: 所有办公室人数之和（第三行右侧）
+    private var headcountBadge: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "person.3.fill")
+                .foregroundStyle(.secondary)
+            Text("办公室共 \(store.totalHeadcount) 人")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .fixedSize()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+        .fixedSize()
+    }
+
+    /// 命中的工位数（所有办公室合计）
+    private var hitCount: Int {
+        let k = appliedKeyword.trimmingCharacters(in: .whitespaces)
+        guard !k.isEmpty else { return 0 }
+        var n = 0
+        for o in store.offices {
+            for row in o.seats {
+                for s in row where s.localizedCaseInsensitiveContains(k) { n += 1 }
+            }
+        }
+        return n
+    }
+}
+
 // MARK: - 办公室工位布局视图（双列卡片；座位/标题双击编辑，座位右键换色，可增删行/办公室）
 struct OfficeLayoutView: View {
     @EnvironmentObject var store: OfficeLayoutStore
@@ -139,7 +285,6 @@ struct OfficeLayoutView: View {
 
     @State private var keyword = ""
     @State private var appliedKeyword = ""     // 去抖后的关键字（避免每次键入都重算）
-    @State private var searchWork: DispatchWorkItem?
 
     /// 楼层编辑状态（行内输入，**不弹窗**：NSAlert 会先把 popover 关掉，用户就得重新打开面板）
     enum FloorEditKind: Equatable { case new, rename(String) }
@@ -152,120 +297,28 @@ struct OfficeLayoutView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 toolbar
-                searchRow
+                // 「新建楼层」的行内输入框：紧跟在工具栏下方（原来挂在列表末尾，
+                // 整合进「新建」菜单后改到顶部，点完立刻就能看见并输入）
+                if floorEditKind == .new { floorEditorRow(isNew: true) }
                 floorsSection
             }
             .padding(16)
         }
     }
 
-    // MARK: 顶部标题 + 操作（两行布局，避免按钮文字被截断 —— 与学生座位同一做法）
+    // MARK: 顶部工具栏（真正的实现在 OfficeToolbar —— 抽出去是为了能离屏渲染取证）
     private var toolbar: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                EditableCardTitle(icon: "person.3.fill", key: "office")
-                Spacer()
-                Picker("", selection: $store.studentView) {
-                    Text("内部视角").tag(false)
-                    Text("外部视角").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                .help("内部视角：从办公室内部看，左右门在工位上方；外部视角：从办公室外部看，整张工位表 180° 镜像，左右门移到工位下方")
-                Toggle("显示左右门", isOn: $store.showDoors)
-                    .toggleStyle(.checkbox)
-                    .fixedSize()
-                    .help("隐藏或显示办公室的左右门标识（内部视角在工位上方，外部视角在工位下方）")
-            }
-
-            HStack(spacing: 8) {
-                UndoButton()
-                SaveButton()
-                Spacer()
-                Menu {
-                    Button("导入 xlsx") { coordinator.importOffice() }
-                    Button("下载填写模板") { coordinator.downloadTemplate(.office) }
-                } label: {
-                    Label("导入", systemImage: "square.and.arrow.down")
-                }
-                .fixedSize()
-                .help("导入工位布局；可先下载模板（每段先写「楼层」，再写「办公室」+ 每排座位）填写")
-                Button("下载") { coordinator.exportOffice() }
-                    .fixedSize()
-                    .help("把当前工位布局导出成 xlsx（含「楼层」行）")
-                if store.hasFloors {
-                    Menu {
-                        ForEach(store.floorNames, id: \.self) { f in
-                            Button(f.isEmpty ? "未分组" : f) { store.addOffice(floor: f) }
-                        }
-                    } label: {
-                        Label("添加办公室", systemImage: "plus")
-                    }
-                    .fixedSize()
-                    .help("新办公室放在哪个楼层")
-                } else {
-                    Button {
-                        store.addOffice()
-                    } label: {
-                        Label("添加办公室", systemImage: "plus")
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
-        }
+        OfficeToolbar(
+            store: store,
+            keyword: $keyword,
+            appliedKeyword: $appliedKeyword,
+            onImport: { coordinator.importOffice() },
+            onTemplate: { coordinator.downloadTemplate(.office) },
+            onDownload: { coordinator.exportOffice() },
+            onNewFloor: { beginNewFloor() }
+        )
     }
 
-    // MARK: 姓名查询（左半行）+ 所有办公室人数之和（右半行）
-    private var searchRow: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("输入姓名查找工位", text: $keyword)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .onChange(of: keyword) { v in
-                        searchWork?.cancel()
-                        let w = DispatchWorkItem { appliedKeyword = v }
-                        searchWork = w
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: w)
-                    }
-                if !keyword.isEmpty {
-                    Button {
-                        keyword = ""
-                        appliedKeyword = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-                if !appliedKeyword.trimmingCharacters(in: .whitespaces).isEmpty {
-                    Text("找到 \(hitCount) 个工位")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
-            .frame(maxWidth: .infinity)
-
-            HStack(spacing: 6) {
-                Image(systemName: "person.3.fill")
-                    .foregroundStyle(.secondary)
-                Text("办公室共 \(totalHeadcount) 人")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
-            .frame(maxWidth: .infinity)
-        }
-    }
 
     // MARK: 楼层分组（没设过楼层时退化成原来的「一张张平铺」）
     @ViewBuilder
@@ -278,48 +331,9 @@ struct OfficeLayoutView: View {
                         cardRows(store.offices(inFloor: floor))
                     }
                 }
-                newFloorRow
             }
         } else {
-            VStack(alignment: .leading, spacing: 12) {
-                cardRows(store.offices)
-                newFloorRow
-            }
-        }
-    }
-
-    /// 列表末尾的「＋ 新建楼层」；点一下就地变成输入框（**不用弹窗**：NSAlert 会先把 popover 关掉）
-    @ViewBuilder
-    private var newFloorRow: some View {
-        if floorEditKind == .new {
-            floorEditorRow(isNew: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            Button {
-                beginNewFloor()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus.circle")
-                    Text("新建楼层")
-                    Text("（建好后把卡片拖进去即归到该楼层）")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                }
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                        .foregroundStyle(Color.secondary.opacity(0.5))
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("新建一个楼层，把办公室按楼层分开显示")
+            cardRows(store.offices)
         }
     }
 
@@ -512,24 +526,6 @@ struct OfficeLayoutView: View {
             return .constant(OfficeBlock(title: "", seats: [[]]))
         }
         return $store.offices[index]
-    }
-
-    /// 所有办公室人数之和（空白与「水池」不计入）。
-    private var totalHeadcount: Int {
-        store.offices.reduce(0) { $0 + $1.headcount }
-    }
-
-    /// 命中的工位数（所有办公室合计）
-    private var hitCount: Int {
-        let k = appliedKeyword.trimmingCharacters(in: .whitespaces)
-        guard !k.isEmpty else { return 0 }
-        var n = 0
-        for o in store.offices {
-            for row in o.seats {
-                for s in row where s.localizedCaseInsensitiveContains(k) { n += 1 }
-            }
-        }
-        return n
     }
 }
 
