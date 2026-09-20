@@ -196,9 +196,9 @@ enum CellPreview {
             return r.nsImage
         }
 
-        let head = shot(caption: "① 第一行＝标题；第二行＝撤销 + 保存 + 内部/外部视角；第三行＝导入 / 下载 / 新建 + 查找工位 + 办公室共多少人",
+        let head = shot(caption: "① 第一行＝标题 ＋ 撤销 / 保存 / 内部·外部视角 / 显示左右门（同一行右对齐）；第二行＝导入 / 下载 / 新建 ＋ 查找工位 ＋ 办公室共多少人",
                         dirty: true)
-        let body = shot(caption: "② 没有未保存改动时，「保存」变回灰色「已保存」（没有可撤销操作时「撤销」按钮不出现）",
+        let body = shot(caption: "② 没有未保存改动时「保存」变回灰色「已保存」；没有可撤销操作时「撤销」按钮不出现（位置留给紧凑布局）",
                         dirty: false)
         hub.clearDirty()
         undo.clear()

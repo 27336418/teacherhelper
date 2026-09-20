@@ -150,21 +150,12 @@ struct OfficeToolbar: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            // 第一行：板块标题 + 显示左右门
+            // 第一行：板块标题 … 撤销 / 保存 ＋ 内部·外部视角 ＋ 显示左右门（全部右对齐同一行）
             HStack(spacing: 8) {
                 EditableCardTitle(icon: "person.3.fill", key: "office")
-                Spacer()
-                Toggle("显示左右门", isOn: $store.showDoors)
-                    .toggleStyle(.checkbox)
-                    .fixedSize()
-                    .help("隐藏或显示办公室的左右门标识（内部视角在工位上方，外部视角在工位下方）")
-            }
-
-            // 第二行：撤销 / 保存 + 内部·外部视角
-            HStack(spacing: 8) {
+                Spacer(minLength: 8)
                 UndoButton()
                 SaveButton()
-                Spacer()
                 Picker("", selection: $store.studentView) {
                     Text("内部视角").tag(false)
                     Text("外部视角").tag(true)
@@ -173,9 +164,13 @@ struct OfficeToolbar: View {
                 .labelsHidden()
                 .fixedSize()
                 .help("内部视角：从办公室内部看，左右门在工位上方；外部视角：从办公室外部看，整张工位表 180° 镜像，左右门移到工位下方")
+                Toggle("显示左右门", isOn: $store.showDoors)
+                    .toggleStyle(.checkbox)
+                    .fixedSize()
+                    .help("隐藏或显示办公室的左右门标识（内部视角在工位上方，外部视角在工位下方）")
             }
 
-            // 第三行：导入 / 下载 / 新建 + 查找工位 + 办公室总人数
+            // 第二行：导入 / 下载 / 新建 + 查找工位 + 办公室总人数
             HStack(spacing: 8) {
                 Menu {
                     Button("导入 xlsx") { onImport() }
@@ -211,7 +206,7 @@ struct OfficeToolbar: View {
         }
     }
 
-    // MARK: 姓名查询框（第三行）
+    // MARK: 姓名查询框（第二行）
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
@@ -248,7 +243,7 @@ struct OfficeToolbar: View {
         .frame(minWidth: 120, maxWidth: .infinity)
     }
 
-    // MARK: 所有办公室人数之和（第三行右侧）
+    // MARK: 所有办公室人数之和（第二行右侧）
     private var headcountBadge: some View {
         HStack(spacing: 6) {
             Image(systemName: "person.3.fill")
