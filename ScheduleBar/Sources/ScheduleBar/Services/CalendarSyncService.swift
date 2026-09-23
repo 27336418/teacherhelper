@@ -368,10 +368,11 @@ final class CalendarSyncService: ObservableObject {
 
     // MARK: - 事件映射持久化（calendar_events.json）
 
+    /// ⚠️ 一律走 `AppPaths.file(_:)`（2026-09-23 修正）。原先这里自己拼了 Application Support，
+    ///    结果 `--selftest-*`（数据目录已被重定向到临时目录）**仍会写用户真实目录里的这一份**
+    ///    —— 正是 AppPaths 注释里说的那类事故（见 AppPaths.swift 顶部）。
     private static var mapURL: URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ScheduleBar", isDirectory: true)
-        return dir.appendingPathComponent("calendar_events.json")
+        AppPaths.file("calendar_events.json")
     }
 
     private func loadEventMap() {
@@ -385,7 +386,12 @@ final class CalendarSyncService: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(eventIDs)
+            let enc = JSONEncoder()
+            // ⚠️ 必须 .sortedKeys：`[String: String]` 的迭代顺序在**不同进程间不稳定**（Swift 字典是随机种子哈希），
+            //    不加这句，同样的映射每次写出来的字节都不一样 —— 文件永远处于「有改动」状态，
+            //    「17 个 json 的 shasum 指纹前后一致」这条自检就会天天误报（2026-09-23 实测踩到）。
+            enc.outputFormatting = [.sortedKeys]
+            let data = try enc.encode(eventIDs)
             try data.write(to: url, options: .atomic)
         } catch {
             print("[ScheduleBar] 日历事件映射保存失败: \(error)")
