@@ -230,4 +230,50 @@ enum CellPreview {
             print("✗ 写入失败：\(error)")
         }
     }
+
+    // MARK: 教师工位「整页」离屏渲染（核对卡片自适应列宽用）
+    // 用法：ScheduleBar --render-office-page /tmp/office-page.png [内容宽度pt]
+    //
+    // 为什么需要它：2026-09-23 用户要求「右侧空余太多，请调节自适应列宽」——又是纯视觉问题，
+    // 逻辑自检看不出来。而实测时经常碰上「面板落在别的 Space / 别的 App 正全屏」：
+    // 全屏截图抓到的是别人的窗口；`screencapture -l <windowid>` 又要求窗口 alpha=1
+    // （面板淡入中或已收起都会 could not create image）。离屏渲染不受这些影响。
+    //
+    // ⚠️ `ImageRenderer` 画不了 `Menu` / `TextField`（黄色禁行占位）→ 顶部工具栏那一两行会是占位，
+    //    但**卡片区是纯 Text/Button，能如实渲染**，恰好是本入口要核对的部分。
+    // ⚠️ 默认内容宽度 709 = 面板 880 − 侧栏 170 − 分隔线 1，与真机一致（页面内还有左右各 16 内边距）。
+    @MainActor
+    static func renderOfficePage(to path: String, contentWidth: CGFloat = 712) {
+        let store = OfficeLayoutStore.shared
+        let titles = CardTitleStore.shared
+        let hub = SaveHub.shared
+        // ⚠️ 与 renderOfficeToolbar 同理：工具栏按钮会 markDirty，绝不能顺手把真实 json 重写一遍
+        hub.useStubWriter {}
+        defer { hub.useDefaultWriter() }
+
+        // ⚠️ `ImageRenderer` 画不了 `ScrollView` / `GeometryReader`（出白图），
+        //    所以这里给 OfficeLayoutView 传 offscreenWidth，走「不套滚动容器」的那条路。
+        let content = OfficeLayoutView(offscreenWidth: max(0, contentWidth - 32))
+            .environmentObject(store)
+            .environmentObject(titles)
+            .environmentObject(AppCoordinator.shared)
+            .frame(width: contentWidth, height: 1000, alignment: .topLeading)
+            .background(Color.white)
+
+        let r = ImageRenderer(content: content)
+        r.scale = 2
+        guard let img = r.nsImage,
+              let tiff = img.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            print("✗ 离屏渲染失败（ImageRenderer 返回空）")
+            return
+        }
+        do {
+            try png.write(to: URL(fileURLWithPath: path))
+            print("✓ 已输出教师工位整页预览：\(path)（内容宽 \(Int(contentWidth))pt）")
+        } catch {
+            print("✗ 写入失败：\(error)")
+        }
+    }
 }

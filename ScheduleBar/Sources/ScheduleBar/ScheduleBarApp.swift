@@ -115,6 +115,20 @@ struct ScheduleBarApp {
             return
         }
 
+        // 教师工位「整页」离屏渲染取证（核对卡片自适应列宽）：--render-office-page <out.png> [内容宽pt]
+        if let i = args.firstIndex(of: "--render-office-page"), i + 1 < args.count {
+            if #available(macOS 14.0, *) {
+                // 默认 712 = 本机实测的内容区宽度（`SCHEDULEBAR_TRACE_OFFICE=1` 日志里那个数）。
+                let w = (i + 2 < args.count ? Double(args[i + 2]) : nil).map { CGFloat($0) } ?? 712
+                MainActor.assumeIsolated {
+                    CellPreview.renderOfficePage(to: args[i + 1], contentWidth: w)
+                }
+            } else {
+                print("✗ --render-office-page 需要 macOS 14+（仅诊断用，不影响 App 本体运行）")
+            }
+            return
+        }
+
         // 提醒弹窗视觉自检：--fire-reminder-test [提示文字]
         // 启动 1.2 秒后弹一次真实提醒窗口来取证（**不写盘、不动 reminders.json、不影响到点判断**），
         // 锁屏/不方便手动点「测试弹窗」时用它。「未勾星期的提醒到底会不会弹」就靠它验。

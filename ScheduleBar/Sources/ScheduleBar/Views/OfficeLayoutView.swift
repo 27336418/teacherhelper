@@ -281,6 +281,12 @@ struct OfficeLayoutView: View {
     @State private var keyword = ""
     @State private var appliedKeyword = ""     // 去抖后的关键字（避免每次键入都重算）
 
+    /// ⚠️ 仅取证用：离屏渲染（`--render-office-page`）时给出「内容区可用宽度」。
+    /// 为什么需要这个开关：`ImageRenderer` **画不了 `ScrollView` / `GeometryReader`**（出白图），
+    /// 所以离屏那条路必须绕开这两层容器、直接把宽度喂进来。运行时保持 nil，走真实页面路径。
+    /// 两条路共用同一个 `pageContent(availableWidth:)`，所以「预览 = 实际」不会走样。
+    var offscreenWidth: CGFloat? = nil
+
     /// 楼层编辑状态（行内输入，**不弹窗**：NSAlert 会先把 popover 关掉，用户就得重新打开面板）
     enum FloorEditKind: Equatable { case new, rename(String) }
     @State private var floorEditKind: FloorEditKind? = nil
@@ -289,16 +295,34 @@ struct OfficeLayoutView: View {
     @FocusState private var floorFieldFocused: Bool
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                toolbar
-                // 「新建楼层」的行内输入框：紧跟在工具栏下方（原来挂在列表末尾，
-                // 整合进「新建」菜单后改到顶部，点完立刻就能看见并输入）
-                if floorEditKind == .new { floorEditorRow(isNew: true) }
-                floorsSection
+        if let w = offscreenWidth {
+            pageContent(availableWidth: w)          // 取证路径：不套 ScrollView / GeometryReader
+        } else {
+            // ⚠️ 卡片要按「本页实际可用宽度」自适应列宽（2026-09-23 用户要求：右侧空余太多），
+            //    所以这里必须量出内容区宽度再往下传。
+            //    用 GeometryReader 直接读、把数字当参数传下去（而不是 @State + onChange）：
+            //    窗口宽度变化时 GeometryReader 的闭包会重算，卡片自然跟着重排，少一处状态同步。
+            //    availableWidth = 内容区宽度 − 左右各 16pt 内边距。
+            GeometryReader { geo in
+                let available = max(0, geo.size.width - 32)
+                let _ = traceLayout("内容区实测 \(Int(geo.size.width.rounded()))pt → 可用 \(Int(available.rounded()))pt")
+                ScrollView {
+                    pageContent(availableWidth: available)
+                }
             }
-            .padding(16)
         }
+    }
+
+    /// 整页内容（工具栏 + 楼层分组）。真实路径与离屏取证共用这一份，保证预览不走样。
+    private func pageContent(availableWidth: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            toolbar
+            // 「新建楼层」的行内输入框：紧跟在工具栏下方（原来挂在列表末尾，
+            // 整合进「新建」菜单后改到顶部，点完立刻就能看见并输入）
+            if floorEditKind == .new { floorEditorRow(isNew: true) }
+            floorsSection(availableWidth: availableWidth)
+        }
+        .padding(16)
     }
 
     // MARK: 顶部工具栏（真正的实现在 OfficeToolbar —— 抽出去是为了能离屏渲染取证）
@@ -317,18 +341,18 @@ struct OfficeLayoutView: View {
 
     // MARK: 楼层分组（没设过楼层时退化成原来的「一张张平铺」）
     @ViewBuilder
-    private var floorsSection: some View {
+    private func floorsSection(availableWidth: CGFloat) -> some View {
         if store.hasFloors {
             VStack(alignment: .leading, spacing: 16) {
                 ForEach(store.floorNames, id: \.self) { floor in
                     VStack(alignment: .leading, spacing: 10) {
                         floorHeader(floor)
-                        cardRows(store.offices(inFloor: floor))
+                        cardRows(store.offices(inFloor: floor), availableWidth: availableWidth)
                     }
                 }
             }
         } else {
-            cardRows(store.offices)
+            cardRows(store.offices, availableWidth: availableWidth)
         }
     }
 
@@ -471,24 +495,79 @@ struct OfficeLayoutView: View {
 
     /// 一组卡片（同一楼层内）按两列排布；超过 4 列的卡片单独占一行
     @ViewBuilder
-    private func cardRows(_ list: [OfficeBlock]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+    private func cardRows(_ list: [OfficeBlock], availableWidth: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: Self.rowSpacing) {
             ForEach(Array(rowIDs(list).enumerated()), id: \.offset) { _, row in
-                HStack(alignment: .top, spacing: 12) {
-                    ForEach(row, id: \.self) { id in
-                        // 卡片宽度由「列数 × 固定列宽」自行决定，不再拉伸铺满整行：
-                        // 列宽恒定，点「+」只是在右边多出一列。
+                let widths = rowCardWidths(row, availableWidth: availableWidth)
+                HStack(alignment: .top, spacing: Self.rowSpacing) {
+                    ForEach(Array(row.enumerated()), id: \.element) { i, id in
+                        // 卡片宽度：父视图按「本行可用宽度」摊给每张卡片（自适应列宽）；
+                        // 摊不满（列少 / 宽度还没量出来）时传 nil，卡片保持固定列宽。
                         OfficeCard(office: binding(for: id),
                                    keyword: appliedKeyword,
-                                   onNewFloor: { beginNewFloor(assign: $0) })
+                                   onNewFloor: { beginNewFloor(assign: $0) },
+                                   targetWidth: widths[i])
                     }
-                    // 单张卡片独占一行时补一个弹性占位，保证卡片左对齐且不被拉伸。
+                    // 单张卡片独占一行、且没摊满宽度时，补一个弹性占位保证左对齐。
                     if row.count == 1 {
                         Color.clear.frame(maxWidth: .infinity, minHeight: 1)
                     }
                 }
             }
         }
+    }
+
+    /// 行内卡片之间的间距（表头 / 楼层标题条不参与，只用于卡片排布）
+    private static let rowSpacing: CGFloat = 12
+
+    // MARK: 列宽取证（`SCHEDULEBAR_TRACE_OFFICE=1`）
+    // 为什么需要它：卡片自适应列宽依赖「本页真实可用宽度」，而离屏渲染（--render-office-page）
+    // 是绕开 GeometryReader 喂进去的，证明不了运行时量到的宽度对不对。屏幕锁定/别处全屏时
+    // 又抓不到图 —— 于是把实测数字直接打进日志，核对「右侧还空多少」不必靠截图。
+    private static var seenLayoutTraces: Set<String> = []
+    private func traceLayout(_ key: String) {
+        guard ProcessInfo.processInfo.environment["SCHEDULEBAR_TRACE_OFFICE"] == "1" else { return }
+        guard Self.seenLayoutTraces.insert(key).inserted else { return }  // 一次布局会算很多遍，只记一次
+        SaveHub.log("工位列宽：\(key)")
+    }
+
+    /// 把一行里可用的宽度摊给各张卡片：每张卡片先按「列数 × 基准列宽」算出自然宽度，
+    /// 多出来的宽度**按列数平分**（等于每一列加同样多），所以列多的卡片自然更宽；
+    /// 每列最多加到 `OfficeCard.maxSeatWidth` 就不再拉宽（避免一张卡独占一行时被拉成巨型格子）。
+    /// 返回 nil 表示「保持固定列宽」。
+    private func rowCardWidths(_ row: [UUID], availableWidth: CGFloat) -> [CGFloat?] {
+        let fallback: [CGFloat?] = Array(repeating: nil, count: row.count)
+        guard availableWidth > 0, !row.isEmpty else { return fallback }
+        var naturals: [CGFloat] = []
+        var cols: [Int] = []
+        for id in row {
+            let block = store.offices.first { $0.id == id }
+            let n = max(1, block?.seats.map(\.count).max() ?? OfficeLayoutStore.seatColumns)
+            cols.append(n)
+            naturals.append(OfficeCard.naturalWidth(columns: n))
+        }
+        let gaps = CGFloat(row.count - 1) * Self.rowSpacing
+        let room = availableWidth - gaps
+        let totalNatural = naturals.reduce(0, +)
+        // 自然宽度已经超过可用宽度（列太多）→ 交给 OfficeCard 自己按上限收窄，这里不参与。
+        guard totalNatural > 0, totalNatural < room - 1 else {
+            traceLayout("可用 \(Int(availableWidth.rounded()))pt｜\(cols) 列：自然宽 \(Int(totalNatural.rounded()))pt 已占满，不摊")
+            return fallback
+        }
+        let totalCols = CGFloat(cols.reduce(0, +))
+        let extraPerCol = min((room - totalNatural) / max(1, totalCols),
+                              OfficeCard.maxSeatWidth - OfficeCard.baseSeatWidth)
+        guard extraPerCol > 0.5 else { return fallback }   // 几乎没富余，别为 0.4pt 折腾
+        let widths = naturals.enumerated().map { i, nat in nat + extraPerCol * CGFloat(cols[i]) }
+        // 顺带记下每列最终宽度：= 卡宽减掉列间距/尾部按钮/内边距后再除以列数
+        let detail = zip(cols, widths).map { c, w -> String in
+            let extras = CGFloat(c) * OfficeCard.seatSpacing + OfficeCard.trailingWidth + OfficeCard.cardHPadding
+            let cell = (w - extras) / CGFloat(c)
+            return "\(c)列 → 卡 \(Int(w.rounded()))pt / 格 \(String(format: "%.1f", cell))pt"
+        }.joined(separator: "， ")
+        let used = widths.reduce(0, +) + gaps
+        traceLayout("可用 \(Int(availableWidth.rounded()))pt｜\(detail)｜合计 \(Int(used.rounded()))pt（余 \(String(format: "%.1f", availableWidth - used))pt）")
+        return widths
     }
 
     /// 把办公室按两列分组；超过 4 列的办公室单独占一行，
@@ -531,34 +610,64 @@ struct OfficeCard: View {
     var keyword: String = ""                 // 查询姓名（已去抖）；命中的工位高亮闪烁
     /// 「新建楼层…」（从卡片上的楼层菜单触发，把这张卡片一起挪进新楼层）
     var onNewFloor: (UUID) -> Void = { _ in }
+    /// 父视图按「本行可用宽度」分配到本卡片的目标宽度；nil = 保持固定列宽。
+    /// 见 `OfficeLayoutView.rowCardWidths`。
+    var targetWidth: CGFloat? = nil
     @State private var titleEditing = false
     @State private var titleDraft = ""
     @FocusState private var titleFocused: Bool
 
-    /// 工位列的固定列宽 —— 列宽恒定，增加列时向右追加一列，不再等分撑满卡片
-    private let seatWidth: CGFloat = 60
+    // MARK: 尺寸常量（自适应列宽要按「整行」汇总宽度，所以提成 static 供父视图复用）
+    /// 工位列的基准列宽 —— 自适应时**只加宽不缩窄**，永远不比它窄
+    static let baseSeatWidth: CGFloat = 60
+    /// 自适应拉伸的上限列宽（避免一张卡片独占一行时被拉成巨无霸格子）
+    static let maxSeatWidth: CGFloat = 120
     /// 列间距（表头 / 座位行 / 门牌行共用，保证栅格对齐）
-    private let columnSpacing: CGFloat = 4
+    static let seatSpacing: CGFloat = 4
     /// 行尾「删除本行/本列」按钮统一占位，保证表头行与座位行栅格对齐
-    private let trailingButtonWidth: CGFloat = 18
+    static let trailingWidth: CGFloat = 18
+    /// 卡片左右内边距合计（`.padding(8)` ×2）
+    static let cardHPadding: CGFloat = 16
+
+    /// 卡片自然宽度 = 列数 × 基准列宽 + 列间距 + 行尾按钮 + 左右内边距
+    static func naturalWidth(columns n: Int) -> CGFloat {
+        let n = max(1, n)
+        return CGFloat(n) * baseSeatWidth + CGFloat(n) * seatSpacing
+            + trailingWidth + cardHPadding
+    }
+
+    private var seatWidth: CGFloat { Self.baseSeatWidth }
+    private var columnSpacing: CGFloat { Self.seatSpacing }
+    private var trailingButtonWidth: CGFloat { Self.trailingWidth }
     /// 卡片可用宽度上限（面板 880 − 侧栏 170 − 内边距留白）：
-    /// 只有在列数多到会溢出时才整体收窄，平时保持固定列宽。
+    /// 只有在列数多到会溢出时才整体收窄。
     private let maxCardWidth: CGFloat = 660
 
-    /// 实际列宽：默认固定 60；仅当列数多到超出卡片可用宽度时才按比例收窄。
+    /// 实际列宽：
+    /// ① 父视图分配了目标宽度（自适应列宽）→ 把宽度摊进每一列，且不小于基准列宽；
+    /// ② 没分配 → 基准列宽 60；
+    /// ③ 列数多到会溢出 → 按比例收窄（下限 22）。
     private var cellW: CGFloat {
         let n = max(1, columnCount)
-        let needed = CGFloat(n) * seatWidth + CGFloat(n) * columnSpacing
-            + trailingButtonWidth + 16
+        let extras = CGFloat(n) * columnSpacing + trailingButtonWidth + Self.cardHPadding
+        if let target = targetWidth {
+            let available = target - extras
+            if available > CGFloat(n) * seatWidth {
+                return available / CGFloat(n)
+            }
+        }
+        let needed = CGFloat(n) * seatWidth + extras
         guard needed > maxCardWidth else { return seatWidth }
-        let avail = maxCardWidth - trailingButtonWidth - 16 - CGFloat(n) * columnSpacing
+        let avail = maxCardWidth - trailingButtonWidth - Self.cardHPadding
+            - CGFloat(n) * columnSpacing
         return max(22, avail / CGFloat(n))
     }
 
     /// 卡片宽度 = 列数 × 列宽 + 列间距 + 行尾按钮 + 左右内边距
     private var cardWidth: CGFloat {
         let n = max(1, columnCount)
-        return CGFloat(n) * cellW + CGFloat(n) * columnSpacing + trailingButtonWidth + 16
+        return CGFloat(n) * cellW + CGFloat(n) * columnSpacing + trailingButtonWidth
+            + Self.cardHPadding
     }
 
     var body: some View {
