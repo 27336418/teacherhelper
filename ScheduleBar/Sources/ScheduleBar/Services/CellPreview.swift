@@ -102,7 +102,7 @@ enum CellPreview {
         hub.clearDirty()
         guard let clean = shot(clean: true) else { hub.clearDirty(); print("✗ 渲染失败"); return }
         hub.markDirty("学生座位")
-        hub.markDirty("个人课表")
+        hub.markDirty("本人课表")
         guard let dirty = shot(clean: false) else { hub.clearDirty(); print("✗ 渲染失败"); return }
         hub.clearDirty()
 
@@ -131,7 +131,7 @@ enum CellPreview {
     @MainActor
     private static func shot(clean: Bool) -> NSImage? {        let content = VStack(alignment: .leading, spacing: 10) {
             Text(clean ? "① 没有未保存的改动"
-                       : "② 改动了两个板块（学生座位 + 个人课表）")
+                       : "② 改动了两个板块（学生座位 + 本人课表）")
                 .font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.black)
             HStack(spacing: 12) {
                 SaveButton()

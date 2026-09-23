@@ -10,7 +10,7 @@ final class AppCoordinator: ObservableObject {
 
     // MARK: 导入（由用户在选择时指定类型）
     func importPersonalFile() {
-        importFile("导入个人课表", grid: importPersonal)
+        importFile("导入本人课表", grid: importPersonal)
     }
 
     // MARK: - 在线检查更新（GitHub release）
@@ -122,7 +122,7 @@ final class AppCoordinator: ObservableObject {
     func clearAllData() {
         let a = NSAlert()
         a.messageText = "清空所有数据"
-        a.informativeText = "将清空：个人课表、班级课表、年级师资、学生信息、工位、教室分布、座位安排、延时&监考、提醒设置。\n操作会保留各表的行列结构（便于直接双击填写），但所有已填内容会被删除，且不可撤销。\n确认后应用会自动重启生效。"
+        a.informativeText = "将清空：本人课表、班级课表、他人课表、年级师资、学生信息、工位、教室分布、座位安排、延时&监考、提醒设置。\n操作会保留各表的行列结构（便于直接双击填写），但所有已填内容会被删除，且不可撤销。\n确认后应用会自动重启生效。"
         a.alertStyle = .critical
         a.addButton(withTitle: "清空并重启")
         a.addButton(withTitle: "取消")
@@ -349,6 +349,161 @@ final class AppCoordinator: ObservableObject {
            .replacingOccurrences(of: "\r", with: "·")
            .replacingOccurrences(of: "\t", with: "")
            .trimmingCharacters(in: .whitespaces)
+    }
+
+    // MARK: 他人课表：导入 / 下载
+    func importTeacherSchedules() {
+        let panel = makeOpenPanel("导入他人课表")
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let grid = try XLSX.read(url)
+                let blocks = AppCoordinator.parseTeacherSchedules(grid)
+                guard !blocks.isEmpty else {
+                    showAlert("没认出他人课表",
+                              "文件格式（长表）：第一行表头写「姓名 | 节次 | 周一 … 周天」，"
+                              + "下面每位教师连续若干行、一行一节课，单元格写「班级 科目」（如 初一-18 数学）。\n"
+                              + "可先点「导入 → 下载填写模板」照着填。")
+                    return
+                }
+                let store = TeacherScheduleStore.shared
+                let snap = store.teachers
+                store.replaceAll(blocks)
+                UndoService.shared.register("导入他人课表") { store.replaceAll(snap) }
+                let lessons = blocks.reduce(0) { $0 + $1.lessonCount }
+                showAlert("导入完成", "共 \(blocks.count) 位教师、\(lessons) 节课。")
+            } catch {
+                showAlert("导入失败", error.localizedDescription)
+            }
+        }
+    }
+
+    /// 解析教师课表长表：
+    ///   表头行（含「姓名」）给出「节次列」与「周一…周天」各列的位置；
+    ///   同一姓名的多行合并成一位教师（节次按出现顺序）。
+    /// 容错：没有表头时按默认列序（姓名 / 节次 / 周一…周天）解析；天列名支持「周一/星期一/一」。
+    static func parseTeacherSchedules(_ grid: [[String]]) -> [TeacherBlock] {
+        guard !grid.isEmpty else { return [] }
+
+        func clean(_ row: [String]) -> [String] {
+            row.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        }
+        /// 「周一 / 星期一 / 周1 / 一」→ 0…6；周日 / 周天 / 星期日 → 6
+        /// ⚠️ 用有序数组按顺序匹配，不用字典 —— 字典遍历顺序不确定，
+        ///    一旦某串同时含两个字键（如「周六日」）结果就会飘。
+        func dayIndex(_ s: String) -> Int? {
+            let t = s.trimmingCharacters(in: .whitespaces)
+            guard !t.isEmpty else { return nil }
+            let named: [(String, Int)] = [("一", 0), ("二", 1), ("三", 2), ("四", 3),
+                                          ("五", 4), ("六", 5), ("日", 6), ("天", 6)]
+            if let hit = named.first(where: { t.contains($0.0) }) { return hit.1 }
+            if t == "7" { return 6 }          // 「周7」这种写法
+            return nil
+        }
+
+        // ① 找表头行：第一格是「姓名 / 老师 / 教师」，或整行含 2 个以上「周x」
+        var headerRow = -1
+        var dayCols: [Int: Int] = [:]      // 列下标 → 天下标
+        var nameCol = 0
+        var periodCol = 1
+
+        for (r, raw) in grid.prefix(8).enumerated() {
+            let row = clean(raw)
+            let dayHits = row.enumerated().compactMap { (c, v) -> (Int, Int)? in
+                if let d = dayIndex(v), v.contains("周") || v.contains("星期") || v.contains("礼拜") {
+                    return (c, d)
+                }
+                return nil
+            }
+            let hasName = row.first.map { $0.contains("姓名") || $0.contains("老师") || $0.contains("教师") } ?? false
+            let hasPeriodCol = row.contains { $0.contains("节次") || $0.contains("第几节") }
+            // ⚠️ 只凭「含『老师』」不够：数据行里的「王老师」也含「老师」，
+            //    那样会把第一行数据当表头吃掉。必须同时具备「节次列」或 ≥2 个天列才算表头。
+            if (hasName && (hasPeriodCol || dayHits.count >= 2)) || dayHits.count >= 2 {
+                headerRow = r
+                for (c, d) in dayHits where dayCols[d] == nil { dayCols[d] = c }
+                if let nc = row.firstIndex(where: { $0.contains("姓名") || $0.contains("老师") || $0.contains("教师") }) {
+                    nameCol = nc
+                }
+                if let pc = row.firstIndex(where: { $0.contains("节次") || $0.contains("第几节") }) {
+                    periodCol = pc
+                }
+                break
+            }
+        }
+
+        let start = headerRow >= 0 ? headerRow + 1 : 0
+        if dayCols.isEmpty {
+            // 没有可识别的表头 → 按默认列序：姓名 / 节次 / 周一…周天
+            nameCol = 0
+            periodCol = 1
+            for d in 0..<TeacherBlock.days.count { dayCols[d] = 2 + d }
+        }
+        let orderedDayCols = (0..<TeacherBlock.days.count).map { dayCols[$0] ?? (2 + $0) }
+
+        // ② 逐行聚合（同姓名可分散出现，按首次出现顺序）
+        var order: [String] = []
+        var periodsOf: [String: [String]] = [:]
+        var rowsOf: [String: [[String]]] = [:]
+
+        for raw in grid.dropFirst(start) {
+            let row = clean(raw)
+            func cell(_ i: Int) -> String { i < row.count ? row[i] : "" }
+
+            let name = cell(nameCol)
+            guard !name.isEmpty, name != "姓名" else { continue }
+            let period = cell(periodCol)
+            guard !period.isEmpty else { continue }
+
+            let dayCells = orderedDayCols.map { cell($0) }
+            if order.last != name, !order.contains(name) { order.append(name) }
+            if rowsOf[name] == nil { rowsOf[name] = []; periodsOf[name] = [] }
+            // 同一节次重复出现 → 覆盖（后写的为准），避免多出一行
+            if let at = periodsOf[name]?.firstIndex(of: period) {
+                rowsOf[name]?[at] = dayCells
+            } else {
+                periodsOf[name]?.append(period)
+                rowsOf[name]?.append(dayCells)
+            }
+        }
+
+        // ③ 没有节次列、只有一行一天的（一行一位教师）也支持：把天当行
+        if order.isEmpty {
+            for raw in grid {
+                let row = clean(raw)
+                guard let name = row.first, !name.isEmpty, name != "姓名" else { continue }
+                let dayCells = orderedDayCols.map { $0 < row.count ? row[$0] : "" }
+                guard dayCells.contains(where: { !$0.isEmpty }) else { continue }
+                order.append(name)
+                periodsOf[name] = [name]
+                rowsOf[name] = [dayCells]
+            }
+        }
+
+        return order.compactMap { name in
+            guard let periods = periodsOf[name], let cells = rowsOf[name] else { return nil }
+            return TeacherBlock(teacher: name, periods: periods, cells: cells)
+        }
+    }
+
+    func exportTeacher() {
+        let panel = makeSavePanel("下载他人课表", defaultName: "他人课表.xlsx")
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                try XLSX.write(exportTeacherRows(), to: url)
+            } catch {
+                showAlert("下载失败", error.localizedDescription)
+            }
+        }
+    }
+
+    private func exportTeacherRows() -> [[String]] {
+        var rows: [[String]] = [["姓名", "节次"] + TeacherBlock.days]
+        for b in TeacherScheduleStore.shared.teachers {
+            for (i, p) in b.periods.enumerated() {
+                rows.append([b.teacher, p] + (i < b.cells.count ? b.cells[i] : Array(repeating: "", count: TeacherBlock.days.count)))
+            }
+        }
+        return rows
     }
 
     // MARK: 教师工位：导入 / 下载
@@ -1040,7 +1195,7 @@ final class AppCoordinator: ObservableObject {
 
     // MARK: 导出 / 下载
     func exportPersonal() {
-        let panel = makeSavePanel("下载个人课表", defaultName: "个人课表.xlsx")
+        let panel = makeSavePanel("下载本人课表", defaultName: "本人课表.xlsx")
         if panel.runModal() == .OK, let url = panel.url {
             do {
                 try XLSX.write(exportPersonalRows(), to: url)
@@ -1127,7 +1282,7 @@ final class AppCoordinator: ObservableObject {
     //   工位 →「办公室」；座位 →「小组」；延时监考 →「子表」+「第几周」；
     //   教室分布 →「楼层」+「教室/办公室」。
     // ⚠️ 标题行统一为「整行只有 1 个非空格」，导入侧用 dropTitleRows 跳过（见下方）。
-    enum ImportTemplate { case personal, classSheet, student, staff, office, seating, extend, classroom }
+    enum ImportTemplate { case personal, classSheet, teacher, student, staff, office, seating, extend, classroom }
 
     func downloadTemplate(_ kind: ImportTemplate) {
         let (rows, name) = AppCoordinator.templateRows(kind)
@@ -1151,10 +1306,10 @@ final class AppCoordinator: ObservableObject {
             let periods = ScheduleStore.shared.periods.isEmpty
                 ? ScheduleStore.defaultGroups.flatMap { $0.periods }
                 : ScheduleStore.shared.periods
-            rows = [["个人课表"],
+            rows = [["本人课表"],
                     ["节次"] + ScheduleStore.days]
                 + periods.map { [$0] + Array(repeating: "", count: ScheduleStore.days.count) }
-            name = "个人课表模板"
+            name = "本人课表模板"
         case .classSheet:
             let store = ClassScheduleStore.shared
             let blocks = store.groups.isEmpty ? ClassLayout.defaultGroups : store.groups
@@ -1165,6 +1320,17 @@ final class AppCoordinator: ObservableObject {
                         + g.periods.map { [$0] + Array(repeating: "", count: ClassLayout.days.count) }
                 }
             name = "班级课表模板"
+        case .teacher:
+            // 与学校给的「课表定稿（长表）」同格式：姓名 | 节次 | 周一…周天。
+            // 示范 1 位教师 × 5 节课，填好直接导入；单元格写「班级 科目」（如 初一-18 数学）。
+            rows = [["姓名", "节次"] + TeacherBlock.days]
+                + (0..<5).map { i -> [String] in
+                    var line: [String] = [i == 0 ? "张老师" : "", "第\(i + 1)节课"]
+                    line += Array(repeating: "", count: TeacherBlock.days.count)
+                    if i == 0 { line[2] = "初一-18 数学" }      // 周一第1节 示例
+                    return line
+                }
+            name = "他人课表模板"
         case .student:
             rows = [["学生信息"],
                     StudentDefaultData.headers]

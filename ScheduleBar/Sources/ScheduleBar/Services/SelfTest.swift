@@ -1141,8 +1141,8 @@ enum SelfTest {
 
         // ② 编辑 → 只标脏，不写盘
         ScheduleStore.shared.scheduleSave()
-        check("编辑个人课表后：标记为有未保存改动", hub.hasUnsaved)
-        check("板块名正确（按钮提示文案用的就是它）", hub.dirtyAreas.contains("个人课表"),
+        check("编辑本人课表后：标记为有未保存改动", hub.hasUnsaved)
+        check("板块名正确（按钮提示文案用的就是它）", hub.dirtyAreas.contains("本人课表"),
               "dirtyAreas=\(hub.dirtyAreas.sorted().joined(separator: "、"))")
         check("只标脏、未落盘（没点保存前不写文件）", writes == 0, "writes=\(writes)")
 
@@ -1177,8 +1177,9 @@ enum SelfTest {
 
         // ⑧ 每个可编辑板块都能把自己标脏（名字必须与 writeAll 的覆盖面一致）
         let areas: [(String, () -> Void)] = [
-            ("个人课表", { ScheduleStore.shared.scheduleSave() }),
+            ("本人课表", { ScheduleStore.shared.scheduleSave() }),
             ("班级课表", { ClassScheduleStore.shared.scheduleSave() }),
+            ("他人课表", { TeacherScheduleStore.shared.scheduleSave() }),
             ("学生座位", { SeatingStore.shared.scheduleSave() }),
             ("年级师资", { StaffStore.shared.scheduleSave() }),
             ("学生信息", { StudentStore.shared.scheduleSave() }),
@@ -1193,7 +1194,7 @@ enum SelfTest {
             ("板块标题", { CardTitleStore.shared.scheduleSave() }),
         ]
         // 必须与 SaveHub.writeAll 覆盖的 store 数量一致（漏一个就会有板块改了不落盘）
-        let expectedAreaCount = 14
+        let expectedAreaCount = 15
         var missing: [String] = []
         for (name, mark) in areas {
             hub.clearDirty()
@@ -1209,8 +1210,8 @@ enum SelfTest {
         hub.clearDirty()
         ScheduleStore.shared.scheduleSave()
         StaffStore.shared.scheduleSave()
-        hub.clearDirty("个人课表")
-        check("clearDirty(板块) 只清一个", hub.dirtyAreas.contains("年级师资") && !hub.dirtyAreas.contains("个人课表"),
+        hub.clearDirty("本人课表")
+        check("clearDirty(板块) 只清一个", hub.dirtyAreas.contains("年级师资") && !hub.dirtyAreas.contains("本人课表"),
               "unsavedList=\(hub.unsavedList)")
 
         // ⑩ 兜底延时必须是「有意义的一段时间」，不能被误改成 0（那样每个按键都写盘）
@@ -1268,6 +1269,184 @@ enum SelfTest {
                 for p in c.data.groups.flatMap({ $0.periods }) {
                     print("  \(p): \(c.data.cells[p] ?? [])")
                 }
+            }
+        } catch {
+            print("ERROR: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: 教师课表自检（--selftest-teacher）
+    // 用临时数据目录：真实 teacher_schedules.json 一个字节都不会被碰。
+    static func runTeacherCheck() {
+        let tmp = "/tmp/selftest-teacher-\(UUID().uuidString.prefix(8))"
+        try? FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+        setenv("SCHEDULEBAR_DATA_DIR", tmp, 1)
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+        print("临时数据目录 = \(tmp)（真实 teacher_schedules.json 不受影响）")
+
+        var failed: [String] = []
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            print("\(ok ? "✓" : "✗") \(name)\(detail.isEmpty ? "" : "  [\(detail)]")")
+            if !ok { failed.append(name) }
+        }
+
+        // 1) 解析学校下发的「长表」：表头 + 每位教师连续若干行
+        let grid: [[String]] = [
+            ["姓名", "节次", "周一", "周二", "周三", "周四", "周五", "周六", "周天"],
+            ["刘娇/尹海燕", "第1节课", "", "", "", "", "", "", ""],
+            ["刘娇/尹海燕", "第2节课", "", "", "", "", "", "", ""],
+            ["刘娇/尹海燕", "第7节课", "", "", "初二-11 班/心", "", "", "", ""],
+            ["丁灵", "第1节课", "初一-18 数学", "", "初一-18 数学", "初一-18 数学", "", "", ""],
+            ["丁灵", "第2节课", "初一-18 数学", "", "", "", "", "", ""],
+            ["丁灵", "第4节课", "", "初一-17 数学", "初一-17 数学", "", "", "", ""],
+        ]
+        let parsed = AppCoordinator.parseTeacherSchedules(grid)
+        check("解析长表：按教师聚合成 2 位", parsed.count == 2, "\(parsed.count)")
+        let ding = parsed.first { $0.teacher == "丁灵" }
+        check("节次按出现顺序保留", ding?.periods == ["第1节课", "第2节课", "第4节课"],
+              "\(ding?.periods ?? [])")
+        check("单元格落位正确（丁灵·周三·第1节）", ding?.cells.first.map { $0[2] } == "初一-18 数学",
+              ding?.cells.first.map { $0[2] } ?? "nil")
+        check("成对姓名（刘娇/尹海燕）原样保留",
+              parsed.contains { $0.teacher == "刘娇/尹海燕" })
+
+        // 2) 无表头 / 「星期x」写法也能认
+        let noHeader: [[String]] = [
+            ["王老师", "第1节课", "初二-3 语文", "", "", "", "", "", ""],
+            ["王老师", "第2节课", "", "初二-3 语文", "", "", "", "", ""],
+        ]
+        let p2 = AppCoordinator.parseTeacherSchedules(noHeader)
+        check("无表头时按默认列序解析", p2.count == 1 && p2[0].cells[0][0] == "初二-3 语文")
+        let weekStyle: [[String]] = [
+            ["姓名", "节次", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"],
+            ["李老师", "第1节课", "", "", "", "", "初三-9 化学", "", ""],
+        ]
+        let p3 = AppCoordinator.parseTeacherSchedules(weekStyle)
+        check("「星期一…星期日」写法可识别", p3.first?.cells.first?[4] == "初三-9 化学",
+              p3.first?.cells.first?[4] ?? "nil")
+
+        // 3) 模糊查询：包含即命中
+        let store = TeacherScheduleStore()
+        UndoService.shared.clear()
+        store.replaceAll(parsed)
+        check("导入后教师数 = 2", store.teacherCount == 2, "\(store.teacherCount)")
+        check("课节统计 = 7", store.lessonCount == 7, "\(store.lessonCount)")
+        check("查询「丁」命中丁灵", store.search("丁").map(\.teacher) == ["丁灵"])
+        check("查询「灵」命中丁灵（中间字）", store.search("灵").map(\.teacher) == ["丁灵"])
+        check("查询「尹海燕」命中成对姓名", store.search("尹海燕").map(\.teacher) == ["刘娇/尹海燕"])
+        check("查询「张」无人命中", store.search("张").isEmpty)
+        check("空关键字 = 全部", store.search("").count == 2)
+        check("关键字两端空格被忽略", store.search("  丁  ").count == 1)
+        check("查询结果不影响原数据", store.teacherCount == 2)
+
+        // 3b) 下拉 / 标签区的顺序：姓名升序（中文按拼音）
+        let order = store.search("").map { $0.teacher }
+        check("列表按姓名升序", zip(order, order.dropFirst())
+                .allSatisfy { TeacherScheduleStore.nameAscending($0, $1) },
+              order.joined(separator: " < "))
+        check("下拉列表本身也是升序", zip(store.sortedByName.map { $0.teacher },
+                                   store.sortedByName.map { $0.teacher }.dropFirst())
+                .allSatisfy { TeacherScheduleStore.nameAscending($0, $1) })
+
+        // 4) 单元格文本拆分与配色
+        let s1 = TeacherBlock.split("初一-18 数学")
+        let s2 = TeacherBlock.split("晚自习")
+        check("拆「班级 科目」", s1.room == "初一-18" && s1.subject == "数学", "\(s1)")
+        check("无空格时整串当科目", s2.room.isEmpty && s2.subject == "晚自习")
+        check("科目配色可命中（数学）", TeacherBlock.subjectColor("数学") != nil)
+
+        // 5) 改格子 + 撤销
+        guard let dingID = store.search("丁灵").first?.id else {
+            check("取到丁灵这条记录", false)
+            print("教师课表自检存在问题 ✗")
+            return
+        }
+        store.setCell(blockID: dingID, row: 1, col: 0, text: "初一-19 语文")
+        check("改格子生效", store.teacher(dingID)?.cells[1][0] == "初一-19 语文")
+        _ = UndoService.shared.undo()
+        check("改格子可撤销", store.teacher(dingID)?.cells[1][0] == "初一-18 数学")
+
+        // 6) 新建 / 重名自动序号 / 重命名 / 删除（都可撤销）
+        store.addTeacher()
+        check("新建教师", store.teacherCount == 3 && store.teachers.last?.teacher == "新教师")
+        store.addTeacher()
+        check("重名自动加序号", store.teachers.last?.teacher == "新教师2",
+              store.teachers.last?.teacher ?? "nil")
+        _ = UndoService.shared.undo()
+        _ = UndoService.shared.undo()
+        check("连续撤销回到 2 位", store.teacherCount == 2, "\(store.teacherCount)")
+
+        store.renameTeacher(dingID, to: "丁灵老师")
+        check("重命名生效", store.search("丁灵老师").count == 1)
+        _ = UndoService.shared.undo()
+        check("重命名可撤销", store.search("丁灵").count == 1)
+
+        store.removeTeacher(dingID)
+        check("删除教师", store.teacherCount == 1)
+        _ = UndoService.shared.undo()
+        check("删除可撤销", store.teacherCount == 2)
+
+        // 7) 模板 → 解析 回环（用户按模板填完再导入）
+        let (tplRows, tplName) = AppCoordinator.templateRows(.teacher)
+        let back = AppCoordinator.parseTeacherSchedules(tplRows)
+        check("模板文件名", tplName == "他人课表模板", tplName)
+        check("模板可被自己的解析器读回", back.count == 1 && back[0].teacher == "张老师",
+              "\(back.map { $0.teacher })")
+        check("模板示例格保留（张老师·周一·第1节）", back.first?.cells.first?[0] == "初一-18 数学",
+              back.first?.cells.first?[0] ?? "nil")
+
+        // 8) 落盘 → 重新装载一致
+        store.save()
+        let reloaded = TeacherScheduleStore()
+        check("写入后重新装载一致", reloaded.teacherCount == store.teacherCount
+              && reloaded.lessonCount == store.lessonCount,
+              "\(reloaded.teacherCount) 位 / \(reloaded.lessonCount) 节")
+
+        // 9) 该板块也要能被 SaveHub 标脏（保存按钮才会亮）
+        SaveHub.shared.clearDirty()
+        store.scheduleSave()
+        check("编辑后 SaveHub 标脏「他人课表」",
+              SaveHub.shared.dirtyAreas.contains("他人课表"))
+        SaveHub.shared.clearDirty()
+        UndoService.shared.clear()
+
+        print(failed.isEmpty ? "教师课表自检全部通过 ✓"
+                             : "教师课表自检存在问题 ✗（\(failed.joined(separator: "、"))）")
+    }
+
+    // MARK: 教师课表：直接解析一份 xlsx（--import-teacher <xlsx> [--write]）
+    // 用于拿学校的真实长表做端到端验收：只解析并打印摘要；
+    // 加 --write 才把结果写进**当前数据目录**的 teacher_schedules.json。
+    static func importTeacherFile(_ path: String, write: Bool) {
+        do {
+            let url = URL(fileURLWithPath: path)
+            let grid = try XLSX.read(url)
+            let blocks = AppCoordinator.parseTeacherSchedules(grid)
+            print("文件：\(url.lastPathComponent)")
+            print("表格：\(grid.count) 行 × \(grid.map { $0.count }.max() ?? 0) 列")
+            print("解析：\(blocks.count) 位教师，\(blocks.reduce(0) { $0 + $1.lessonCount }) 节课")
+            let sortedNames = blocks.map { $0.teacher }
+                .sorted { TeacherScheduleStore.nameAscending($0, $1) }
+            let ascending = zip(sortedNames, sortedNames.dropFirst())
+                .allSatisfy { TeacherScheduleStore.nameAscending($0, $1) }
+            print("姓名升序（下拉 / 标签区顺序）：\(ascending ? "✓" : "✗")")
+            print("  前 10 位：" + sortedNames.prefix(10).joined(separator: "、"))
+            print("  末 3 位：" + sortedNames.suffix(3).joined(separator: "、"))
+            print("前 3 位课表摘要：")
+            for b in blocks.prefix(3) {
+                print("--- \(b.teacher)（\(b.lessonCount) 节）---")
+                for (i, per) in b.periods.enumerated() where i < b.cells.count {
+                    let items = b.cells[i].enumerated()
+                        .filter { !$0.element.isEmpty }
+                        .map { "\(TeacherBlock.days[$0.offset]) \($0.element)" }
+                    if !items.isEmpty { print("  \(per): \(items.joined(separator: " / "))") }
+                }
+            }
+            if write {
+                let store = TeacherScheduleStore()
+                store.replaceAll(blocks)
+                store.save()
+                print("已写入：\(TeacherScheduleStore.fileURL().path)")
             }
         } catch {
             print("ERROR: \(error.localizedDescription)")

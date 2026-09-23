@@ -61,7 +61,7 @@ final class SaveHub: ObservableObject {
     var hasUnsaved: Bool { !dirtyAreas.isEmpty }
     var unsavedCount: Int { dirtyAreas.count }
 
-    /// 「学生座位、个人课表」（按名称排序，稳定可读）
+    /// 「学生座位、本人课表」（按名称排序，稳定可读）
     var unsavedList: String { dirtyAreas.sorted().joined(separator: "、") }
 
     // MARK: 标脏
@@ -162,8 +162,9 @@ final class SaveHub: ObservableObject {
     // 顺序无关紧要：每个 Store 各自写自己的 json（互不依赖）。
     // 迁移 / 导入类写盘不在这里，那些是「数据被替换」而非「用户编辑」，各自立即落盘。
     private static func writeAll() {
-        ScheduleStore.shared.save()          // 个人课表
+        ScheduleStore.shared.save()          // 本人课表
         ClassScheduleStore.shared.save()     // 班级课表
+        TeacherScheduleStore.shared.save()   // 他人课表
         SeatingStore.shared.save()           // 学生座位
         StaffStore.shared.save()             // 年级师资
         StudentStore.shared.save()           // 学生信息

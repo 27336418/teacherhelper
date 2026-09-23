@@ -39,7 +39,7 @@ enum DefaultData {
 
     // MARK: 左侧导航默认顺序
     static let navOrder: [String] = [
-        "个人课表", "班级课表", "延时监考", "学生信息", "学生座位",
+        "本人课表", "班级课表", "他人课表", "延时监考", "学生信息", "学生座位",
         "日程提醒", "校历日历", "年级师资", "教师工位", "教室布局"
     ]
     static let navHidden: [String] = []

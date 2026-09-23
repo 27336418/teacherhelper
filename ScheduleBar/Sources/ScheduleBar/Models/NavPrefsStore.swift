@@ -32,14 +32,30 @@ final class NavPrefsStore: ObservableObject {
             "年级师资安排": "年级师资",
             "班级学生座位安排": "学生座位",
             "重庆校历": "校历日历",
-            "提醒设置": "日程提醒"
+            "提醒设置": "日程提醒",
+            // 2026-09-21 用户改名：把已有用户存下的旧顺序项平移到新名字，
+            // 免得升级后这两个板块被当成「新板块」重新补位、顺序被打乱。
+            "个人课表": "本人课表",
+            "教师课表": "他人课表"
         ]
         let loadedOrder = (loaded?.order ?? []).map { renameMap[$0] ?? $0 }
         var ord = loadedOrder.filter { all.contains($0) }
         if ord.isEmpty {
             ord = DefaultData.navOrder.filter { all.contains($0) }
         }
-        for t in all where !ord.contains(t) { ord.append(t) }   // 新增板块补到末尾
+        // 新增板块补位：优先插到「默认顺序里它的前一个板块」之后
+        // （如「教师课表」紧跟「班级课表」），前一个也不存在时放到末尾。
+        // 这样老用户升级后不必自己去拖位置，而用户自己调整过的相对顺序不会被改动。
+        for t in DefaultData.navOrder where all.contains(t) && !ord.contains(t) {
+            let before = DefaultData.navOrder.prefix(while: { $0 != t })
+            if let anchor = before.last(where: { ord.contains($0) }),
+               let at = ord.firstIndex(of: anchor) {
+                ord.insert(t, at: at + 1)
+            } else {
+                ord.append(t)
+            }
+        }
+        for t in all where !ord.contains(t) { ord.append(t) }   // 兜底：不在默认顺序里的板块
         self.order = ord
         let loadedHidden = (loaded?.hidden ?? []).map { renameMap[$0] ?? $0 }
         self.hidden = Set(loadedHidden.filter { all.contains($0) })

@@ -10,11 +10,11 @@ final class CardTitleStore: ObservableObject {
     /// 卡片键 → 默认标题：内置名称 + 用户当前已改好的名称（DefaultData.titles）
     static let defaults: [String: String] = {
         var d: [String: String] = [
-            "personal": "个人课表",
+            "personal": "本人课表",
             "class": "全校班级课表",
             "extend": "延时 & 监考",
             // 左侧导航条目（双击可改名）—— key 为 "nav_" + PanelTab.rawValue
-            "nav_personal": "个人课表",
+            "nav_personal": "本人课表",
             "nav_class": "班级课表",
             "nav_extend": "延时 & 监考",
             "nav_office": "办公室工位布局",
@@ -33,8 +33,9 @@ final class CardTitleStore: ObservableObject {
             "nav_提醒设置": "提醒设置",
             // 当前导航使用 PanelTab.rawValue 作为 key；这些键必须有默认标题，
             // 否则找不到旧数据时会把完整 key（例如 nav_延时监考）直接显示出来。
-            "nav_个人课表": "个人课表",
+            "nav_本人课表": "本人课表",
             "nav_班级课表": "班级课表",
+            "nav_他人课表": "他人课表",
             "nav_延时监考": "延时监考",
             "nav_学生信息": "学生信息",
             "nav_学生座位": "学生座位",
@@ -49,6 +50,7 @@ final class CardTitleStore: ObservableObject {
             "staff": "年级师资安排",
             "student": "学生信息",
             "seating": "班级学生座位安排",
+            "teacher": "他人课表",
         ]
         // 当前正在使用的名称（含中文导航键）作为默认，保证全新安装也是这套名字
         for (k, v) in DefaultData.titles where !v.isEmpty { d[k] = v }
@@ -57,8 +59,22 @@ final class CardTitleStore: ObservableObject {
 
     @Published var titles: [String: String]
 
+    /// 旧 key → (新 key, 旧默认名)。
+    /// ⚠️ 实测坑（2026-09-21）：titles.json 里存着 `nav_个人课表: 个人课表`（旧默认名被写进过文件），
+    ///    只把 key 搬到 `nav_本人课表` 而值原样带过去，改完侧栏依旧显示「个人课表」。
+    ///    所以：旧值 == 旧默认名 → 直接丢掉，让新默认名生效；用户确实自定义过才平移过去。
+    private static let legacyKeyMap: [String: (key: String, oldDefault: String)] = [
+        "nav_个人课表": ("nav_本人课表", "个人课表"),
+        "nav_教师课表": ("nav_他人课表", "教师课表")
+    ]
+
     init() {
-        self.titles = CardTitleStore.load()
+        var loaded = CardTitleStore.load()
+        for (old, m) in Self.legacyKeyMap where loaded[m.key] == nil {
+            guard let v = loaded.removeValue(forKey: old) else { continue }
+            if v != m.oldDefault { loaded[m.key] = v }   // 真自定义过才搬，否则回退新默认名
+        }
+        self.titles = loaded
     }
 
     /// 取标题；未改名/为空时回退默认名

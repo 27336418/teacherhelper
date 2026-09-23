@@ -255,7 +255,7 @@ final class ScheduleStore: ObservableObject {
     /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
     func scheduleSave() {
         guard !isInitializing else { return }   // 装载期不算用户编辑
-        SaveHub.shared.markDirty("个人课表")
+        SaveHub.shared.markDirty("本人课表")
     }
 
     func save() {

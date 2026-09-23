@@ -5,8 +5,12 @@ import SwiftUI
 // 默认展开个人课表；点击班级/校历/提醒等，内容区向右展开对应视图。
 
 enum PanelTab: String, CaseIterable, Identifiable {
-    case personal  = "个人课表"
+    // ⚠️ rawValue 就是「板块名」，它同时是：侧栏标题、卡片标题的 key（nav_<rawValue>）、
+    //    nav_prefs.json 里存的顺序项、SaveHub.dirtyAreas 的键。改名必须四处同步，
+    //    并在 NavPrefsStore.renameMap / CardTitleStore 里补旧名迁移（2026-09-21 用户改名）。
+    case personal  = "本人课表"
     case class7    = "班级课表"
+    case teacher   = "他人课表"
     case extend    = "延时监考"
     case office    = "教师工位"
     case classroom = "教室布局"
@@ -22,6 +26,7 @@ enum PanelTab: String, CaseIterable, Identifiable {
         switch self {
         case .personal:  return "person.crop.rectangle"
         case .class7:    return "building.2"
+        case .teacher:   return "tablecells"
         case .extend:    return "clock.fill"
         case .office:    return "person.3.fill"
         case .classroom: return "square.grid.3x3"
@@ -37,6 +42,7 @@ enum PanelTab: String, CaseIterable, Identifiable {
         switch self {
         case .personal:  return Color(hex: 0x16A085)
         case .class7:    return Color(hex: 0x3498DB)
+        case .teacher:   return Color(hex: 0x2C3E50)
         case .extend:    return Color(hex: 0x9B59B6)
         case .office:    return Color(hex: 0x27AE60)
         case .classroom: return Color(hex: 0xF39C12)
@@ -87,6 +93,13 @@ struct SchedulePanelView: View {
         }
         .onChange(of: showDockIcon) { on in
             DockPrefs.set(on)
+        }
+        .onAppear {
+            // --tab <板块名>：截图取证时直接停在目标板块（不必点侧栏，坐标不稳）
+            if let name = AppDelegate.initialTabName, let t = PanelTab(rawValue: name) {
+                selectedTab = t
+                visitedTabs.insert(t)
+            }
         }
     }
 
@@ -338,6 +351,8 @@ struct SchedulePanelView: View {
                 }
                 .padding(16)
             }
+        case .teacher:
+            TeacherScheduleView()
         case .extend:
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {

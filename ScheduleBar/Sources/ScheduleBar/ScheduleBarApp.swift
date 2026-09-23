@@ -56,6 +56,16 @@ struct ScheduleBarApp {
             SelfTest.runOfficeSeatCheck()
             return
         }
+        // 教师课表自检（纯逻辑 + 临时数据目录）：--selftest-teacher
+        if args.contains("--selftest-teacher") {
+            SelfTest.runTeacherCheck()
+            return
+        }
+        // 教师课表：解析一份 xlsx 长表（--import-teacher <xlsx> [--write]）
+        if let i = args.firstIndex(of: "--import-teacher"), i + 1 < args.count {
+            SelfTest.importTeacherFile(args[i + 1], write: args.contains("--write"))
+            return
+        }
         // 师资单元格颜色自检（纯逻辑，临时数据目录）：--selftest-staff
         if args.contains("--selftest-staff") {
             SelfTest.runStaffColorCheck()
@@ -106,6 +116,13 @@ struct ScheduleBarApp {
         if let i = args.firstIndex(of: "--fire-reminder-test") {
             AppDelegate.fireTestTitle =
                 (i + 1 < args.count && !args[i + 1].hasPrefix("--")) ? args[i + 1] : "测试提醒（--fire-reminder-test）"
+        }
+
+        // 启动即停在指定板块：--tab <板块名>（如 --tab 教师课表）
+        // 截图取证用：比合成点击侧栏坐标稳得多（popover 每次交互都会重定位，坐标会偏）。
+        if let i = args.firstIndex(of: "--tab"), i + 1 < args.count {
+            AppDelegate.initialTabName = args[i + 1]
+            SaveHub.log("启动参数：--tab = \(args[i + 1])（将停在对应板块）")
         }
 
         let app = NSApplication.shared
@@ -218,6 +235,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     static weak var sharedPopover: NSPopover?
     /// 命令行 --fire-reminder-test 传入的提示文字（非 nil 时启动后弹一次测试提醒，不写盘）
     static var fireTestTitle: String?
+    /// 命令行 --tab <板块名> 指定启动后停在哪个板块（如「教师课表」）。
+    /// 用途：截图取证时不必靠「合成点击侧栏坐标」——坐标在这台机器上会偏（popover 每次重定位）。
+    static var initialTabName: String?
 
     /// 退出前兜底：把还没保存的改动写盘（忘了点「保存」也绝不丢数据）
     func applicationWillTerminate(_ notification: Notification) {
