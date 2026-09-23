@@ -27,10 +27,11 @@ struct ReminderSettingsView: View {
 
                 // 提醒列表
                 ForEach(reminderStore.reminders) { r in
+                    // ⚠️ 别在这里再加 .onTapGesture { editing = r }：ReminderRow 内部已有
+                    //    `.onTapGesture { onEdit() }`，外面再挂一层就是同一次点击设两遍 editing。
                     ReminderRow(reminder: r) {
                         editing = r
                     }
-                    .onTapGesture { editing = r }
                 }
 
                 // 添加
@@ -47,7 +48,8 @@ struct ReminderSettingsView: View {
             .padding(12)
         }
         .sheet(item: $editing) { r in
-            ReminderEditSheet(reminder: binding(for: r))
+            // 传值而不是传 Binding：弹窗自己持有草稿，见 ReminderEditSheet 的说明。
+            ReminderEditSheet(reminder: r)
         }
         .onAppear { calendarSync.syncAllReminders(reason: "打开提醒设置") }
     }
@@ -85,13 +87,6 @@ struct ReminderSettingsView: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.3)))
-    }
-
-    private func binding(for r: Reminder) -> Binding<Reminder> {
-        Binding(
-            get: { reminderStore.reminders.first { $0.id == r.id } ?? r },
-            set: { reminderStore.update($0) }
-        )
     }
 }
 
@@ -188,16 +183,50 @@ struct ReminderRow: View {
 }
 
 // MARK: - 编辑弹窗
+//
+// ⚠️ 2026-09-23 重写（用户反馈「M1 + macOS 15.7.3 上无法选择周一周二等星期」）：
+//    原实现是 `@Binding var reminder: Reminder`，binding 由父视图用
+//    `Binding(get: { store… }, set: { store.update(…) })` **手工构造**。
+//    这种绑定 SwiftUI 无法追踪其依赖 —— 弹窗要不要重绘，全看「父视图重绘时会不会
+//    顺手把 sheet 的内容闭包重算一遍」。这条行为**在不同系统版本上并不一致**：
+//    本机 macOS 26.5 会重算（所以星期点得动、看得见变化），而 macOS 15 上可能不重算，
+//    于是「点击其实生效了、但按钮外观永远停在初始状态」→ 用户看到的就是「选不了」。
+//    现在改成弹窗**自己持有 @State 草稿**：任何一次改动都必然重绘（@State 语义保证），
+//    同时在 setter 里顺手写回 store（列表与持久化照旧立刻更新）。
+//    ⚠️ 别改回「纯 @Binding + 父视图手工 Binding」，也别把草稿退回成从 store 现算的计算属性。
 struct ReminderEditSheet: View {
-    @Binding var reminder: Reminder
+    @State private var draft: Reminder
     @Environment(\.dismiss) private var dismiss
+
+    init(reminder: Reminder) {
+        _draft = State(initialValue: reminder)
+    }
+
+    /// 改草稿的**唯一入口**：改完立刻写回 store。
+    /// · `draft = r` 让弹窗**自己重绘** —— `@State` 的重绘语义在任何 macOS 版本上都成立，
+    ///   这正是修掉「点星期按钮看不出变化」的关键；
+    /// · `ReminderStore.shared.update(r)` 让列表行与持久化立刻跟上。
+    /// 用 `ReminderStore.shared` 而不是 `@EnvironmentObject`：弹窗里少一个环境依赖，
+    /// 避免「环境没传进来直接崩」这类更难查的问题（`.shared` 就是根视图注入的那个实例）。
+    private func mutate(_ change: (inout Reminder) -> Void) {
+        var r = draft
+        change(&r)
+        draft = r
+        ReminderStore.shared.update(r)
+    }
+
+    /// 取某个字段的绑定（给 TextField 用）。
+    private func field<T>(_ keyPath: WritableKeyPath<Reminder, T>) -> Binding<T> {
+        Binding(get: { draft[keyPath: keyPath] },
+                set: { v in mutate { r in r[keyPath: keyPath] = v } })
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("提醒设置")
                 .font(.headline)
 
-            TextField("提醒文字", text: $reminder.title)
+            TextField("提醒文字", text: field(\.title))
                 .textFieldStyle(.roundedBorder)
                 .font(.body)
 
@@ -215,50 +244,49 @@ struct ReminderEditSheet: View {
                 Text("一周哪些天重复")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("每天") { reminder.weekdays = ReminderStore.weekdayEveryDay; reminder.syncOneShot() }
+                Button("每天") { mutate { r in r.weekdays = ReminderStore.weekdayEveryDay; r.syncOneShot() } }
                     .buttonStyle(.borderless)
                     .font(.system(size: 11))
                     .help("勾选周一到周日全部七天")
-                Button("周一至周五") { reminder.weekdays = ReminderStore.weekdayWorkdays; reminder.syncOneShot() }
+                Button("周一至周五") { mutate { r in r.weekdays = ReminderStore.weekdayWorkdays; r.syncOneShot() } }
                     .buttonStyle(.borderless)
                     .font(.system(size: 11))
-                Button("周一至周六") { reminder.weekdays = ReminderStore.weekdayMonToSat; reminder.syncOneShot() }
+                Button("周一至周六") { mutate { r in r.weekdays = ReminderStore.weekdayMonToSat; r.syncOneShot() } }
                     .buttonStyle(.borderless)
                     .font(.system(size: 11))
                 Spacer()
             }
             HStack(spacing: 6) {
                 ForEach(ReminderStore.weekdayDisplayOrder, id: \.self) { w in
-                    Button(ReminderStore.weekdayLabel(w)) {
-                        if reminder.weekdays.contains(w) {
-                            reminder.weekdays.remove(w)
-                        } else {
-                            reminder.weekdays.insert(w)
+                    WeekdayChip(label: ReminderStore.weekdayLabel(w),
+                                isOn: draft.weekdays.contains(w)) {
+                        mutate { r in
+                            if r.weekdays.contains(w) { r.weekdays.remove(w) }
+                            else { r.weekdays.insert(w) }
+                            // 勾选变了 → 同步「一次性提醒」的日期（一个都没勾就记成今天）
+                            r.syncOneShot()
                         }
-                        // 勾选变了 → 同步「一次性提醒」的日期（一个都没勾就记成今天）
-                        reminder.syncOneShot()
                     }
-                    .buttonStyle(.bordered)
-                    .tint(reminder.weekdays.contains(w) ? .accentColor : .gray)
                 }
+                Spacer(minLength: 0)
             }
 
             // 未勾任何星期 → 一次性提醒（2026-09-17 用户要求：默认为当天设定的时间提醒，而不是不提醒）
-            if reminder.weekdays.isEmpty {
-                Text("未勾选星期 = 一次性提醒：只在 \(ReminderRow.shortDay(reminder.oneShotDay ?? Reminder.dayString(Date()))) "
-                     + "\(String(format: "%02d:%02d", reminder.hour, reminder.minute)) 提醒一次（不每周重复）；要每周重复请勾选上面的星期。")
+            if draft.weekdays.isEmpty {
+                Text("未勾选星期 = 一次性提醒：只在 \(ReminderRow.shortDay(draft.oneShotDay ?? Reminder.dayString(Date()))) "
+                     + "\(String(format: "%02d:%02d", draft.hour, draft.minute)) 提醒一次（不每周重复）；要每周重复请勾选上面的星期。")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            TextField("网址（可选，点击提醒打开）", text: $reminder.url)
+            TextField("网址（可选，点击提醒打开）", text: field(\.url))
                 .textFieldStyle(.roundedBorder)
                 .font(.caption)
 
             HStack {
                 Button("测试弹窗") {
-                    ReminderFirer.shared.fireTest(reminder)
+                    ReminderFirer.shared.fireTest(draft)
                 }
                 .help("立刻弹一次这条提醒的窗口，用来确认到点弹窗正常（不影响正常的提醒时间）")
                 Spacer()
@@ -280,16 +308,55 @@ struct ReminderEditSheet: View {
                 let cal = Calendar.current
                 var comps = DateComponents()
                 comps.year = 2000; comps.month = 1; comps.day = 1
-                comps.hour = reminder.hour; comps.minute = reminder.minute
+                comps.hour = draft.hour; comps.minute = draft.minute
                 return cal.date(from: comps) ?? Date()
             },
             set: { date in
                 let cal = Calendar.current
-                reminder.hour = cal.component(.hour, from: date)
-                reminder.minute = cal.component(.minute, from: date)
-                // 改了时间 → 一次性提醒若已过期就重新定成今天，并允许按新时间再提醒一次
-                reminder.rearmOneShot()
+                mutate { r in
+                    r.hour = cal.component(.hour, from: date)
+                    r.minute = cal.component(.minute, from: date)
+                    // 改了时间 → 一次性提醒若已过期就重新定成今天，并允许按新时间再提醒一次
+                    r.rearmOneShot()
+                }
             }
         )
+    }
+}
+
+// MARK: - 星期芯片
+//
+// ⚠️ 2026-09-23 新增（用户反馈「M1 + macOS 15.7.3 上无法选择周一周二等星期」）：
+//    原来这里是 `Button(标签).buttonStyle(.bordered).tint(选中 ? .accentColor : .gray)`。
+//    `.tint` 作用在 `.bordered` 按钮上的着色规则**随 macOS 版本变过**：
+//    本机 macOS 26.5 上选中项会变蓝、未选中是灰的；但 macOS 15 上两种状态可能长得一样，
+//    于是「点了其实生效了，按钮却看不出任何变化」→ 用户只能判定为「选不了」。
+//    现在把选中态**自己画出来**（实心填充 + 白字加粗 vs 浅灰填充 + 次要色文字 + 细描边），
+//    差异是明度/几何级的，任何系统、深色浅色背景下都一眼可辨，不再依赖系统控件的着色实现。
+//    ⚠️ 别再改回 `.tint(...)` 表达选中态；也别只靠改文字颜色（对比太弱）。
+struct WeekdayChip: View {
+    let label: String
+    let isOn: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 12, weight: isOn ? .semibold : .regular))
+                .foregroundStyle(isOn ? Color.white : Color.secondary)
+                .frame(width: 44, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isOn ? Color.accentColor : Color.gray.opacity(0.16))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(isOn ? Color.accentColor : Color.gray.opacity(0.35),
+                                      lineWidth: 1)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(isOn ? "\(label)：已勾选（点一下取消）" : "\(label)：未勾选（点一下勾上）")
     }
 }
