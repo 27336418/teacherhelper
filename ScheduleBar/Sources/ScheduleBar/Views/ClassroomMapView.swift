@@ -1,45 +1,113 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 
 // MARK: - 教室分布视图
 // 每层一张卡片：层名 + 若干「排」，每排是一条平铺的格子序列（教室 / 办公室同级），
 // 格子支持拖动对换（含把办公室拖到任意位置）；行尾只有一个「+」菜单。
+// 单击格子 = 选中（描蓝框），再按 Delete / ⌫ 直接删除该教室（可撤销）。
 struct ClassroomMapView: View {
     @EnvironmentObject var store: ClassroomStore
     @EnvironmentObject var coordinator: AppCoordinator
 
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    EditableCardTitle(icon: "square.grid.3x3", key: "classroom")
-                    Spacer()
-                    UndoButton()
-                    SaveButton()
-                    // 与其它模块一致的「导入（含下载模板）+ 下载」
-                    Menu {
-                        Button("教室分布") { coordinator.importClassroom() }
-                        Divider()
-                        Button("下载填写模板") { coordinator.downloadTemplate(.classroom) }
-                    } label: {
-                        Label("导入", systemImage: "square.and.arrow.down")
-                    }
-                    .help("下载模板：先导出空白模板，填写后从这里导入")
-                    Button("下载") { coordinator.exportClassroom() }
-                    Button {
-                        store.addFloor()
-                    } label: {
-                        Label("添加楼层", systemImage: "plus")
-                    }
-                    .buttonStyle(.bordered)
-                }
+    /// 删除键监听器（见 installKeyMonitor）
+    @State private var keyMonitor: Any?
 
-                ForEach($store.floors) { $floor in
-                    FloorCard(floor: $floor)
+    var body: some View {
+        GeometryReader { geo in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        EditableCardTitle(icon: "square.grid.3x3", key: "classroom")
+                        Spacer()
+                        UndoButton()
+                        SaveButton()
+                        // 与其它模块一致的「导入（含下载模板）+ 下载」
+                        Menu {
+                            Button("教室分布") { coordinator.importClassroom() }
+                            Divider()
+                            Button("下载填写模板") { coordinator.downloadTemplate(.classroom) }
+                        } label: {
+                            Label("导入", systemImage: "square.and.arrow.down")
+                        }
+                        .help("下载模板：先导出空白模板，填写后从这里导入")
+                        Button("下载") { coordinator.exportClassroom() }
+                        Button {
+                            store.addFloor()
+                        } label: {
+                            Label("添加楼层", systemImage: "plus")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    Text("提示：单击教室 / 办公室即可选中，按 Delete 键删除；拖动可对换位置（可跨楼层），双击编辑文字")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    // 教室卡片区：只有这一块在「教室太多、超过面板最大宽度」时左右滑动。
+                    // ⚠️ 顶部工具栏与提示行必须留在横向 ScrollView **外面**：
+                    //    否则它们会被排到整页最右端（例如 1544pt 处），用户看到的就是
+                    //    「右上角显示不全」（用户 2026-09-23 反馈）。
+                    ScrollView(.horizontal, showsIndicators: true) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach($store.floors) { $floor in
+                                FloorCard(floor: $floor)
+                            }
+                        }
+                        // 卡片区宽度：至少撑满可视区（灰底卡片保持原来的满宽观感），
+                        // 教室更多时按「最宽一行」的自然宽度铺开，多出来的部分左右滑动。
+                        .frame(width: max(0, max(geo.size.width - 32,
+                                                     store.idealContentWidth - 32)),
+                               alignment: .leading)
+                    }
                 }
+                .padding(16)
+                // 点空白处取消选中。背景在最底层：落在格子上时由格子自己的单击手势先接管。
+                .background(
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { store.clearSelection() }
+                )
             }
-            .padding(16)
         }
+        .onAppear { installKeyMonitor() }
+        .onDisappear { removeKeyMonitor() }
+    }
+
+    // MARK: - Delete 键删除选中教室
+    // 用 AppKit 的本地事件监听而不是 SwiftUI 的 onDeleteCommand：
+    // 面板是 NSPopover 里的自定义视图层级，没有稳定的「聚焦列表」，onDeleteCommand 收不到键。
+    // 监听器全程只做一件事——把 Delete / ⌫ 翻译成「删掉 store.selection」；
+    // 任何一个前提不成立就原样放行（返回 event），绝不吞键。
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            handleKeyDown(event) ? nil : event   // nil = 已消费，不再往下传
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let m = keyMonitor {
+            NSEvent.removeMonitor(m)
+            keyMonitor = nil
+        }
+    }
+
+    /// - Returns: true = 这个按键已经被「删除教室」消费掉了
+    private func handleKeyDown(_ event: NSEvent) -> Bool {
+        // 只认 Delete(51) / 前向删除(117)；带 ⌘⌃⌥ 的组合键（如 ⌘⌫）不是删格子的意图
+        guard event.keyCode == 51 || event.keyCode == 117,
+              event.modifierFlags.intersection([.command, .control, .option]).isEmpty
+        else { return false }
+        // ⚠️ 正在输入文字（双击编辑格子、改层名）时绝不能删格子 —— 让文本框自己处理退格
+        if NSApp.keyWindow?.firstResponder is NSTextView { return false }
+        // 面板窗口必须在前台，且确实选中了某个格子
+        guard let panel = DragSessionGuard.panelWindow,
+              NSApp.keyWindow === panel,
+              AppDelegate.sharedPopover?.isShown == true,
+              store.selection != nil
+        else { return false }
+        return store.deleteSelectedCell()
     }
 }
 
@@ -203,16 +271,30 @@ struct FloorCard: View {
     private func cellBlock(_ cell: Binding<ClassroomCell>, rowID: UUID?, index: Int) -> some View {
         let value = cell.wrappedValue
         let isOffice = value.kind == .office
+        let isSelected = store.selection?.cellID == value.id
         return VStack(spacing: 2) {
             EditableGridCell(text: cell.klass, width: blockWidth, height: isOffice ? 22 : 24,
                              font: .system(size: isOffice ? 10 : 11), bold: true,
-                             tint: isOffice ? Color(hex: 0xF39C12) : .accentColor)
+                             tint: isOffice ? Color(hex: 0xF39C12) : .accentColor,
+                             onSingleTap: { selectCell(value.id, rowID: rowID) })
             EditableGridCell(text: cell.room, width: blockWidth, height: isOffice ? 22 : 20,
                              font: .system(size: isOffice ? 11 : 10), bold: isOffice,
-                             tint: isOffice ? Color(hex: 0xF39C12) : .accentColor)
+                             tint: isOffice ? Color(hex: 0xF39C12) : .accentColor,
+                             onSingleTap: { selectCell(value.id, rowID: rowID) })
         }
         .padding(2)
         .background(RoundedRectangle(cornerRadius: 5).fill(cellFill(for: value)))
+        // 选中态：整块加一层淡蓝底 + 蓝框（画在拖动落点高亮之下，拖动时仍能看清落点）
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(Color.accentColor.opacity(isSelected ? 0.14 : 0))
+                .allowsHitTesting(false)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(Color.accentColor, lineWidth: isSelected ? 2 : 0)
+                .allowsHitTesting(false)
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 5)
                 .stroke(Color.accentColor.opacity(isDropTarget(rowID: rowID, index: index) ? 0.95 : 0),
@@ -233,16 +315,21 @@ struct FloorCard: View {
             ColorPaletteMenu(current: value.color) { cell.wrappedValue.color = $0 }
             Divider()
             Button(role: .destructive) {
-                removeCell(rowID: rowID, index: index)
+                removeCell(rowID: rowID, index: index, cellID: value.id)
             } label: {
                 Label(isOffice ? "删除这个办公室" : "删除这间教室", systemImage: "trash")
             }
         }
-        .help("拖动可与其它格子对换位置；双击编辑文字，右键更换颜色 / 删除")
+        .help("单击选中后按 Delete 键删除；拖动可与其它格子对换位置（可跨楼层）；双击编辑文字，右键更换颜色 / 删除")
+    }
+
+    /// 单击选中（再按 Delete 就删它）。位置用 id 记，拖动换位后依然指对同一个格子。
+    private func selectCell(_ cellID: UUID, rowID: UUID?) {
+        store.select(floorID: floor.id, rowID: rowID, cellID: cellID)
     }
 
     /// 删除一个格子（可撤销）
-    private func removeCell(rowID: UUID?, index: Int) {
+    private func removeCell(rowID: UUID?, index: Int, cellID: UUID) {
         let snap = store.floors
         if let rid = rowID {
             guard let r = floor.extraRows.firstIndex(where: { $0.id == rid }),
@@ -252,6 +339,7 @@ struct FloorCard: View {
             guard floor.cells.indices.contains(index) else { return }
             floor.cells.remove(at: index)
         }
+        store.clearSelection(ifCellID: cellID)
         UndoService.shared.register("删除教室") {
             store.floors = snap
             store.scheduleSave()

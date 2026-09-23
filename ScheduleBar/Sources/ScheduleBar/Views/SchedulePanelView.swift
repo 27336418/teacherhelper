@@ -75,21 +75,73 @@ struct SchedulePanelView: View {
 
     private let now = Date()
 
+    // MARK: 面板宽度（左侧固定，右侧按内容自动扩宽）
+    // 用户 2026-09-23 反馈：「教室布局」加了很多教室后，整页被撑得比面板还宽 →
+    // 左侧侧栏被挤掉一半、右侧教室也看不全。现在的规则：
+    //   · 左侧导航列**固定宽度**，内容再宽也不动它；
+    //   · 右侧内容区随「教室布局」最宽那一行自动扩宽，**最多 +3 个教室格宽**；
+    //   · 再宽就把内容区变成可左右滑动的区域（横向 ScrollView）。
+    private let basePanelWidth: CGFloat = 880
+    /// ⚠️ 侧栏宽度必须 ≥ 170：里面「教师助手」大标题（20pt×4 字 = 80）+ 左右 22pt 内边距
+    /// 就要 124pt，导航项「图标 20 + 间距 9 + 4 字板块名 52 + 三层内边距 56」要 137pt。
+    /// 2026-09-23 曾压到 118pt，子视图比容器宽 → SwiftUI 居中摆放 → 文字左右各溢出 26pt 越过灰色分隔线
+    /// （用户截图反馈「左侧的板块名称超过了灰色线条」）。**别再压窄它**，要挪宽度请改 basePanelWidth。
+    private let navColumnWidth: CGFloat = 170
+    private let maxExtraWidth: CGFloat = ClassroomStore.cellPitch * 3   // 3 个教室格 ≈ 177
+
+    @ObservedObject private var classroomStore = ClassroomStore.shared
+
+    /// 面板基础宽度下、内容区能拿到的宽度（减去侧栏与分隔线）
+    private var contentBaseWidth: CGFloat { basePanelWidth - navColumnWidth - 1 }
+
+    /// 当前这一页「自然需要」的宽度 —— 只有会横向变长的板块登记在这里，其余按基础宽度。
+    private var currentPageIdealWidth: CGFloat {
+        switch selectedTab {
+        case .classroom: return classroomStore.idealContentWidth
+        case .calendar:  return ChongqingCalendarView.idealWidth   // 备注栏加宽后需要的宽度
+        default:         return contentBaseWidth
+        }
+    }
+
+    /// 面板实际宽度 = 基础 + 当前页需要的额外宽度（截断到 maxExtraWidth）
+    private var panelWidth: CGFloat {
+        basePanelWidth + min(max(0, currentPageIdealWidth - contentBaseWidth), maxExtraWidth)
+    }
+
+    /// 内容区可用宽度（面板实际宽度 − 侧栏 − 分隔线）。
+    /// 现在只用于核对/日志：内容本身是弹性的，宽度由窗口决定。
+    private var contentAvailableWidth: CGFloat { panelWidth - navColumnWidth - 1 }
+
     var body: some View {
         HStack(spacing: 0) {
-            // 左侧导航列
+            // 左侧导航列：固定宽度，右侧再宽也不挤它
             navColumn
+                .frame(width: navColumnWidth)
 
             Divider()
 
             // 右侧内容区
             contentArea
         }
-        .frame(width: 880, height: 720)
-        .background(FrostedView())
+        // ⚠️ 这里**不要**再写 `.frame(width: panelWidth)`：
+        //    固定宽度会让内容在窗口还没跟上时「比窗口宽」，SwiftUI 默认居中摆放 →
+        //    左侧栏目先向左飘一半再弹回来（用户反馈的「切换板块时左侧栏目左右抖动」），
+        //    右侧则会被窗口裁掉（用户反馈的「右上角显示不全」）。
+        //    现在只声明「填满宿主 + 左上对齐」：左侧栏永远从 x=0 开始，内容永远不超出窗口，
+        //    需要更宽的页（教室布局）在页面内部自己横向滚动。
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background { FrostedView() }
+        // 面板宽度变了（例如切到「教室布局」/「校历日历」）→ 把新宽度同步给 popover 窗口，
+        // 否则 SwiftUI 这边变宽了、窗口还是 880，右边照样被裁。
+        .onChange(of: panelWidth) { w in
+            AppDelegate.applyPanelWidth(w)
+        }
         // 每次切页登记缓存，之后切回不再重建（消除卡顿）
         .onChange(of: selectedTab) { t in
             visitedTabs.insert(t)
+            // 离开「教室布局」就取消选中：否则回到本页会看到上次的蓝框，
+            // 而且 Delete 键监听器虽然一直在，也该在没有选中时保持沉默。
+            if t != .classroom { ClassroomStore.shared.clearSelection() }
         }
         .onChange(of: showDockIcon) { on in
             DockPrefs.set(on)
@@ -100,6 +152,11 @@ struct SchedulePanelView: View {
                 selectedTab = t
                 visitedTabs.insert(t)
             }
+            // 首帧补一次窗口宽度同步。--tab 指定的板块是在这里就位的，
+            // 那一帧 panelWidth 已经是最终值、**没有「变化」过**，光靠 onChange 会漏掉，
+            // 结果是停在 880 而内容按 948 排（右边被裁）。
+            let w = panelWidth
+            DispatchQueue.main.async { AppDelegate.applyPanelWidth(w) }
         }
     }
 
@@ -209,7 +266,10 @@ struct SchedulePanelView: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 14)
         }
-        .frame(width: 170)
+        // 宽度由外层 .frame(width: navColumnWidth) 统一决定，这里只负责填满并左对齐。
+        // ⚠️ 不要再在这里写死宽度：内外两个宽度不一致时，SwiftUI 会把过宽的子视图**居中**摆放，
+        //    于是左右各溢出一半，左侧内容会越过灰色分隔线（用户反馈过的现象）。
+        .frame(maxWidth: .infinity, alignment: .leading)
         // 顺序/显隐变化时整体平滑过渡（拖拽排序、隐藏、恢复）
         .animation(.spring(response: 0.3, dampingFraction: 0.82), value: navPrefs.order)
         .animation(.spring(response: 0.3, dampingFraction: 0.82), value: navPrefs.hidden)
@@ -322,6 +382,11 @@ struct SchedulePanelView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
+            // 内容宽度**跟着窗口走**（弹性），不再向窗口索要一个固定宽度。
+            // 这样即使窗口宽度晚了一拍，右侧也只是内容暂时窄一点（需要横滑的页自己去滚动），
+            // 绝不会出现「内容比窗口宽、右边被裁掉」——用户 2026-09-23 反馈的
+            // 「右上角显示不全」就是右上角工具栏被排到超出窗口的位置后被裁。
+            // 面板宽度本身仍由 `panelWidth` → `AppDelegate.applyPanelWidth` 驱动窗口。
             ZStack {
                 ForEach(cachedTabs, id: \.self) { tab in
                     tabView(tab)
@@ -330,6 +395,7 @@ struct SchedulePanelView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 

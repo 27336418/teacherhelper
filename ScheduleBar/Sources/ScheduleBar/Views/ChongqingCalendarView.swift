@@ -8,10 +8,23 @@ struct ChongqingCalendarView: View {
     @ObservedObject private var remarkStore = CalendarRemarkStore.shared
     @ObservedObject private var dayColorStore = CalendarDayColorStore.shared
 
-    private let labelWidth: CGFloat = 64
-    private let dayWidth: CGFloat = 56
-    private let remarkWidth: CGFloat = 180
-    private let rowHeight: CGFloat = 34
+    // 列宽 / 行高：static 单一来源，供 SchedulePanelView 计算本页理想宽度
+    static let labelWidth: CGFloat = 64
+    static let dayWidth: CGFloat = 56
+    /// 备注栏：2026-09-23 用户要求「加宽，能写更多备注」→ 180 → 300
+    static let remarkWidth: CGFloat = 300
+    static let rowHeight: CGFloat = 34
+
+    /// 表体（星期表头 + 22 周行）自身的宽度：
+    /// 周次列 64 + 7 个日格 392 + 8 个 2pt 间隙 16 + 备注栏 300 + 行内左右 padding 4
+    static var bodyWidth: CGFloat {
+        labelWidth + dayWidth * 7 + 2 * 8 + remarkWidth + 2 * 2
+    }
+
+    /// 本页需要的总宽度 = 表体 + 外层 VStack 左右各 16 的 padding。
+    /// 面板宽度自适应用：`SchedulePanelView.currentPageIdealWidth` 在本页取这个值，
+    /// 从而把 popover 撑到刚好放得下 300pt 的备注栏。
+    static var idealWidth: CGFloat { bodyWidth + 16 * 2 }
 
     // 当天用绿色高亮
     private let todayGreen = Color(hex: 0x27AE60)
@@ -39,28 +52,38 @@ struct ChongqingCalendarView: View {
                     SaveButton()
                 }
 
-                // 头部：星期
-                HStack(spacing: 2) {
-                    Text("周次")
-                        .font(.system(size: 11, weight: .bold))
-                        .frame(width: labelWidth)
-                        .foregroundStyle(semester1Color)
-                    ForEach(["一", "二", "三", "四", "五", "六", "日"], id: \.self) { d in
-                        Text(d)
-                            .font(.system(size: 11, weight: .bold))
-                            .frame(width: dayWidth)
-                            .foregroundStyle(semester1Color)
-                    }
-                    Text("备注")
-                        .font(.system(size: 11, weight: .bold))
-                        .frame(width: remarkWidth, alignment: .leading)
-                        .foregroundStyle(semester1Color)
-                }
-                .padding(.horizontal, 2)
+                // 表体（星期表头 + 22 周）：只有这一块在宽度不够时左右滑动。
+                // ⚠️ 标题行（含撤销/保存按钮）留在外面 —— 留在里面的话，一旦面板还在
+                //    往宽里长（窗口宽度由 AppKit 异步跟上），这一行会被排到内容最右端并被裁掉，
+                //    看起来就是「右上角显示不全」（用户 2026-09-23 反馈）。
+                ScrollView(.horizontal, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        // 头部：星期
+                        HStack(spacing: 2) {
+                            Text("周次")
+                                .font(.system(size: 11, weight: .bold))
+                                .frame(width: Self.labelWidth)
+                                .foregroundStyle(semester1Color)
+                            ForEach(["一", "二", "三", "四", "五", "六", "日"], id: \.self) { d in
+                                Text(d)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .frame(width: Self.dayWidth)
+                                    .foregroundStyle(semester1Color)
+                            }
+                            Text("备注")
+                                .font(.system(size: 11, weight: .bold))
+                                .frame(width: Self.remarkWidth, alignment: .leading)
+                                .foregroundStyle(semester1Color)
+                        }
+                        .padding(.horizontal, 2)
 
-                // 数据行：固定第 1 周 ~ 第 22 周
-                ForEach(1...ChongqingCalendar.totalWeeks, id: \.self) { n in
-                    weekRow(n)
+                        // 数据行：固定第 1 周 ~ 第 22 周
+                        ForEach(1...ChongqingCalendar.totalWeeks, id: \.self) { n in
+                            weekRow(n)
+                        }
+                    }
+                    // 表体自然宽度：够宽时铺满（列不会被拉宽），不够宽时左右滑动
+                    .frame(minWidth: Self.bodyWidth, alignment: .leading)
                 }
             }
             .padding(16)
@@ -127,7 +150,7 @@ struct ChongqingCalendarView: View {
             Text("第\(n)周")
                 .font(.system(size: 12, weight: isCurrentWeek ? .bold : .regular))
                 .foregroundStyle(isCurrentWeek ? weekAmber : semester1Color)
-                .frame(width: labelWidth, height: rowHeight)
+                .frame(width: Self.labelWidth, height: Self.rowHeight)
                 .background(RoundedRectangle(cornerRadius: 5)
                     .fill(isCurrentWeek ? weekRowYellow.opacity(0.9) : Color.clear))
 
@@ -145,7 +168,7 @@ struct ChongqingCalendarView: View {
             .font(.system(size: 11))
             .foregroundStyle(isCurrentWeek ? weekAmber : .secondary)
             .lineLimit(2)
-            .frame(width: remarkWidth, height: rowHeight, alignment: .leading)
+            .frame(width: Self.remarkWidth, height: Self.rowHeight, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 4)
                     .fill(calendarCellGray.opacity(isCurrentWeek ? 0 : 0.4))
@@ -190,7 +213,7 @@ struct ChongqingCalendarView: View {
             .foregroundStyle(cellText)
             .lineLimit(1)
             .minimumScaleFactor(0.6)
-            .frame(width: dayWidth, height: rowHeight)
+            .frame(width: Self.dayWidth, height: Self.rowHeight)
             .background(RoundedRectangle(cornerRadius: 4).fill(cellFill))
             .overlay(
                 RoundedRectangle(cornerRadius: 4)

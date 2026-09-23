@@ -56,6 +56,11 @@ struct ScheduleBarApp {
             SelfTest.runOfficeSeatCheck()
             return
         }
+        // 教室自检（纯逻辑 + 临时数据目录）：--selftest-classroom
+        if args.contains("--selftest-classroom") {
+            SelfTest.runClassroomCheck()
+            return
+        }
         // 教师课表自检（纯逻辑 + 临时数据目录）：--selftest-teacher
         if args.contains("--selftest-teacher") {
             SelfTest.runTeacherCheck()
@@ -356,11 +361,102 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let pop = NSPopover()
         pop.contentViewController = hosting
         pop.behavior = .transient
-        pop.contentSize = NSSize(width: 880, height: 720)
+        pop.contentSize = Self.basePanelSize
         pop.animates = true
         pop.delegate = self            // 展示后补齐「App 激活 + 窗口 key」，否则拖不动
         AppDelegate.sharedPopover = pop
         return pop
+    }
+
+    /// 面板基准尺寸（SwiftUI 侧 `SchedulePanelView` 用的是同一组数字）
+    static let basePanelSize = NSSize(width: 880, height: 720)
+
+    /// 「教室布局」「校历日历」等页会按内容算出更宽的面板宽度 → 同步给 popover 窗口，
+    /// 否则窗口尺寸不变、宽出来的内容会被窗口裁掉（用户 2026-09-23 反馈的「左右显示不全」）。
+    /// ⚠️ 别改用 `hosting.sizingOptions = [.preferredContentSize]`：那会让窗口尺寸跟着
+    ///    SwiftUI 的 fittingSize 走，而内容区为了横向滑动包了一层 ScrollView，
+    ///    会把 fittingSize 算小 → 整个面板被压成 678×542（2026-09-23 实测踩过）。
+    ///
+    /// ⚠️ 钉左边缘必须是**同步**的（用户 2026-09-23 再次反馈「切换板块时左侧栏目左右抖动」）：
+    ///    `pop.contentSize = …` 会让 NSPopover 围绕菜单栏锚点**立刻重新居中**，
+    ///    即左右各挪 Δ/2，并且这一步已经进入本轮绘制。早先的写法是
+    ///    `DispatchQueue.main.async { 钉回去 }` —— 推迟一帧才钉，用户就会看到
+    ///    「先抖一下、再弹回来」。正确做法：**同一轮 runloop 内**先钉左边缘 + 上边缘
+    ///    （宽度增量只落在右边、高度增量只落在下边），再挂一次 async 兜底；
+    ///    兜底那一次此时已就位、是无操作，不会产生任何可见移动。
+    static func applyPanelWidth(_ width: CGFloat) {
+        guard let pop = sharedPopover else { return }
+        let target = NSSize(width: width, height: basePanelSize.height)
+        let oldWidth = pop.contentSize.width
+        guard abs(oldWidth - target.width) > 0.5 else { return }
+        guard let win = pop.contentViewController?.view.window, win.frame.width > 0 else {
+            pop.contentSize = target
+            return
+        }
+        // ⚠️ 只有「面板已经展示」才谈得上钉住左边缘。
+        //    展示之前 NSPopover 还没给窗口定过位（frame 是屏幕外的临时值，例如 -13,700）；
+        //    这时记为「旧位置」再钉回去，会把 AppKit 刚摆好的面板硬推回屏幕外
+        //    （2026-09-23 实测踩过：启动后面板被钉到 x=-13，日志里那条
+        //     「兜底+0.0s：水平 +166.0pt」就是这次误钉）。
+        //    不钉也没关系 —— 展开时 NSPopover 会按当前 contentSize 自己摆好位置。
+        guard pop.isShown else {
+            pop.contentSize = target
+            return
+        }
+        // 先记住旧位置（左边缘 + 上边缘），改完宽度立刻钉回去 → 只向右边加宽
+        let oldLeft = win.frame.minX
+        let oldTop = win.frame.maxY
+        // ⚠️ 但右边缘**绝不能越过屏幕**：钉住左边缘之后继续加宽，很容易把右边缘顶出屏幕，
+        //    那正好就是用户反馈的「右上角显示不全」（内容还在，只是被屏幕边界切掉了）。
+        //    放不下就把窗口宽度截到能放下的最大值 —— 页面内部会自己横向滚动兜住。
+        let limit = maxPanelContentWidth(left: oldLeft, screen: win.screen)
+        let finalWidth = min(target.width, limit)
+        if finalWidth < target.width - 0.5 {
+            SaveHub.log("面板宽度受屏幕限制：想要 \(Int(target.width))pt，左边缘 \(Int(oldLeft)) 最多放得下 "
+                        + "\(Int(limit))pt → 取 \(Int(finalWidth))pt（该页改为左右滑动查看）")
+        }
+        pop.contentSize = NSSize(width: finalWidth, height: target.height)
+        // 诊断：NSPopover 居中把窗口挪了多少（正常应 ≈ ±Δ/2）。挪了才记一行，平时不刷日志。
+        let shiftedLeft = win.frame.minX
+        pinPanelWindow(win, left: oldLeft, top: oldTop)
+        if abs(shiftedLeft - oldLeft) > 0.5 {
+            SaveHub.log("面板改宽 \(Int(oldWidth))→\(Int(target.width))pt："
+                        + "NSPopover 居中偏移 \(String(format: "%+.1f", shiftedLeft - oldLeft))pt，已同步钉回左边缘 \(Int(oldLeft))")
+        }
+        // 兜底：AppKit 的尺寸变化可能带一小段动画，或在本轮布局收尾时又按锚点重算位置。
+        // 分几拍各钉一次（左 + 上边缘都钉住）。已经就位的那几次是 no-op，不会产生新的可见移动。
+        for delay in [0.0, 0.05, 0.12, 0.25, 0.45] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                pinPanelWindow(win, left: oldLeft, top: oldTop, reason: "兜底+\(delay)s")
+            }
+        }
+    }
+
+    /// 在「左边缘不动」的前提下，这个左边缘最多能放多宽（单位 = contentSize 宽度）。
+    /// NSPopover 的窗口 frame 比 contentSize 左右各多约 13pt（阴影 + 箭头边距），
+    /// 所以上限 = 屏幕可见区右边界 − 左边缘 − 26。
+    private static func maxPanelContentWidth(left: CGFloat, screen: NSScreen?) -> CGFloat {
+        guard let vf = (screen ?? NSScreen.main)?.visibleFrame, vf.width > 0 else {
+            return .greatestFiniteMagnitude
+        }
+        return max(320, vf.maxX - left - 26)
+    }
+
+    /// 把面板窗口的左边缘 / 上边缘钉回指定位置 —— 尺寸变化只体现在右边与下边。
+    /// 只有真的纠正了位置才写一行日志（平时静默），便于事后核对「有没有上下漂移」。
+    private static func pinPanelWindow(_ win: NSWindow, left: CGFloat, top: CGFloat,
+                                       reason: String = "同步") {
+        var f = win.frame
+        guard f.width > 0 else { return }
+        let dx = f.minX - left
+        let dy = f.maxY - top
+        var moved = false
+        if abs(dx) > 0.5 { f.origin.x = left; moved = true }
+        if abs(dy) > 0.5 { f.origin.y = top - f.height; moved = true }
+        guard moved else { return }
+        win.setFrame(f, display: true)
+        SaveHub.log("面板位置纠正（\(reason)）：水平 \(String(format: "%+.1f", dx))pt"
+                    + " / 垂直 \(String(format: "%+.1f", dy))pt")
     }
 
     /// 展开面板的统一入口：**先激活 App，再把面板窗口设为 key**。

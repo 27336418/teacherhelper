@@ -1010,6 +1010,108 @@ enum SelfTest {
         print(ok ? "工位对换/楼层自检全部通过 ✓" : "工位对换/楼层自检存在问题 ✗")
     }
 
+    // MARK: 教室自检（纯逻辑，临时数据目录，不碰真实 classrooms.json）
+    // 用法：ScheduleBar --selftest-classroom
+    // 覆盖：同层对换、**跨楼层对换**、主行↔附加行对换、原地拖放、越界安全忽略、
+    //       对换可撤销、单击选中→删除选中格子（含撤销）、选中格子被换走后仍能删掉。
+    static func runClassroomCheck() {
+        let tmp = "/tmp/selftest-classroom-\(UUID().uuidString.prefix(8))"
+        try? FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+        setenv("SCHEDULEBAR_DATA_DIR", tmp, 1)
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+        print("临时数据目录 = \(tmp)（真实 classrooms.json 不受影响）")
+
+        let store = ClassroomStore()
+
+        func room(_ k: String) -> ClassroomCell { ClassroomCell(kind: .room, klass: k, room: "") }
+        let f1 = UUID(), f2 = UUID()
+        store.floors = [
+            ClassroomFloor(id: f1, title: "4楼",
+                           cells: ["A1", "A2", "A3"].map(room),
+                           extraRows: [ClassroomRow(cells: ["B1", "B2"].map(room))]),
+            ClassroomFloor(id: f2, title: "5楼", cells: ["C1", "C2"].map(room)),
+        ]
+        let r1 = store.floors[0].extraRows[0].id
+        _ = UndoService.shared.undo()   // 清空可能残留的撤销栈
+
+        let names0 = { store.floors[0].cells.map(\.klass) }
+        let names1 = { store.floors[1].cells.map(\.klass) }
+        let extra0 = { store.floors[0].extraRows[0].cells.map(\.klass) }
+
+        // 1) 跨楼层对换：A1(4楼主行0) ↔ C2(5楼主行1)
+        store.beginDrag(floorID: f1, rowID: nil, index: 0)
+        store.swapTo(floorID: f2, rowID: nil, index: 1)
+        store.finishDrag()
+        let crossFloor = names0() == ["C2", "A2", "A3"] && names1() == ["C1", "A1"]
+
+        // 2) 撤销应恢复原状
+        _ = UndoService.shared.undo()
+        let undoSwap = names0() == ["A1", "A2", "A3"] && names1() == ["C1", "C2"]
+
+        // 3) 同层主行 ↔ 附加行对换：A2 ↔ B2
+        store.beginDrag(floorID: f1, rowID: nil, index: 1)
+        store.swapTo(floorID: f1, rowID: r1, index: 1)
+        store.finishDrag()
+        let crossRow = names0() == ["A1", "B2", "A3"] && extra0() == ["B1", "A2"]
+
+        // 4) 原地拖放（楼层/行/下标全同）不改变数据
+        let before = store.floors
+        store.beginDrag(floorID: f1, rowID: nil, index: 0)
+        store.swapTo(floorID: f1, rowID: nil, index: 0)
+        store.finishDrag()
+        let selfNoOp = store.floors == before
+
+        // 5) 越界落点安全忽略
+        store.beginDrag(floorID: f1, rowID: nil, index: 0)
+        store.swapTo(floorID: f1, rowID: nil, index: 99)
+        store.finishDrag()
+        let outNoOp = store.floors == before
+
+        // 6) 单击选中 → 按 Delete 删除选中的格子
+        let target = store.floors[0].cells[2]           // A3
+        store.select(floorID: f1, rowID: nil, cellID: target.id)
+        let delOK = store.deleteSelectedCell()
+        let delGone = delOK && store.floors[0].cells.count == 2
+            && !store.floors[0].cells.contains { $0.id == target.id }
+            && store.selection == nil                   // 删完自动清掉选中态
+
+        // 7) 删除可撤销
+        _ = UndoService.shared.undo()
+        let delUndo = store.floors[0].cells.contains { $0.id == target.id }
+            && store.floors[0].cells.count == 3
+
+        // 8) 选中的格子被跨楼层换走 → 选中态跟着走，仍能删掉它
+        let moving = store.floors[0].cells[0]           // A1
+        store.select(floorID: f1, rowID: nil, cellID: moving.id)
+        store.beginDrag(floorID: f1, rowID: nil, index: 0)
+        store.swapTo(floorID: f2, rowID: nil, index: 0)
+        store.finishDrag()
+        let selFollows = store.selection?.floorID == f2 && store.selection?.cellID == moving.id
+        let delAfterMove = store.deleteSelectedCell()
+        let followOK = selFollows && delAfterMove
+            && !store.floors[1].cells.contains { $0.id == moving.id }
+
+        // 9) 没选中时按 Delete 不应该删任何东西
+        let countBefore = store.floors.reduce(0) { $0 + $1.cellCount }
+        let noSel = !store.deleteSelectedCell()
+            && store.floors.reduce(0) { $0 + $1.cellCount } == countBefore
+
+        print("跨楼层对换:     \(crossFloor ? "✓" : "✗")")
+        print("对换可撤销:     \(undoSwap ? "✓" : "✗")")
+        print("主行↔附加行:    \(crossRow ? "✓" : "✗")")
+        print("原地拖放不变:   \(selfNoOp ? "✓" : "✗")")
+        print("越界安全忽略:   \(outNoOp ? "✓" : "✗")")
+        print("选中后删除:     \(delGone ? "✓" : "✗")")
+        print("删除可撤销:     \(delUndo ? "✓" : "✗")")
+        print("选中跟随换位:   \(followOK ? "✓" : "✗")")
+        print("无选中不误删:   \(noSel ? "✓" : "✗")")
+        print("临时目录已写盘: \((try? Data(contentsOf: ClassroomStore.fileURL())) != nil ? "✓" : "✗")")
+
+        let ok = crossFloor && undoSwap && crossRow && selfNoOp && outNoOp
+            && delGone && delUndo && followOK && noSel
+        print(ok ? "教室自检全部通过 ✓" : "教室自检存在问题 ✗")
+    }
+
     // MARK: 师资单元格颜色自检（纯逻辑，临时数据目录，不碰真实 staff.json）
     // 用法：ScheduleBar --selftest-staff
     // 覆盖：单格设色/清色、按「同一个人 / 同一班型」批量设色、持久化、删列后颜色键左移、
@@ -1175,7 +1277,9 @@ enum SelfTest {
         check("有改动时 saveIfNeeded 兜底落盘", writes == 2, "writes=\(writes)")
         check("兜底落盘后脏状态清空", !hub.hasUnsaved)
 
-        // ⑧ 每个可编辑板块都能把自己标脏（名字必须与 writeAll 的覆盖面一致）
+        // ⑧ 每个走 SaveHub 的板块都能把自己标脏（名字必须与 writeAll 的覆盖面一致）
+        // ⚠️ 「教室布局」不在此列：用户 2026-09-23 要求教室的编辑/新增**即时落盘**，
+        //    它的 scheduleSave() 直接 save()，不经过 markDirty（见下面的单独检查）。
         let areas: [(String, () -> Void)] = [
             ("本人课表", { ScheduleStore.shared.scheduleSave() }),
             ("班级课表", { ClassScheduleStore.shared.scheduleSave() }),
@@ -1184,7 +1288,6 @@ enum SelfTest {
             ("年级师资", { StaffStore.shared.scheduleSave() }),
             ("学生信息", { StudentStore.shared.scheduleSave() }),
             ("教师工位", { OfficeLayoutStore.shared.scheduleSave() }),
-            ("教室布局", { ClassroomStore.shared.scheduleSave() }),
             ("延时监考", { ExtendScheduleStore.shared.scheduleSave() }),
             ("日程提醒", { ReminderStore.shared.scheduleSave() }),
             ("校历备注", { CalendarRemarkStore.shared.scheduleSave() }),
@@ -1194,6 +1297,7 @@ enum SelfTest {
             ("板块标题", { CardTitleStore.shared.scheduleSave() }),
         ]
         // 必须与 SaveHub.writeAll 覆盖的 store 数量一致（漏一个就会有板块改了不落盘）
+        // = 上面 14 个走「标脏」的 + 1 个「即时落盘」的教室布局
         let expectedAreaCount = 15
         var missing: [String] = []
         for (name, mark) in areas {
@@ -1201,10 +1305,16 @@ enum SelfTest {
             mark()
             if !hub.dirtyAreas.contains(name) { missing.append(name) }
         }
-        check("每个可编辑板块都能把自己标脏", missing.isEmpty,
+        check("每个走统一保存的板块都能把自己标脏", missing.isEmpty,
               missing.isEmpty ? "共 \(areas.count) 个" : "缺失=\(missing.joined(separator: "、"))")
-        check("标脏板块数量与 SaveHub.writeAll 覆盖面一致",
-              areas.count == expectedAreaCount, "\(areas.count) / 期望 \(expectedAreaCount)")
+        check("标脏板块（14）+ 即时落盘板块（教室布局）与 writeAll 覆盖面一致",
+              areas.count + 1 == expectedAreaCount, "\(areas.count) + 1 / 期望 \(expectedAreaCount)")
+
+        // 「教室布局」即时落盘：改一下就写文件，不进「未保存」列表
+        hub.clearDirty()
+        ClassroomStore.shared.scheduleSave()
+        check("教室布局改为即时落盘（不标脏、不进未保存列表）",
+              !hub.dirtyAreas.contains("教室布局"))
 
         // ⑨ 单板块清除不影响其他
         hub.clearDirty()

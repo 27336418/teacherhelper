@@ -58,6 +58,14 @@ struct ClassroomDropTarget: Equatable {
     var index: Int
 }
 
+/// 单击选中的格子（用户 2026-09-23：「教室可以直接点击，按删除键直接删除」）。
+/// ⚠️ 存 `cellID` 而不是下标：拖动对换会改变 index，只有 id 才能一直指对同一个格子。
+struct ClassroomSelection: Equatable {
+    var floorID: UUID
+    var rowID: UUID?      // nil = 主行
+    var cellID: UUID
+}
+
 /// 楼层内附加的一排（走廊另一侧 / 额外一排），格子与主行同构
 struct ClassroomRow: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
@@ -165,6 +173,23 @@ final class ClassroomStore: ObservableObject {
     // MARK: 拖动经过的目标（只用于高亮，绝不改数据）
     @Published var dropTarget: ClassroomDropTarget?
 
+    // MARK: 版面宽度（供面板「右侧自动扩宽」用）
+    /// 一个教室格占的横向步距：格宽 52 + 上下两格各 2 的内边距 + 行内间距 3。
+    /// ⚠️ 改 `FloorCard.blockWidth` / `gap` / `cellBlock` 的 `padding(2)` 时要同步这里。
+    static let cellPitch: CGFloat = 59
+    /// 行尾「+」菜单 + 卡片内边距（8×2）+ 页面外边距（16×2）
+    static let rowTailWidth: CGFloat = 18 + 3 + 16 + 32
+
+    /// 这一页「最宽的一行」自然需要多少宽度 —— 面板据此决定要不要向右扩宽。
+    /// 超过面板基础宽度后由 `SchedulePanelView` 上限截断，剩下的交给横向滑动。
+    var idealContentWidth: CGFloat {
+        let maxCells = floors.reduce(0) { acc, f in
+            let extra = f.extraRows.map { $0.cells.count }.max() ?? 0
+            return max(acc, max(f.cells.count, extra))
+        }
+        return CGFloat(maxCells) * Self.cellPitch + Self.rowTailWidth
+    }
+
     func setDropTarget(floorID: UUID, rowID: UUID?, index: Int) {
         let t = ClassroomDropTarget(floorID: floorID, rowID: rowID, index: index)
         if dropTarget != t { dropTarget = t }
@@ -172,6 +197,66 @@ final class ClassroomStore: ObservableObject {
 
     func clearDropTarget() {
         if dropTarget != nil { dropTarget = nil }
+    }
+
+    // MARK: 单击选中 → 按 Delete 删除（不持久化，纯界面态）
+    /// 当前选中的格子。存 cellID 而不是下标，拖动对换后仍能指对格子。
+    @Published var selection: ClassroomSelection?
+
+    func select(floorID: UUID, rowID: UUID?, cellID: UUID) {
+        let s = ClassroomSelection(floorID: floorID, rowID: rowID, cellID: cellID)
+        if selection != s { selection = s }
+    }
+
+    func clearSelection() {
+        if selection != nil { selection = nil }
+    }
+
+    /// 删掉的就是当前选中的格子 → 顺手清掉选中态（避免选中一个已不存在的格子）
+    func clearSelection(ifCellID id: UUID) {
+        if selection?.cellID == id { selection = nil }
+    }
+
+    /// 按 id 重新定位选中格子**当前**所在的坐标。
+    /// 拖动对换 / 增删之后下标会变，所以每次都要重算，不能缓存下标。
+    func selectedCellLocation() -> (floor: Int, row: Int?, cell: Int)? {
+        guard let sel = selection,
+              let fi = floors.firstIndex(where: { $0.id == sel.floorID }) else { return nil }
+        if let rid = sel.rowID {
+            guard let ri = floors[fi].extraRows.firstIndex(where: { $0.id == rid }),
+                  let ci = floors[fi].extraRows[ri].cells.firstIndex(where: { $0.id == sel.cellID })
+            else { return nil }
+            return (fi, ri, ci)
+        }
+        guard let ci = floors[fi].cells.firstIndex(where: { $0.id == sel.cellID }) else { return nil }
+        return (fi, nil, ci)
+    }
+
+    /// 删除当前选中的格子（可撤销）。
+    /// - Returns: 是否真的删掉了一个格子（没选中 / 选中目标已不存在 → false，按键原样放行）
+    @discardableResult
+    func deleteSelectedCell() -> Bool {
+        guard let loc = selectedCellLocation() else {
+            clearSelection()
+            return false
+        }
+        let snap = floors
+        let kind: ClassroomKind = {
+            if let ri = loc.row { return floors[loc.floor].extraRows[ri].cells[loc.cell].kind }
+            return floors[loc.floor].cells[loc.cell].kind
+        }()
+        if let ri = loc.row {
+            floors[loc.floor].extraRows[ri].cells.remove(at: loc.cell)
+        } else {
+            floors[loc.floor].cells.remove(at: loc.cell)
+        }
+        clearSelection()
+        UndoService.shared.register(kind == .office ? "删除办公室" : "删除教室") { [weak self] in
+            guard let self else { return }
+            self.floors = snap
+            self.scheduleSave()
+        }
+        return true
     }
 
     init() {
@@ -205,26 +290,51 @@ final class ClassroomStore: ObservableObject {
         dragSource = (floorID, rowID, index)
     }
 
-    /// 把拖动来源与目标位置的格子对换
+    /// 把拖动来源与目标位置的格子对换。
+    /// 2026-09-23 起**支持跨楼层**（用户要求「需要可以跨楼层也可以对调教室」）：
+    /// 前提只剩「两边都能定位到格子」，楼层 / 行 / 下标完全相同才算原地（直接返回）。
+    /// 做法是「先把两边都读出来，再分别写回」，所以即使源与目标在同一数组里也不会丢数据。
     func swapTo(floorID: UUID, rowID: UUID?, index: Int) {
-        guard var src = dragSource, src.index != index else { return }
-        guard let f = floors.firstIndex(where: { $0.id == floorID }) else { return }
-        // 仅支持同一层内的对换（同层主行 ↔ 主行，或同一附加行内）
-        guard src.floorID == floorID else { return }
+        guard let src = dragSource else { return }
+        // 原地落点：楼层、行、下标三者都相同才算没换
+        guard !(src.floorID == floorID && src.rowID == rowID && src.index == index) else { return }
+        guard let sf = floors.firstIndex(where: { $0.id == src.floorID }),
+              let tf = floors.firstIndex(where: { $0.id == floorID }) else { return }
+        guard let srcCell = cellAt(floor: sf, rowID: src.rowID, index: src.index),
+              let dstCell = cellAt(floor: tf, rowID: rowID, index: index) else { return }
 
-        if src.rowID == nil && rowID == nil {
-            guard floors[f].cells.indices.contains(src.index),
-                  floors[f].cells.indices.contains(index) else { return }
-            floors[f].cells.swapAt(src.index, index)
-            src.index = index
-            dragSource = src
-        } else if let rid = rowID, src.rowID == rid {
-            guard let r = floors[f].extraRows.firstIndex(where: { $0.id == rid }),
-                  floors[f].extraRows[r].cells.indices.contains(src.index),
-                  floors[f].extraRows[r].cells.indices.contains(index) else { return }
-            floors[f].extraRows[r].cells.swapAt(src.index, index)
-            src.index = index
-            dragSource = src
+        setCell(srcCell, floor: tf, rowID: rowID, index: index)        // 来源 → 目标
+        setCell(dstCell, floor: sf, rowID: src.rowID, index: src.index) // 目标 → 来源
+        // 拖动来源跟着格子走，用户不松手继续拖时下一跳从新位置起算
+        dragSource = (floorID, rowID, index)
+        // 选中的格子被换走了 → 选中态跟着它走（否则再按 Delete 会找不到目标）
+        if let sel = selection, sel.cellID == srcCell.id {
+            selection = ClassroomSelection(floorID: floorID, rowID: rowID, cellID: sel.cellID)
+        } else if let sel = selection, sel.cellID == dstCell.id {
+            selection = ClassroomSelection(floorID: src.floorID, rowID: src.rowID, cellID: sel.cellID)
+        }
+    }
+
+    /// 读取某楼层（主行或某附加行）指定下标的格子；越界返回 nil
+    private func cellAt(floor fi: Int, rowID: UUID?, index: Int) -> ClassroomCell? {
+        if let rid = rowID {
+            guard let ri = floors[fi].extraRows.firstIndex(where: { $0.id == rid }),
+                  floors[fi].extraRows[ri].cells.indices.contains(index) else { return nil }
+            return floors[fi].extraRows[ri].cells[index]
+        }
+        guard floors[fi].cells.indices.contains(index) else { return nil }
+        return floors[fi].cells[index]
+    }
+
+    /// 把格子写回某楼层（主行或某附加行）的指定下标；越界则什么都不做
+    private func setCell(_ cell: ClassroomCell, floor fi: Int, rowID: UUID?, index: Int) {
+        if let rid = rowID {
+            guard let ri = floors[fi].extraRows.firstIndex(where: { $0.id == rid }),
+                  floors[fi].extraRows[ri].cells.indices.contains(index) else { return }
+            floors[fi].extraRows[ri].cells[index] = cell
+        } else {
+            guard floors[fi].cells.indices.contains(index) else { return }
+            floors[fi].cells[index] = cell
         }
     }
 
@@ -337,11 +447,14 @@ final class ClassroomStore: ObservableObject {
     ///    （2026-09-18 实测）。init 末尾把它置回 false。
     private var isInitializing = true
 
-    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
-    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
+    /// 教室的编辑 / 新增 → **立即落盘**（用户 2026-09-23 要求「自动保存」）。
+    /// ⚠️ 这是本项目里唯一不走 SaveHub 统一保存的板块：改一个格子就写盘，
+    ///    不用等「停手 8 秒」的兜底，也不怕直接关掉 App 丢改动。
+    ///    代价只是每次改动多一次 5 KB 级的写盘（拖动对换同理，实测无感）。
+    ///    因此这里**不调 `markDirty`** —— 保存按钮不该为它亮起「有未保存的改动」。
     func scheduleSave() {
         guard !isInitializing else { return }   // 装载期不算用户编辑
-        SaveHub.shared.markDirty("教室布局")
+        save()
     }
 
     func save() {
