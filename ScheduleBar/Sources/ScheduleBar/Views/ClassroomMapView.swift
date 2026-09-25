@@ -15,6 +15,8 @@ struct ClassroomMapView: View {
 
     var body: some View {
         GeometryReader { geo in
+            let frameW = classroomFrameWidth(available: geo.size.width)
+            let _ = traceClassroomLayout(available: geo.size.width, frameWidth: frameW)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
@@ -56,9 +58,7 @@ struct ClassroomMapView: View {
                         }
                         // 卡片区宽度：至少撑满可视区（灰底卡片保持原来的满宽观感），
                         // 教室更多时按「最宽一行」的自然宽度铺开，多出来的部分左右滑动。
-                        .frame(width: max(0, max(geo.size.width - 32,
-                                                     store.idealContentWidth - 32)),
-                               alignment: .leading)
+                        .frame(width: frameW, alignment: .leading)
                     }
                 }
                 .padding(16)
@@ -73,6 +73,26 @@ struct ClassroomMapView: View {
         .onAppear { installKeyMonitor() }
         .onDisappear { removeKeyMonitor() }
     }
+
+    /// 卡片区宽度：至少撑满可视区（灰底卡片保持满宽观感），教室更多时按「最宽一行」的自然宽度铺开。
+    private func classroomFrameWidth(available: CGFloat) -> CGFloat {
+        max(0, max(available - ClassroomStore.pagePadding,
+                   store.idealContentWidth - ClassroomStore.pagePadding))
+    }
+
+    /// 取证：`SCHEDULEBAR_TRACE_CLASSROOM=1` → 日志打「可视宽 / 卡片区宽 / 卡片实际需要宽 / 余量」。
+    /// **余量 < 0 就说明行尾图标会被卡片右边缘切掉**（2026-09-26「减号只显示一半」就是这个）。
+    private func traceClassroomLayout(available: CGFloat, frameWidth: CGFloat) {
+        guard ProcessInfo.processInfo.environment["SCHEDULEBAR_TRACE_CLASSROOM"] == "1" else { return }
+        let need = store.widestRowRequiredWidth
+        let key = "可视 \(Int(available.rounded()))pt｜卡片区 \(Int(frameWidth.rounded()))pt"
+            + "｜卡片需要 \(Int(need.rounded()))pt（\(store.maxCellsAcrossFloors) 格）"
+            + "｜余 \(Int((frameWidth - need).rounded()))pt"
+        guard key != Self.lastClassroomTrace else { return }
+        Self.lastClassroomTrace = key
+        SaveHub.log("教室列宽：\(key)")
+    }
+    private static var lastClassroomTrace = ""
 
     // MARK: - Delete 键删除选中教室
     // 用 AppKit 的本地事件监听而不是 SwiftUI 的 onDeleteCommand：
@@ -155,9 +175,11 @@ struct FloorCard: View {
     @State private var titleDraft = ""
     @FocusState private var titleFocused: Bool
 
-    private let blockWidth: CGFloat = 52
-    private let gap: CGFloat = 3
-    private let btnWidth: CGFloat = 18
+    // 尺寸全部取自 `ClassroomStore`（单一来源）：`idealContentWidth` 靠同一套数字算出来，
+    // 两边各写一份就会出现「面板以为够了、实际差一点」→ 卡片右边缘切掉行尾图标（2026-09-26 踩过）。
+    private var blockWidth: CGFloat { ClassroomStore.cellBlockWidth }
+    private var gap: CGFloat { ClassroomStore.rowGap }
+    private var btnWidth: CGFloat { ClassroomStore.colMenuWidth }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -243,7 +265,12 @@ struct FloorCard: View {
                 store.scheduleSave()
             }
         } label: {
-            Image(systemName: "minus.circle").font(.system(size: 11)).foregroundStyle(.secondary)
+            // ⚠️ 宽度必须显式定死：`idealContentWidth` 是按 `ClassroomStore.deleteRowWidth` 算的，
+            //    这里若交给字形自己撑（约 11~14pt 浮动），面板刚好卡在最小宽度时就会差几个 pt 被切掉。
+            Image(systemName: "minus.circle")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: ClassroomStore.deleteRowWidth, height: 20)
         }
         .buttonStyle(.plain)
         .help("删除这一行")

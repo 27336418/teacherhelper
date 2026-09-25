@@ -343,11 +343,19 @@ struct OfficeLayoutView: View {
     @ViewBuilder
     private func floorsSection(availableWidth: CGFloat) -> some View {
         if store.hasFloors {
-            VStack(alignment: .leading, spacing: 16) {
+            // ⚠️ 用 `LazyVStack` + `pinnedViews: [.sectionHeaders]` 把「办公室情况」楼层条
+            //    （`4楼 3间·27人`）钉在顶部：上下滑动时它一直可见，用户随时知道在看哪一层。
+            //    钉住的表头必须自带**不透明背景**，否则卡片会从它后面透出来（下面那层 FrostedView）。
+            //    （2026-09-26 用户要求：「上下滑动时保持最上面的比如办公室情况等固定置顶冻结」）
+            LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
                 ForEach(store.floorNames, id: \.self) { floor in
-                    VStack(alignment: .leading, spacing: 10) {
-                        floorHeader(floor)
+                    Section {
                         cardRows(store.offices(inFloor: floor), availableWidth: availableWidth)
+                            .padding(.top, 10)
+                    } header: {
+                        floorHeader(floor)
+                            .padding(.vertical, 4)
+                            .background { FrostedView() }
                     }
                 }
             }
@@ -532,8 +540,10 @@ struct OfficeLayoutView: View {
     }
 
     /// 把一行里可用的宽度摊给各张卡片：每张卡片先按「列数 × 基准列宽」算出自然宽度，
-    /// 多出来的宽度**按列数平分**（等于每一列加同样多），所以列多的卡片自然更宽；
-    /// 每列最多加到 `OfficeCard.maxSeatWidth` 就不再拉宽（避免一张卡独占一行时被拉成巨型格子）。
+    /// 多出来的宽度**按列数平分**（等于每一列加同样多），所以列多的卡片自然更宽。
+    /// - 一行两张卡：摊的是整行宽度；
+    /// - **一行只有一张卡：只摊「半行」**（见下面的 `rowShare`），避免这张卡被拉成巨无霸。
+    /// 每列最多加到 `OfficeCard.maxSeatWidth`（兜底上限）。
     /// 返回 nil 表示「保持固定列宽」。
     private func rowCardWidths(_ row: [UUID], availableWidth: CGFloat) -> [CGFloat?] {
         let fallback: [CGFloat?] = Array(repeating: nil, count: row.count)
@@ -546,12 +556,20 @@ struct OfficeLayoutView: View {
             cols.append(n)
             naturals.append(OfficeCard.naturalWidth(columns: n))
         }
+        // ⚠️ 一张卡片独占一行时按「半行」分配（2026-09-26 用户要求「新建办公室默认列宽为我截图所示列宽」）：
+        //    否则这张卡独占整行、每格被拉到 maxSeatWidth 上限（120pt），比同页两卡并排的行（每格 ~74pt）
+        //    粗一大截 —— 新建出来的那张卡尤其刺眼（名单还是空的，格子却最大）。
+        //    「半行」正好等于「两卡同行时单卡能拿到的宽度」，于是整页每行的卡片一样宽、格子一样大。
+        let rowShare = row.count == 1
+            ? max(0, (availableWidth - Self.rowSpacing) / 2)
+            : availableWidth
         let gaps = CGFloat(row.count - 1) * Self.rowSpacing
-        let room = availableWidth - gaps
+        let room = rowShare - gaps
         let totalNatural = naturals.reduce(0, +)
+        let halfRowNote = row.count == 1 ? "（单卡按半行 \(Int(rowShare.rounded()))pt）" : ""
         // 自然宽度已经超过可用宽度（列太多）→ 交给 OfficeCard 自己按上限收窄，这里不参与。
         guard totalNatural > 0, totalNatural < room - 1 else {
-            traceLayout("可用 \(Int(availableWidth.rounded()))pt｜\(cols) 列：自然宽 \(Int(totalNatural.rounded()))pt 已占满，不摊")
+            traceLayout("可用 \(Int(availableWidth.rounded()))pt\(halfRowNote)｜\(cols) 列：自然宽 \(Int(totalNatural.rounded()))pt 已占满，不摊")
             return fallback
         }
         let totalCols = CGFloat(cols.reduce(0, +))
@@ -566,7 +584,7 @@ struct OfficeLayoutView: View {
             return "\(c)列 → 卡 \(Int(w.rounded()))pt / 格 \(String(format: "%.1f", cell))pt"
         }.joined(separator: "， ")
         let used = widths.reduce(0, +) + gaps
-        traceLayout("可用 \(Int(availableWidth.rounded()))pt｜\(detail)｜合计 \(Int(used.rounded()))pt（余 \(String(format: "%.1f", availableWidth - used))pt）")
+        traceLayout("可用 \(Int(availableWidth.rounded()))pt\(halfRowNote)｜\(detail)｜合计 \(Int(used.rounded()))pt（余 \(String(format: "%.1f", rowShare - used))pt）")
         return widths
     }
 

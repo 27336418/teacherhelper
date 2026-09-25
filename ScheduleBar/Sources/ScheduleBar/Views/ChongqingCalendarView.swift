@@ -38,56 +38,48 @@ struct ChongqingCalendarView: View {
     @FocusState private var remarkFocused: Bool
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("学年日历")
-                        .font(.title3.bold())
-                        .foregroundStyle(semester1Color)
-                    Text("共 \(ChongqingCalendar.totalWeeks) 周 · 起点为设置的第 1 周")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    UndoButton()
-                    SaveButton()
-                }
+        // ⚠️ 这一页**故意不再套整页 ScrollView**：标题行固定不动，只有表体滚动。
+        //    表体（星期表头 + 22 周）放在同一个 `ScrollView([.horizontal, .vertical])` 里，
+        //    用 `LazyVStack(pinnedViews: [.sectionHeaders])` 把星期表头钉在顶部 ——
+        //    上下滚时「周次 / 一 二 …日 / 备注」一直可见；左右滚时表头又跟着列一起移动。
+        //    （拆成「表头固定 + 表体横向滚」两个 ScrollView 会立刻对不齐。）
+        //    （2026-09-26 用户要求：「上下滑动时保持最上面的比如周次…固定置顶冻结」）
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("学年日历")
+                    .font(.title3.bold())
+                    .foregroundStyle(semester1Color)
+                Text("共 \(ChongqingCalendar.totalWeeks) 周 · 起点为设置的第 1 周")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                UndoButton()
+                SaveButton()
+            }
 
-                // 表体（星期表头 + 22 周）：只有这一块在宽度不够时左右滑动。
-                // ⚠️ 标题行（含撤销/保存按钮）留在外面 —— 留在里面的话，一旦面板还在
-                //    往宽里长（窗口宽度由 AppKit 异步跟上），这一行会被排到内容最右端并被裁掉，
-                //    看起来就是「右上角显示不全」（用户 2026-09-23 反馈）。
-                ScrollView(.horizontal, showsIndicators: true) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        // 头部：星期
-                        HStack(spacing: 2) {
-                            Text("周次")
-                                .font(.system(size: 11, weight: .bold))
-                                .frame(width: Self.labelWidth)
-                                .foregroundStyle(semester1Color)
-                            ForEach(["一", "二", "三", "四", "五", "六", "日"], id: \.self) { d in
-                                Text(d)
-                                    .font(.system(size: 11, weight: .bold))
-                                    .frame(width: Self.dayWidth)
-                                    .foregroundStyle(semester1Color)
-                            }
-                            Text("备注")
-                                .font(.system(size: 11, weight: .bold))
-                                .frame(width: Self.remarkWidth, alignment: .leading)
-                                .foregroundStyle(semester1Color)
-                        }
-                        .padding(.horizontal, 2)
-
+            // ⚠️ 标题行（含撤销/保存按钮）必须留在滚动区**外面** —— 放进横向滚动区的话，
+            //    一旦面板还在往宽里长（窗口宽度由 AppKit 异步跟上），这一行会被排到内容最右端
+            //    并被裁掉，看起来就是「右上角显示不全」（用户 2026-09-23 反馈）。
+            ScrollView([.horizontal, .vertical], showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 10, pinnedViews: [.sectionHeaders]) {
+                    Section {
                         // 数据行：固定第 1 周 ~ 第 22 周
                         ForEach(1...ChongqingCalendar.totalWeeks, id: \.self) { n in
                             weekRow(n)
                         }
+                    } header: {
+                        // 钉住的表头要自带不透明背景，否则周行会从它后面透出来
+                        weekHeaderRow
+                            .padding(.bottom, 2)
+                            .background { FrostedView() }
                     }
-                    // 表体自然宽度：够宽时铺满（列不会被拉宽），不够宽时左右滑动
-                    .frame(minWidth: Self.bodyWidth, alignment: .leading)
                 }
+                // 表体自然宽度：够宽时铺满（列不会被拉宽），不够宽时左右滑动
+                .frame(minWidth: Self.bodyWidth, alignment: .leading)
             }
-            .padding(16)
-            // 按天备注编辑弹层：直接画在本窗口内，不可能被其他界面挡住
+        }
+        .padding(16)
+        // 按天备注编辑弹层：直接画在本窗口内，不可能被其他界面挡住
             .overlay {
                 if let target = remarkTarget {
                     ZStack {
@@ -131,8 +123,28 @@ struct ChongqingCalendarView: View {
                     .zIndex(9999)
                 }
             }
-        }
         .frame(maxWidth: .infinity)
+    }
+
+    /// 表头：周次 / 一 二 …日 / 备注（钉在表体顶部，见 body 里的 pinnedViews）
+    private var weekHeaderRow: some View {
+        HStack(spacing: 2) {
+            Text("周次")
+                .font(.system(size: 11, weight: .bold))
+                .frame(width: Self.labelWidth)
+                .foregroundStyle(semester1Color)
+            ForEach(["一", "二", "三", "四", "五", "六", "日"], id: \.self) { d in
+                Text(d)
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: Self.dayWidth)
+                    .foregroundStyle(semester1Color)
+            }
+            Text("备注")
+                .font(.system(size: 11, weight: .bold))
+                .frame(width: Self.remarkWidth, alignment: .leading)
+                .foregroundStyle(semester1Color)
+        }
+        .padding(.horizontal, 2)
     }
 
     // 单周行

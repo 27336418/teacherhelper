@@ -174,20 +174,57 @@ final class ClassroomStore: ObservableObject {
     @Published var dropTarget: ClassroomDropTarget?
 
     // MARK: 版面宽度（供面板「右侧自动扩宽」用）
-    /// 一个教室格占的横向步距：格宽 52 + 上下两格各 2 的内边距 + 行内间距 3。
-    /// ⚠️ 改 `FloorCard.blockWidth` / `gap` / `cellBlock` 的 `padding(2)` 时要同步这里。
-    static let cellPitch: CGFloat = 59
-    /// 行尾「+」菜单 + 卡片内边距（8×2）+ 页面外边距（16×2）
-    static let rowTailWidth: CGFloat = 18 + 3 + 16 + 32
+    // ⚠️ 这套数字以前是「散在 FloorCard 里写死 + 这里抄一份」，抄漏一个就会出事：
+    //    2026-09-26 用户截图「右边的减号没有显示完整」—— 就是因为 `rowTailWidth` 里
+    //    没算附加行行尾那个「⊖ 删除这一行」的宽度，理想宽度少报约 14pt，
+    //    面板卡在最小宽度时卡片右边缘正好把 ⊖ 从中间切掉（只剩左边半个圈）。
+    //    所以现在**只有这一处常量**，`FloorCard` 全部从这里取。
+
+    /// 一个教室格的宽度（`EditableGridCell` 的 width）
+    static let cellBlockWidth: CGFloat = 52
+    /// 格子上下两层各加的内边距（`cellBlock` 里的 `.padding(2)`）
+    static let cellBlockPadding: CGFloat = 2
+    /// 行内间距（`FloorCard.gap`）
+    static let rowGap: CGFloat = 3
+    /// 行尾「+」菜单的宽度（`FloorCard.addCellMenu`）
+    static let colMenuWidth: CGFloat = 18
+    /// 附加行行尾「⊖ 删除这一行」的宽度
+    static let deleteRowWidth: CGFloat = 14
+    /// 卡片内边距（`FloorCard` 的 `.padding(8)` ×2）
+    static let cardPadding: CGFloat = 16
+    /// 页面外边距（`ClassroomMapView` 的 `.padding(16)` ×2）
+    static let pagePadding: CGFloat = 32
+
+    /// 一个教室格占的横向步距：格宽 + 上下两格的内边距 + 行内间距。
+    static var cellPitch: CGFloat { cellBlockWidth + cellBlockPadding * 2 + rowGap }
+
+    /// 行尾占用（不含页面外边距）：删除行按钮 + 间距 + 「+」菜单 + 卡内边距。
+    /// 这就是 `FloorCard` 里除去格子本身之外、右侧必须留出来的宽度。
+    static var cardTailWidth: CGFloat {
+        deleteRowWidth + rowGap + colMenuWidth + cardPadding
+    }
+
+    /// 行尾占用 + 页面外边距（面板据此决定要不要向右扩宽）
+    static var rowTailWidth: CGFloat { cardTailWidth + pagePadding }
+
+    /// 全页「最宽的一行」有多少个教室格
+    var maxCellsAcrossFloors: Int {
+        floors.reduce(0) { acc, f in
+            let extra = f.extraRows.map { $0.cells.count }.max() ?? 0
+            return max(acc, max(f.cells.count, extra))
+        }
+    }
+
+    /// 最宽那一行的卡片「实际需要」的宽度（= `FloorCard` 的宽度，不含页面外边距）。
+    /// 判据：`ClassroomMapView` 给卡片区的 frame 宽度必须 ≥ 它，否则行尾的「⊖」会被右边缘切掉。
+    var widestRowRequiredWidth: CGFloat {
+        CGFloat(maxCellsAcrossFloors) * Self.cellPitch + Self.cardTailWidth
+    }
 
     /// 这一页「最宽的一行」自然需要多少宽度 —— 面板据此决定要不要向右扩宽。
     /// 超过面板基础宽度后由 `SchedulePanelView` 上限截断，剩下的交给横向滑动。
     var idealContentWidth: CGFloat {
-        let maxCells = floors.reduce(0) { acc, f in
-            let extra = f.extraRows.map { $0.cells.count }.max() ?? 0
-            return max(acc, max(f.cells.count, extra))
-        }
-        return CGFloat(maxCells) * Self.cellPitch + Self.rowTailWidth
+        widestRowRequiredWidth + Self.pagePadding
     }
 
     func setDropTarget(floorID: UUID, rowID: UUID?, index: Int) {

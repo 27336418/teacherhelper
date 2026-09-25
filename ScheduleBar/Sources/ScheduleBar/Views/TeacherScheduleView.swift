@@ -300,44 +300,56 @@ struct TeacherScheduleView: View {
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.035)))
     }
 
-    private func grid(_ block: TeacherBlock, index: Int?) -> some View {
-        VStack(alignment: .leading, spacing: gap) {
-            // 表头
-            HStack(spacing: gap) {
-                Text("节次")
+    /// 表头：节次 / 周一…周天（钉在课表顶部，见 `grid` 里的 pinnedViews）
+    private var gridHeader: some View {
+        HStack(spacing: gap) {
+            Text("节次")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: periodWidth, height: 24)
+            ForEach(TeacherBlock.days, id: \.self) { d in
+                Text(d)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: periodWidth, height: 24)
-                ForEach(TeacherBlock.days, id: \.self) { d in
-                    Text(d)
-                        .font(.system(size: 11, weight: .bold))
-                        .frame(width: cellWidth, height: 24)
-                        .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.06)))
-                }
+                    .frame(width: cellWidth, height: 24)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.06)))
             }
-            ForEach(Array(block.periods.enumerated()), id: \.offset) { row, period in
-                HStack(spacing: gap) {
-                    Text(period)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                        .frame(width: periodWidth, height: cellHeight)
-                    ForEach(TeacherBlock.days.indices, id: \.self) { col in
-                        let cellText = block.cells[row][col]
-                        let key = cellText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        TeacherCell(
-                            text: cellText,
-                            width: cellWidth,
-                            height: cellHeight,
-                            isSelected: selectedCell?.row == row && selectedCell?.col == col,
-                            isSameContent: highlightKey != nil && !key.isEmpty && key == highlightKey,
-                            isDimmed: highlightKey != nil,
-                            onSelect: { toggleSelect(row: row, col: col) },
-                            onCommit: { store.setCell(blockID: block.id, row: row, col: col, text: $0) }
-                        )
+        }
+    }
+
+    private func grid(_ block: TeacherBlock, index: Int?) -> some View {
+        // ⚠️ 表头钉在顶部（2026-09-26 用户要求「上下滑动时保持最上面的…固定置顶冻结」）：
+        //    往下看后面的节次时，「节次 / 周一…周天」一直可见，不用来回滚。
+        //    钉住的表头必须自带不透明背景，否则课表行会从它后面透出来。
+        LazyVStack(alignment: .leading, spacing: gap, pinnedViews: [.sectionHeaders]) {
+            Section {
+                ForEach(Array(block.periods.enumerated()), id: \.offset) { row, period in
+                    HStack(spacing: gap) {
+                        Text(period)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .frame(width: periodWidth, height: cellHeight)
+                        ForEach(TeacherBlock.days.indices, id: \.self) { col in
+                            let cellText = block.cells[row][col]
+                            let key = cellText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            TeacherCell(
+                                text: cellText,
+                                width: cellWidth,
+                                height: cellHeight,
+                                isSelected: selectedCell?.row == row && selectedCell?.col == col,
+                                isSameContent: highlightKey != nil && !key.isEmpty && key == highlightKey,
+                                isDimmed: highlightKey != nil,
+                                onSelect: { toggleSelect(row: row, col: col) },
+                                onCommit: { store.setCell(blockID: block.id, row: row, col: col, text: $0) }
+                            )
+                        }
                     }
                 }
+            } header: {
+                gridHeader
+                    .padding(.vertical, 2)
+                    .background { FrostedView() }
             }
         }
     }
