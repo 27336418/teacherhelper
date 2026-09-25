@@ -255,46 +255,7 @@ struct ClassScheduleView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                EditableCardTitle(icon: "building.2", key: "class")
-                classPicker
-                if !store.current.isEmpty && store.current == store.defaultClass {
-                    Text("默认")
-                        .font(.system(size: 9, weight: .semibold))
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.accentColor.opacity(0.16)))
-                        .foregroundStyle(Color.accentColor)
-                } else if !store.current.isEmpty {
-                    Button("设为默认") { store.setDefault() }
-                        .buttonStyle(.borderless)
-                        .font(.system(size: 11))
-                        .help("设为默认班级：下次打开应用直接显示这个班")
-                }
-                Spacer()
-                UndoButton()
-                SaveButton()
-                // 与个人课表风格一致：右上角「导入」下拉 + 「下载」
-                Menu {
-                    Button("导入课表文件（自动识别：单班 / 全校定稿）") { coordinator.importClassFile() }
-                    Divider()
-                    Button("下载填写模板（单班）") { coordinator.downloadTemplate(.classSheet) }
-                    Button("新建空班级…") { promptNewClass() }
-                    if !store.current.isEmpty {
-                        Button("把「\(store.current)」设为默认班级") { store.setDefault() }
-                        Button("删除「\(store.current)」") { confirmDeleteCurrent() }
-                    }
-                } label: {
-                    Label("导入", systemImage: "square.and.arrow.down")
-                }
-                Menu {
-                    Button("下载「\(store.current.isEmpty ? "当前班级" : store.current)」") { coordinator.exportClass() }
-                    Button("下载全校（定稿格式，\(store.classes.count) 个班）") { coordinator.exportWholeSchool() }
-                        .disabled(store.classes.isEmpty)
-                } label: {
-                    Text("下载")
-                }
-                .fixedSize()
-            }
+            toolbarRow
 
             if store.classes.isEmpty {
                 Text("还没有班级数据：点右上角「导入」选择课表文件，会自动识别单班/全校定稿并导入全部班级；也可以「新建空班级」手动填写。")
@@ -303,100 +264,160 @@ struct ClassScheduleView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            // 表头（当前星期列高亮，课表内容不变）
-            HStack(spacing: spacing) {
-                Text("节次").font(.caption.bold()).frame(width: labelWidth, alignment: .leading)
-                ForEach(0..<ClassLayout.days.count, id: \.self) { d in
-                    let isToday = d == todayColumn
-                    Text(ClassLayout.days[d]).font(.caption.bold())
-                        .frame(width: colWidth)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(isToday ? Color.accentColor.opacity(0.16) : Color.clear)
-                        )
-                        .foregroundStyle(isToday ? Color.accentColor : Color.secondary)
-                }
-            }
-
-            // 按分组动态渲染（组头可添加节次，节次右键删除）
-            ForEach(Array(classStore.groups.enumerated()), id: \.element.title) { gIdx, group in
-                HStack(spacing: spacing) {
-                    Text(group.title).font(.caption.bold())
-                        .frame(width: labelWidth, alignment: .leading)
-                    Button {
-                        classStore.addPeriod(in: gIdx)
-                    } label: {
-                        Image(systemName: "plus.circle")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("在此段添加节次")
-                    Spacer()
-                }
-                .padding(.vertical, 2)
-
-                ForEach(Array(group.periods.enumerated()), id: \.element) { _, p in
-                    HStack(spacing: spacing) {
-                        Text(p).font(.caption)
-                            .frame(width: labelWidth, alignment: .trailing)
-                            .contentShape(Rectangle())
-                            .contextMenu {
-                                Button(role: .destructive) {
-                                    classStore.removePeriod(p)
-                                    selected = nil
-                                    editing = nil
+            // ⚠️ 2026-09-26 用户要求「滚动时冻结这些内容」：
+            //    ① 工具栏（标题 / 班级选择 / 撤销·保存·导入·下载）留在滚动区**外面**，
+            //       往下翻节次时它一直可见；
+            //    ② 「节次 / 星期1…周日」表头行用 `pinnedViews: [.sectionHeaders]` 钉在表体顶部。
+            //       ⚠️ 表头必须和表体在**同一个**滚动容器里：分开放会因滚动条占用宽度而错位（§39a）。
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        ForEach(Array(classStore.groups.enumerated()), id: \.element.title) { gIdx, group in
+                            HStack(spacing: spacing) {
+                                Text(group.title).font(.caption.bold())
+                                    .frame(width: labelWidth, alignment: .leading)
+                                Button {
+                                    classStore.addPeriod(in: gIdx)
                                 } label: {
-                                    Label("删除此节次", systemImage: "minus.circle")
+                                    Image(systemName: "plus.circle")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .help("在此段添加节次")
+                                Spacer()
+                            }
+                            .padding(.vertical, 2)
+
+                            ForEach(Array(group.periods.enumerated()), id: \.element) { _, p in
+                                HStack(spacing: spacing) {
+                                    Text(p).font(.caption)
+                                        .frame(width: labelWidth, alignment: .trailing)
+                                        .contentShape(Rectangle())
+                                        .contextMenu {
+                                            Button(role: .destructive) {
+                                                classStore.removePeriod(p)
+                                                selected = nil
+                                                editing = nil
+                                            } label: {
+                                                Label("删除此节次", systemImage: "minus.circle")
+                                            }
+                                        }
+                                        .help("右键可删除此节次")
+                                    ForEach(0..<ClassLayout.days.count, id: \.self) { d in
+                                        let id = ScheduleCellID(period: p, day: d)
+                                        let cellText = classStore.cell(p, d)
+                                        let cellKey = courseKey(cellText)
+                                        let sameContent = selectedCourseKey != nil && cellKey == selectedCourseKey
+                                        ScheduleCell(
+                                            text: cellText,
+                                            width: colWidth,
+                                            id: id,
+                                            color: courseColor,
+                                            isSelected: selected == id,
+                                            isSameContent: sameContent,
+                                            isEditing: editing == id,
+                                            isDimmed: selectedCourseKey != nil,
+                                            onSelect: {
+                                                editing = nil
+                                                if selected == id { selected = nil }
+                                                else { selected = id }
+                                            },
+                                            onStartEditing: {
+                                                editing = id
+                                                selected = nil
+                                            },
+                                            onUpdate: { classStore.setCell(p, d, $0) },
+                                            onEndEditing: { editing = nil }
+                                        )
+                                        .onDrag {
+                                            classStore.beginCellDrag(p, d)
+                                            // 拿起时同步登记来源模块，落点据此同步换位（见 DragSwapSupport.swift）
+                                            let payload = DragPayload.cell(DragPayload.classCell, p, d)
+                                            DragContext.begin(module: DragPayload.classCell, payload: payload)
+                                            return NSItemProvider(object: payload as NSString)
+                                        }
+                                        .onDrop(of: [.text], delegate: ScheduleCellSwapDelegate(
+                                            table: DragPayload.classCell,
+                                            onPerform: { classStore.swapCellTo(p, d) },
+                                            onFinish: { classStore.finishCellDrag() }
+                                        ))
+                                        .help("单击：高亮全表同科目，其余格子变灰；再点一次取消。双击编辑；拖动可与其它格子对换")
+                                    }
                                 }
                             }
-                            .help("右键可删除此节次")
-                        ForEach(0..<ClassLayout.days.count, id: \.self) { d in
-                            let id = ScheduleCellID(period: p, day: d)
-                            let cellText = classStore.cell(p, d)
-                            let cellKey = courseKey(cellText)
-                            let sameContent = selectedCourseKey != nil && cellKey == selectedCourseKey
-                            ScheduleCell(
-                                text: cellText,
-                                width: colWidth,
-                                id: id,
-                                color: courseColor,
-                                isSelected: selected == id,
-                                isSameContent: sameContent,
-                                isEditing: editing == id,
-                                isDimmed: selectedCourseKey != nil,
-                                onSelect: {
-                                    editing = nil
-                                    if selected == id { selected = nil }
-                                    else { selected = id }
-                                },
-                                onStartEditing: {
-                                    editing = id
-                                    selected = nil
-                                },
-                                onUpdate: { classStore.setCell(p, d, $0) },
-                                onEndEditing: { editing = nil }
-                            )
-                            .onDrag {
-                                classStore.beginCellDrag(p, d)
-                                // 拿起时同步登记来源模块，落点据此同步换位（见 DragSwapSupport.swift）
-                                let payload = DragPayload.cell(DragPayload.classCell, p, d)
-                                DragContext.begin(module: DragPayload.classCell, payload: payload)
-                                return NSItemProvider(object: payload as NSString)
-                            }
-                            .onDrop(of: [.text], delegate: ScheduleCellSwapDelegate(
-                                table: DragPayload.classCell,
-                                onPerform: { classStore.swapCellTo(p, d) },
-                                onFinish: { classStore.finishCellDrag() }
-                            ))
-                            .help("单击：高亮全表同科目，其余格子变灰；再点一次取消。双击编辑；拖动可与其它格子对换")
                         }
+                    } header: {
+                        columnHeaderRow
+                            .padding(.bottom, 2)
+                            .background { FrostedView() }
                     }
                 }
             }
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
+    }
+
+    // MARK: - 顶部工具栏（冻结在滚动区外）
+    private var toolbarRow: some View {
+        HStack(spacing: 8) {
+            EditableCardTitle(icon: "building.2", key: "class")
+            classPicker
+            if !store.current.isEmpty && store.current == store.defaultClass {
+                Text("默认")
+                    .font(.system(size: 9, weight: .semibold))
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(Color.accentColor.opacity(0.16)))
+                    .foregroundStyle(Color.accentColor)
+            } else if !store.current.isEmpty {
+                Button("设为默认") { store.setDefault() }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 11))
+                    .help("设为默认班级：下次打开应用直接显示这个班")
+            }
+            Spacer()
+            UndoButton()
+            SaveButton()
+            // 与个人课表风格一致：右上角「导入」下拉 + 「下载」
+            Menu {
+                Button("导入课表文件（自动识别：单班 / 全校定稿）") { coordinator.importClassFile() }
+                Divider()
+                Button("下载填写模板（单班）") { coordinator.downloadTemplate(.classSheet) }
+                Button("新建空班级…") { promptNewClass() }
+                if !store.current.isEmpty {
+                    Button("把「\(store.current)」设为默认班级") { store.setDefault() }
+                    Button("删除「\(store.current)」") { confirmDeleteCurrent() }
+                }
+            } label: {
+                Label("导入", systemImage: "square.and.arrow.down")
+            }
+            Menu {
+                Button("下载「\(store.current.isEmpty ? "当前班级" : store.current)」") { coordinator.exportClass() }
+                Button("下载全校（定稿格式，\(store.classes.count) 个班）") { coordinator.exportWholeSchool() }
+                    .disabled(store.classes.isEmpty)
+            } label: {
+                Text("下载")
+            }
+            .fixedSize()
+        }
+    }
+
+    // MARK: - 表头行（节次 / 星期1…周日，钉在表体顶部）
+    private var columnHeaderRow: some View {
+        HStack(spacing: spacing) {
+            Text("节次").font(.caption.bold()).frame(width: labelWidth, alignment: .leading)
+            ForEach(0..<ClassLayout.days.count, id: \.self) { d in
+                let isToday = d == todayColumn
+                Text(ClassLayout.days[d]).font(.caption.bold())
+                    .frame(width: colWidth)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(isToday ? Color.accentColor.opacity(0.16) : Color.clear)
+                    )
+                    .foregroundStyle(isToday ? Color.accentColor : Color.secondary)
+            }
+        }
     }
 }

@@ -27,30 +27,38 @@ struct SeatingView: View {
 
     var body: some View {
         GeometryReader { geo in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    header
-                    poolArea
-                    gridArea(availWidth: max(geo.size.width - 32, 300))
+            VStack(alignment: .leading, spacing: 12) {
+                header
 
-                    if let notice = store.notice {
-                        Text(notice)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .transition(.opacity)
+                // ⚠️ 2026-09-26 用户要求「滚动时冻结这些内容」：
+                //    顶部两行工具栏（标题 / 视角切换 + 撤销·保存·讲台·导入·下载）留在滚动区**外面**，
+                //    「待用栏」人多或座位表往下翻时，操作按钮一直看得见。
+                //    只有 待用栏 / 座位大表 / 提示 / 底部说明 滚动。
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        poolArea
+                        gridArea(availWidth: max(geo.size.width - 32, 300))
+
+                        if let notice = store.notice {
+                            Text(notice)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .transition(.opacity)
+                        }
+
+                        footer
                     }
-
-                    footer
-                }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                // 拖动被外部打断（切走 App / 窗口失去 key / 面板收起）→ 清掉本视图的拖动标记，
-                // 否则格子会一直保持半透明「正在拖动」的样子，且下次拖动带着旧来源。
-                .onReceive(NotificationCenter.default.publisher(for: .dragSessionDidReset)) { _ in
-                    dragging = nil
-                    highlight = nil
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // 拖动被外部打断（切走 App / 窗口失去 key / 面板收起）→ 清掉本视图的拖动标记，
+                    // 否则格子会一直保持半透明「正在拖动」的样子，且下次拖动带着旧来源。
+                    .onReceive(NotificationCenter.default.publisher(for: .dragSessionDidReset)) { _ in
+                        dragging = nil
+                        highlight = nil
+                    }
                 }
             }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

@@ -27,26 +27,35 @@ struct TeacherScheduleView: View {
     private let gap: CGFloat = 6
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                toolbar
-                // 只在「查询到人」时才列姓名 —— 不做「全部教师」大列表
-                // （286 个名字铺开既占地方又难找，查询/下拉两条路足够）
-                if !trimmedKeyword.isEmpty {
-                    if hitList.isEmpty {
-                        noResult
+        VStack(alignment: .leading, spacing: 12) {
+            toolbar
+
+            // ⚠️ 2026-09-26 用户要求「滚动时冻结这些内容」：
+            //    顶部两行工具栏（标题 / 撤销·保存·新建 + 导入·下载·查询·下拉·徽标）留在滚动区**外面**，
+            //    往下翻课表时一直看得见；只有「命中姓名芯片 + 一周课表」滚动。
+            //    ⚠️ 课表的表头（节次 / 周一…周天）靠 `grid` 里 LazyVStack 的 pinnedViews 钉住，
+            //       它必须待在这个 ScrollView **里面**才钉得动 —— 别再把 grid 挪到滚动区外。
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    // 只在「查询到人」时才列姓名 —— 不做「全部教师」大列表
+                    // （286 个名字铺开既占地方又难找，查询/下拉两条路足够）
+                    if !trimmedKeyword.isEmpty {
+                        if hitList.isEmpty {
+                            noResult
+                        } else {
+                            teacherChips
+                        }
+                    }
+                    if let block = selectedBlock {
+                        scheduleCard(block)
                     } else {
-                        teacherChips
+                        hint
                     }
                 }
-                if let block = selectedBlock {
-                    scheduleCard(block)
-                } else {
-                    hint
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(16)
         }
+        .padding(16)
         // 打开板块先摆上「升序第一位教师」的课表（不空着），换人时清掉格子高亮
         .onAppear { showFirstTeacherIfNeeded() }
         .onChange(of: appliedKeyword) { _ in selectIfNeeded() }

@@ -417,29 +417,22 @@ struct SchedulePanelView: View {
     @ViewBuilder
     private func tabView(_ tab: PanelTab) -> some View {
         switch tab {
+        // ⚠️ 2026-09-26：这三个页面**不再套外层 ScrollView**。
+        //    它们内部自己已经是「工具栏冻结 + ScrollView 滚内容」（§39g），
+        //    外面再套一层的话，内层 ScrollView 拿到的是「高度未定」的提议 → 直接撑成内容高度、
+        //    自己永远不滚，真正滚动的是外层 → 刚冻结的工具栏又跟着滚走了。
+        //    外层顺带提供的 16pt 内边距改由这里的 `.padding(16)` 顶替（观感不变）。
         case .personal:
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    PersonalScheduleView()
-                }
+            PersonalScheduleView()
                 .padding(16)
-            }
         case .class7:
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ClassScheduleView()
-                }
+            ClassScheduleView()
                 .padding(16)
-            }
         case .teacher:
             TeacherScheduleView()
         case .extend:
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ExtendScheduleView()
-                }
+            ExtendScheduleView()
                 .padding(16)
-            }
         case .calendar:
             ChongqingCalendarView()
         case .reminder:

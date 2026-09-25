@@ -9,49 +9,62 @@ struct ReminderSettingsView: View {
     @State private var editing: Reminder?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Label("定时提醒", systemImage: "bell.badge.fill")
-                        .font(.headline)
-                    Spacer()
-                    UndoButton()
-                    SaveButton()
-                }
+        VStack(alignment: .leading, spacing: 12) {
+            titleRow
+            hintText
 
-                Text("到点会弹窗提醒，可点「等会处理」选择稍后再提醒；文字与网址可自定义并自动保存。不勾任何星期 = 只在当天该时刻提醒一次。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            // ⚠️ 2026-09-26 用户要求「滚动时冻结这些内容」：
+            //    标题行 + 使用说明留在滚动区**外面**，提醒条数多时往下翻也一直看得见。
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    calendarSyncCard
 
-                calendarSyncCard
-
-                // 提醒列表
-                ForEach(reminderStore.reminders) { r in
-                    // ⚠️ 别在这里再加 .onTapGesture { editing = r }：ReminderRow 内部已有
-                    //    `.onTapGesture { onEdit() }`，外面再挂一层就是同一次点击设两遍 editing。
-                    ReminderRow(reminder: r) {
-                        editing = r
+                    // 提醒列表
+                    ForEach(reminderStore.reminders) { r in
+                        // ⚠️ 别在这里再加 .onTapGesture { editing = r }：ReminderRow 内部已有
+                        //    `.onTapGesture { onEdit() }`，外面再挂一层就是同一次点击设两遍 editing。
+                        ReminderRow(reminder: r) {
+                            editing = r
+                        }
                     }
-                }
 
-                // 添加
-                Button {
-                    let new = Reminder(title: "新提醒", hour: 9, minute: 0,
-                                       weekdays: ReminderStore.weekdayWorkdays, url: "")
-                    reminderStore.add(new)
-                    editing = new
-                } label: {
-                    Label("添加提醒", systemImage: "plus")
+                    // 添加
+                    Button {
+                        let new = Reminder(title: "新提醒", hour: 9, minute: 0,
+                                           weekdays: ReminderStore.weekdayWorkdays, url: "")
+                        reminderStore.add(new)
+                        editing = new
+                    } label: {
+                        Label("添加提醒", systemImage: "plus")
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
             }
-            .padding(12)
         }
+        .padding(12)
         .sheet(item: $editing) { r in
             // 传值而不是传 Binding：弹窗自己持有草稿，见 ReminderEditSheet 的说明。
             ReminderEditSheet(reminder: r)
         }
         .onAppear { calendarSync.syncAllReminders(reason: "打开提醒设置") }
+    }
+
+    // MARK: - 顶部标题（冻结在滚动区外）
+    private var titleRow: some View {
+        HStack {
+            Label("定时提醒", systemImage: "bell.badge.fill")
+                .font(.headline)
+            Spacer()
+            UndoButton()
+            SaveButton()
+        }
+    }
+
+    // MARK: - 使用说明（冻结在滚动区外）
+    private var hintText: some View {
+        Text("到点会弹窗提醒，可点「等会处理」选择稍后再提醒；文字与网址可自定义并自动保存。不勾任何星期 = 只在当天该时刻提醒一次。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 
     // MARK: 系统日历同步卡片

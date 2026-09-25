@@ -24,65 +24,77 @@ struct ExtendScheduleView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                EditableCardTitle(icon: "clock.fill", key: "extend")
-                Spacer()
-                UndoButton()
-                SaveButton()
-                Menu {
-                    Button("延时&监考") { coordinator.importExtendFile() }
-                    Divider()
-                    Button("下载填写模板") { coordinator.downloadTemplate(.extend) }
-                } label: {
-                    Label("导入", systemImage: "square.and.arrow.down")
-                }
-                .help("导入 xlsx：每段一行「子表, 名称」+ 表头行 + 数据行；名称含「监考」归为监考块，可先下载模板填写")
-                Button("下载") { coordinator.exportExtend() }
-                    .help("下载当前延时&监考数据（xlsx，含所有子表）")
-                Text("点击标题可展开/收起，双击标题可改名")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+            toolbarRow
 
-            // ---- 延时：多天并列，列头置顶冻结，标题可折叠/改名 ----
-            let delayIdx = extStore.blocks.indices.filter { extStore.blocks[$0].kind == "delay" }
-            if !delayIdx.isEmpty {
-                let colWidth = (cardWidth - CGFloat(delayIdx.count - 1) * 6) / CGFloat(delayIdx.count)
-                HStack(alignment: .top, spacing: 6) {
-                    ForEach(delayIdx.indices, id: \.self) { j in
-                        let i = delayIdx[j]
-                        DelayColumnView(block: $extStore.blocks[i],
-                                        colWidth: colWidth,
-                                        trashWidth: trashWidth - 6,
-                                        accent: extendDelayPalette[j % extendDelayPalette.count],
-                                        currentWeek: weekStore.currentWeek,
-                                        isCollapsed: collapsed.contains(extStore.blocks[i].id),
-                                        save: { extStore.scheduleSave() },
-                                        onToggle: { toggleBlock(extStore.blocks[i].id) })
-                            .frame(width: colWidth, alignment: .top)   // 固定等宽列+顶对齐，保证各标题齐平
+            // ⚠️ 2026-09-26 用户要求「滚动时冻结这些内容」：
+            //    标题行（延时/周日/监考 + 撤销·保存·导入·下载 + 操作提示）留在滚动区**外面**，
+            //    只有下面的「延时」多天列与「监考」块滚动。
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    // ---- 延时：多天并列，列头置顶冻结，标题可折叠/改名 ----
+                    let delayIdx = extStore.blocks.indices.filter { extStore.blocks[$0].kind == "delay" }
+                    if !delayIdx.isEmpty {
+                        let colWidth = (cardWidth - CGFloat(delayIdx.count - 1) * 6) / CGFloat(delayIdx.count)
+                        HStack(alignment: .top, spacing: 6) {
+                            ForEach(delayIdx.indices, id: \.self) { j in
+                                let i = delayIdx[j]
+                                DelayColumnView(block: $extStore.blocks[i],
+                                                colWidth: colWidth,
+                                                trashWidth: trashWidth - 6,
+                                                accent: extendDelayPalette[j % extendDelayPalette.count],
+                                                currentWeek: weekStore.currentWeek,
+                                                isCollapsed: collapsed.contains(extStore.blocks[i].id),
+                                                save: { extStore.scheduleSave() },
+                                                onToggle: { toggleBlock(extStore.blocks[i].id) })
+                                    .frame(width: colWidth, alignment: .top)   // 固定等宽列+顶对齐，保证各标题齐平
+                            }
+                        }
+                    }
+
+                    // ---- 监考：块式（可折叠、可改名、可增删行）----
+                    let examIdx = extStore.blocks.indices.filter { extStore.blocks[$0].kind == "exam" }
+                    ForEach(examIdx, id: \.self) { i in
+                        ExtendBlockView(
+                            block: $extStore.blocks[i],
+                            cardWidth: cardWidth,
+                            trashWidth: trashWidth,
+                            accent: extendExamAccent,
+                            currentWeek: weekStore.currentWeek,
+                            isCollapsed: collapsed.contains(extStore.blocks[i].id),
+                            save: { extStore.scheduleSave() },
+                            onToggle: { toggleBlock(extStore.blocks[i].id) }
+                        )
                     }
                 }
-            }
-
-            // ---- 监考：块式（可折叠、可改名、可增删行）----
-            let examIdx = extStore.blocks.indices.filter { extStore.blocks[$0].kind == "exam" }
-            ForEach(examIdx, id: \.self) { i in
-                ExtendBlockView(
-                    block: $extStore.blocks[i],
-                    cardWidth: cardWidth,
-                    trashWidth: trashWidth,
-                    accent: extendExamAccent,
-                    currentWeek: weekStore.currentWeek,
-                    isCollapsed: collapsed.contains(extStore.blocks[i].id),
-                    save: { extStore.scheduleSave() },
-                    onToggle: { toggleBlock(extStore.blocks[i].id) }
-                )
             }
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
         // 仅当任一子表折叠状态变化时播放过渡，收起/展开平滑滑动（不顿跳）
         .animation(.easeInOut(duration: 0.18), value: collapsed)
+    }
+
+    // MARK: - 顶部工具栏（冻结在滚动区外）
+    private var toolbarRow: some View {
+        HStack {
+            EditableCardTitle(icon: "clock.fill", key: "extend")
+            Spacer()
+            UndoButton()
+            SaveButton()
+            Menu {
+                Button("延时&监考") { coordinator.importExtendFile() }
+                Divider()
+                Button("下载填写模板") { coordinator.downloadTemplate(.extend) }
+            } label: {
+                Label("导入", systemImage: "square.and.arrow.down")
+            }
+            .help("导入 xlsx：每段一行「子表, 名称」+ 表头行 + 数据行；名称含「监考」归为监考块，可先下载模板填写")
+            Button("下载") { coordinator.exportExtend() }
+                .help("下载当前延时&监考数据（xlsx，含所有子表）")
+            Text("点击标题可展开/收起，双击标题可改名")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

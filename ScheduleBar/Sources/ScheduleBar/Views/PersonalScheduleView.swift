@@ -54,78 +54,98 @@ struct PersonalScheduleView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                EditableCardTitle(icon: "person.crop.rectangle", key: "personal")
-                Spacer()
-                UndoButton()
-                SaveButton()
-                // 与班级课表风格一致：右上角「导入」下拉 + 「下载」
-                Menu {
-                    Button("本人课表") { coordinator.importPersonalFile() }
-                    Divider()
-                    Button("下载填写模板") { coordinator.downloadTemplate(.personal) }
-                } label: {
-                    Label("导入", systemImage: "square.and.arrow.down")
-                }
-                .help("下载模板：先导出空白模板，填写后从这里导入")
-                Button("下载") { coordinator.exportPersonal() }
-            }
+            toolbarRow
 
-            // 表头（当前星期列高亮，课表内容不变）
-            HStack(spacing: spacing) {
-                Text("节次").font(.caption.bold()).frame(width: labelWidth, alignment: .leading)
-                ForEach(0..<ScheduleStore.days.count, id: \.self) { d in
-                    let isToday = d == todayColumn
-                    Text(ScheduleStore.days[d]).font(.caption.bold())
-                        .frame(width: colWidth)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(isToday ? Color.accentColor.opacity(0.16) : Color.clear)
-                        )
-                        .foregroundStyle(isToday ? Color.accentColor : Color.secondary)
-                }
-            }
+            // ⚠️ 2026-09-26 用户要求「滚动时冻结这些内容」：
+            //    ① 工具栏（标题 / 撤销·保存·导入·下载）留在滚动区**外面**，往下翻节次时一直可见；
+            //    ② 「节次 / 星期1…周日」表头行用 `pinnedViews: [.sectionHeaders]` 钉在表体顶部。
+            //       ⚠️ 表头必须和表体在**同一个**滚动容器里：分开放会因滚动条占用宽度而错位（§39a）。
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        ForEach(Array(store.groups.enumerated()), id: \.offset) { gIdx, group in
+                            HStack(spacing: spacing) {
+                                Text(group.title).font(.caption.bold())
+                                    .frame(width: labelWidth, alignment: .leading)
+                                Button {
+                                    store.addPeriod(in: gIdx)
+                                } label: {
+                                    Image(systemName: "plus.circle")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .help("在「\(group.title)」添加节次")
+                                Spacer()
+                            }
+                            .padding(.vertical, 2)
 
-            // 按分组动态渲染（组头可添加节次，节次右键删除）
-            ForEach(Array(store.groups.enumerated()), id: \.offset) { gIdx, group in
-                HStack(spacing: spacing) {
-                    Text(group.title).font(.caption.bold())
-                        .frame(width: labelWidth, alignment: .leading)
-                    Button {
-                        store.addPeriod(in: gIdx)
-                    } label: {
-                        Image(systemName: "plus.circle")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("在「\(group.title)」添加节次")
-                    Spacer()
-                }
-                .padding(.vertical, 2)
-
-                ForEach(group.periods, id: \.self) { p in
-                    periodRow(p)
-                }
-            }
-
-            // 班级配色图例（不同班级 → 不同颜色）
-            if !legend.isEmpty {
-                HStack(spacing: 10) {
-                    Text("班级色").font(.system(size: 10)).foregroundStyle(.secondary)
-                    ForEach(legend) { item in
-                        HStack(spacing: 3) {
-                            Circle().fill(item.color).frame(width: 8, height: 8)
-                            Text(item.name).font(.system(size: 10)).foregroundStyle(.secondary)
+                            ForEach(group.periods, id: \.self) { p in
+                                periodRow(p)
+                            }
                         }
+
+                        // 班级配色图例（不同班级 → 不同颜色）
+                        if !legend.isEmpty {
+                            HStack(spacing: 10) {
+                                Text("班级色").font(.system(size: 10)).foregroundStyle(.secondary)
+                                ForEach(legend) { item in
+                                    HStack(spacing: 3) {
+                                        Circle().fill(item.color).frame(width: 8, height: 8)
+                                        Text(item.name).font(.system(size: 10)).foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                            }
+                        }
+                    } header: {
+                        columnHeaderRow
+                            .padding(.bottom, 2)
+                            .background { FrostedView() }
                     }
-                    Spacer()
                 }
             }
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
+    }
+
+    // MARK: - 顶部工具栏（冻结在滚动区外）
+    private var toolbarRow: some View {
+        HStack {
+            EditableCardTitle(icon: "person.crop.rectangle", key: "personal")
+            Spacer()
+            UndoButton()
+            SaveButton()
+            // 与班级课表风格一致：右上角「导入」下拉 + 「下载」
+            Menu {
+                Button("本人课表") { coordinator.importPersonalFile() }
+                Divider()
+                Button("下载填写模板") { coordinator.downloadTemplate(.personal) }
+            } label: {
+                Label("导入", systemImage: "square.and.arrow.down")
+            }
+            .help("下载模板：先导出空白模板，填写后从这里导入")
+            Button("下载") { coordinator.exportPersonal() }
+        }
+    }
+
+    // MARK: - 表头行（节次 / 星期1…周日，钉在表体顶部）
+    private var columnHeaderRow: some View {
+        HStack(spacing: spacing) {
+            Text("节次").font(.caption.bold()).frame(width: labelWidth, alignment: .leading)
+            ForEach(0..<ScheduleStore.days.count, id: \.self) { d in
+                let isToday = d == todayColumn
+                Text(ScheduleStore.days[d]).font(.caption.bold())
+                    .frame(width: colWidth)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(isToday ? Color.accentColor.opacity(0.16) : Color.clear)
+                    )
+                    .foregroundStyle(isToday ? Color.accentColor : Color.secondary)
+            }
+        }
     }
 
     // MARK: 一行节次
