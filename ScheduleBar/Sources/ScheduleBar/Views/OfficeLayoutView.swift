@@ -281,6 +281,17 @@ struct OfficeLayoutView: View {
     @State private var keyword = ""
     @State private var appliedKeyword = ""     // 去抖后的关键字（避免每次键入都重算）
 
+    /// 折叠起来的楼层（2026-09-26 用户要求「楼层可以折叠或者展开」）。
+    /// 键用楼层名 —— 与 `store.floorNames` 同一套标识，空串代表「未分组」。
+    /// 刻意不做持久化：这是「先看一眼总览」的临时界面态，重开面板回到全部展开更符合预期；
+    /// 也避免为它多开一个 store 字段 + json。**只影响显示，绝不改数据**。
+    @State private var collapsedFloors: Set<String> = []
+
+    private func toggleFloorCollapsed(_ floor: String) {
+        if collapsedFloors.contains(floor) { collapsedFloors.remove(floor) }
+        else { collapsedFloors.insert(floor) }
+    }
+
     /// ⚠️ 仅取证用：离屏渲染（`--render-office-page`）时给出「内容区可用宽度」。
     /// 为什么需要这个开关：`ImageRenderer` **画不了 `ScrollView` / `GeometryReader`**（出白图），
     /// 所以离屏那条路必须绕开这两层容器、直接把宽度喂进来。运行时保持 nil，走真实页面路径。
@@ -306,21 +317,30 @@ struct OfficeLayoutView: View {
             GeometryReader { geo in
                 let available = max(0, geo.size.width - 32)
                 let _ = traceLayout("内容区实测 \(Int(geo.size.width.rounded()))pt → 可用 \(Int(available.rounded()))pt")
-                ScrollView {
-                    pageContent(availableWidth: available)
-                }
+                pageContent(availableWidth: available, scrollBody: true)
             }
         }
     }
 
     /// 整页内容（工具栏 + 楼层分组）。真实路径与离屏取证共用这一份，保证预览不走样。
-    private func pageContent(availableWidth: CGFloat) -> some View {
+    ///
+    /// - Parameter scrollBody: **只有楼层卡片区**进纵向 `ScrollView`。
+    ///   ⚠️ 2026-09-26 用户要求「滚动时冻结这些内容」：工具栏那两行（导入/下载/新建/查找工位/
+    ///      办公室共 N 人）必须留在滚动区**外面**，否则往下翻楼层时整条工具栏被带走，
+    ///      想换个楼层视角或重新搜索都要先滚回顶部。
+    ///      离屏取证路径传 `false`（`ImageRenderer` 画不了 `ScrollView`，会出白图），
+    ///      这样「两层结构」在预览里也一次成型、与实际页面对得上。
+    private func pageContent(availableWidth: CGFloat, scrollBody: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             toolbar
             // 「新建楼层」的行内输入框：紧跟在工具栏下方（原来挂在列表末尾，
             // 整合进「新建」菜单后改到顶部，点完立刻就能看见并输入）
             if floorEditKind == .new { floorEditorRow(isNew: true) }
-            floorsSection(availableWidth: availableWidth)
+            if scrollBody {
+                ScrollView { floorsSection(availableWidth: availableWidth) }
+            } else {
+                floorsSection(availableWidth: availableWidth)
+            }
         }
         .padding(16)
     }
@@ -347,11 +367,14 @@ struct OfficeLayoutView: View {
             //    （`4楼 3间·27人`）钉在顶部：上下滑动时它一直可见，用户随时知道在看哪一层。
             //    钉住的表头必须自带**不透明背景**，否则卡片会从它后面透出来（下面那层 FrostedView）。
             //    （2026-09-26 用户要求：「上下滑动时保持最上面的比如办公室情况等固定置顶冻结」）
+            //    折叠只是把 Section 的**内容**置空，表头条照旧钉着 —— 折起来的那层仍然看得见、点得到。
             LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
                 ForEach(store.floorNames, id: \.self) { floor in
                     Section {
-                        cardRows(store.offices(inFloor: floor), availableWidth: availableWidth)
-                            .padding(.top, 10)
+                        if !collapsedFloors.contains(floor) {
+                            cardRows(store.offices(inFloor: floor), availableWidth: availableWidth)
+                                .padding(.top, 10)
+                        }
                     } header: {
                         floorHeader(floor)
                             .padding(.vertical, 4)
@@ -382,7 +405,19 @@ struct OfficeLayoutView: View {
         let canUp = index > 0
         let canDown = index < store.floorNames.count - 1
         let label = floor.isEmpty ? "未分组" : floor
+        let collapsed = collapsedFloors.contains(floor)
         return HStack(spacing: 8) {
+            // 折叠箭头（2026-09-26 用户要求「楼层可以折叠或者展开」）：
+            // ⚠️ 只让这一个箭头可点 —— 楼层条本身同时是「整卡拖动」的落点和右键菜单的宿主，
+            //    若整条都可点折叠，用户拖卡片过来一松手就会顺手把这一层折起来。
+            Button { toggleFloorCollapsed(floor) } label: {
+                Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+            }
+            .buttonStyle(.plain)
+            .help(collapsed ? "展开「\(label)」的办公室" : "折叠「\(label)」的办公室")
             Image(systemName: "building.2.fill")
                 .font(.system(size: 12))
                 .foregroundStyle(isTarget ? Color.accentColor : Color.secondary)
@@ -391,6 +426,11 @@ struct OfficeLayoutView: View {
             Text("\(count) 间 · \(people) 人")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
+            if collapsed {
+                Text("已折叠")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
             Spacer(minLength: 0)
             Button { store.moveFloor(floor, by: -1) } label: {
                 Image(systemName: "chevron.up").font(.system(size: 10))

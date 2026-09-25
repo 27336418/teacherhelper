@@ -13,65 +13,94 @@ struct ClassroomMapView: View {
     /// 删除键监听器（见 installKeyMonitor）
     @State private var keyMonitor: Any?
 
+    /// 折叠起来的楼层（2026-09-26 用户要求「楼层可以折叠或者展开」）。
+    /// 键用 `floor.id`（楼层名可被双击重命名，id 才稳定）。只影响显示，不动数据。
+    /// 刻意不持久化：这是临时的「先看总览」界面态，重开面板回到全部展开。
+    @State private var collapsedFloors: Set<UUID> = []
+
+    private func toggleFloorCollapsed(_ id: UUID) {
+        if collapsedFloors.contains(id) { collapsedFloors.remove(id) }
+        else { collapsedFloors.insert(id) }
+    }
+
     var body: some View {
         GeometryReader { geo in
             let frameW = classroomFrameWidth(available: geo.size.width)
             let _ = traceClassroomLayout(available: geo.size.width, frameWidth: frameW)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        EditableCardTitle(icon: "square.grid.3x3", key: "classroom")
-                        Spacer()
-                        UndoButton()
-                        SaveButton()
-                        // 与其它模块一致的「导入（含下载模板）+ 下载」
-                        Menu {
-                            Button("教室分布") { coordinator.importClassroom() }
-                            Divider()
-                            Button("下载填写模板") { coordinator.downloadTemplate(.classroom) }
-                        } label: {
-                            Label("导入", systemImage: "square.and.arrow.down")
-                        }
-                        .help("下载模板：先导出空白模板，填写后从这里导入")
-                        Button("下载") { coordinator.exportClassroom() }
-                        Button {
-                            store.addFloor()
-                        } label: {
-                            Label("添加楼层", systemImage: "plus")
-                        }
-                        .buttonStyle(.bordered)
-                    }
-
-                    Text("提示：单击教室 / 办公室即可选中，按 Delete 键删除；拖动可对换位置（可跨楼层），双击编辑文字")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    // 教室卡片区：只有这一块在「教室太多、超过面板最大宽度」时左右滑动。
-                    // ⚠️ 顶部工具栏与提示行必须留在横向 ScrollView **外面**：
-                    //    否则它们会被排到整页最右端（例如 1544pt 处），用户看到的就是
-                    //    「右上角显示不全」（用户 2026-09-23 反馈）。
-                    ScrollView(.horizontal, showsIndicators: true) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            ForEach($store.floors) { $floor in
-                                FloorCard(floor: $floor)
-                            }
-                        }
-                        // 卡片区宽度：至少撑满可视区（灰底卡片保持原来的满宽观感），
-                        // 教室更多时按「最宽一行」的自然宽度铺开，多出来的部分左右滑动。
-                        .frame(width: frameW, alignment: .leading)
-                    }
+            VStack(alignment: .leading, spacing: 12) {
+                headerRow
+                hintRow
+                // ⚠️ 2026-09-26 用户要求「滚动时冻结这些内容」：
+                //    标题行（撤销/保存/导入/下载/添加楼层）与提示行必须留在纵向滚动区**外面**，
+                //    否则往下翻楼层时它们会被一起带走。
+                //    离屏取证路径（`ImageRenderer` 画不了 `ScrollView`）见 `CellPreview`，
+                //    那边只取卡片区，不受这里影响。
+                ScrollView {
+                    cardArea(frameW: frameW)
                 }
-                .padding(16)
-                // 点空白处取消选中。背景在最底层：落在格子上时由格子自己的单击手势先接管。
-                .background(
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture { store.clearSelection() }
-                )
             }
+            .padding(16)
         }
         .onAppear { installKeyMonitor() }
         .onDisappear { removeKeyMonitor() }
+    }
+
+    // MARK: - 冻结在顶部的一行（标题 + 操作）
+    private var headerRow: some View {
+        HStack {
+            EditableCardTitle(icon: "square.grid.3x3", key: "classroom")
+            Spacer()
+            UndoButton()
+            SaveButton()
+            // 与其它模块一致的「导入（含下载模板）+ 下载」
+            Menu {
+                Button("教室分布") { coordinator.importClassroom() }
+                Divider()
+                Button("下载填写模板") { coordinator.downloadTemplate(.classroom) }
+            } label: {
+                Label("导入", systemImage: "square.and.arrow.down")
+            }
+            .help("下载模板：先导出空白模板，填写后从这里导入")
+            Button("下载") { coordinator.exportClassroom() }
+            Button {
+                store.addFloor()
+            } label: {
+                Label("添加楼层", systemImage: "plus")
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private var hintRow: some View {
+        Text("提示：单击教室 / 办公室即可选中，按 Delete 键删除；拖动可对换位置（可跨楼层），双击编辑文字")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    /// 教室卡片区。
+    /// - 纵向：由外层 `ScrollView` 负责（顶部两行已提出去 → 滚动时冻结）。
+    /// - 横向：只有这一块在「教室太多、超过面板最大宽度」时左右滑动。
+    ///   ⚠️ 顶部工具栏与提示行必须留在横向 ScrollView **外面**：否则它们会被排到整页最右端
+    ///   （例如 1544pt 处），用户看到的就是「右上角显示不全」（用户 2026-09-23 反馈）。
+    private func cardArea(frameW: CGFloat) -> some View {
+        ScrollView(.horizontal, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach($store.floors) { $floor in
+                    FloorCard(floor: $floor,
+                              collapsed: collapsedFloors.contains(floor.id),
+                              onToggleCollapse: { toggleFloorCollapsed(floor.id) })
+                }
+            }
+            // 卡片区宽度：至少撑满可视区（灰底卡片保持原来的满宽观感），
+            // 教室更多时按「最宽一行」的自然宽度铺开，多出来的部分左右滑动。
+            .frame(width: frameW, alignment: .leading)
+        }
+        // 点空白处取消选中。背景在最底层：落在格子上时由格子自己的单击手势先接管。
+        .background(
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { store.clearSelection() }
+        )
     }
 
     /// 卡片区宽度：至少撑满可视区（灰底卡片保持满宽观感），教室更多时按「最宽一行」的自然宽度铺开。
@@ -170,6 +199,11 @@ struct ClassroomSwapDelegate: DropDelegate {
 
 struct FloorCard: View {
     @Binding var floor: ClassroomFloor
+    /// 是否折叠（2026-09-26 用户要求「楼层可以折叠或者展开」）。
+    /// ⚠️ 从外面传进来、不在这里自己存：折叠是「整页」级别的界面态，
+    ///    而且默认值让离屏预览这类老调用点不用改。
+    var collapsed: Bool = false
+    var onToggleCollapse: () -> Void = {}
     @EnvironmentObject var store: ClassroomStore
     @State private var titleEditing = false
     @State private var titleDraft = ""
@@ -184,13 +218,17 @@ struct FloorCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             floorHeader
-            row(cells: $floor.cells, rowID: nil)                    // 主行
-            ForEach(floor.extraRows.indices, id: \.self) { r in      // 附加行
-                HStack(alignment: .top, spacing: gap) {
-                    row(cells: $floor.extraRows[r].cells, rowID: floor.extraRows[r].id)
-                    deleteRowButton(floor.extraRows[r].id)
+            // 折叠只跳过内容渲染 —— 楼层卡本身（标题 + 操作）照旧显示，
+            // 也照旧参与「拖动对换」的落点计算。
+            if !collapsed {
+                row(cells: $floor.cells, rowID: nil)                    // 主行
+                ForEach(floor.extraRows.indices, id: \.self) { r in      // 附加行
+                    HStack(alignment: .top, spacing: gap) {
+                        row(cells: $floor.extraRows[r].cells, rowID: floor.extraRows[r].id)
+                        deleteRowButton(floor.extraRows[r].id)
+                    }
+                    .id(floor.extraRows[r].id)
                 }
-                .id(floor.extraRows[r].id)
             }
         }
         .padding(8)
@@ -200,6 +238,15 @@ struct FloorCard: View {
     // MARK: 层名 + 层操作
     private var floorHeader: some View {
         HStack(spacing: 6) {
+            // 折叠箭头：只让箭头可点 —— 标题本身是「双击重命名」，别抢它的手势。
+            Button(action: onToggleCollapse) {
+                Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+            }
+            .buttonStyle(.plain)
+            .help(collapsed ? "展开这一层的教室" : "折叠这一层的教室")
             if titleEditing {
                 TextField("", text: $titleDraft)
                     .focused($titleFocused)
@@ -223,6 +270,11 @@ struct FloorCard: View {
                     .contentShape(Rectangle())
                     .onTapGesture(count: 2) { titleEditing = true }
                     .help("双击重命名")
+            }
+            if collapsed {
+                Text("已折叠 · \(floor.cellCount) 格")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
             }
             Spacer()
             Button {

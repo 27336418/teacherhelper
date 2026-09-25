@@ -164,10 +164,20 @@ struct SchedulePanelView: View {
     private var navColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
             // 标题 + 周次胶囊
-            HStack {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("教师助手")
                     .font(.title3.bold())
-                Spacer()
+                // 版本号（2026-09-26 用户要求「左上角教师助手后面跟上版本号；版本号字体调小一些」）。
+                // ⚠️ 侧栏宽度硬底线 170pt：标题 20pt×4 字 ≈ 80pt + 左右各 22pt 内边距，
+                //    只剩 ~46pt 给版本号。这里用 10pt 小字（`v2.5.4` ≈ 30pt）正好放得下；
+                //    万一以后变长，靠 minimumScaleFactor 缩，**绝不折行、也不撑宽侧栏**。
+                Text(AppVersion.display)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .help(AppVersion.tooltip)
+                Spacer(minLength: 0)
             }
             .padding(.horizontal, 22)
             .padding(.top, 14)
@@ -218,25 +228,29 @@ struct SchedulePanelView: View {
                 .contextMenu { hiddenMenu }
 
             // 底部操作：备份恢复 / 升级 / Dock / 退出
+            // ⚠️ 文案 2026-09-26 按用户要求精简（截图里圈的就是这四个按钮）：
+            //    「备份全部数据 → 备份数据」「从备份恢复 → 恢复数据」「清空所有数据 → 清空数据」。
+            //    侧栏只有 170pt 宽，四个字一行刚好；「全部/所有」这类冗余词去掉更清爽。
+            //    作用范围写在 `.help()` 里，"检查更新" 本来就是四个字、不用改。
             VStack(alignment: .leading, spacing: 8) {
                 Button {
                     BackupService.exportBackup()
                 } label: {
-                    Label("备份全部数据", systemImage: "archivebox")
+                    Label("备份数据", systemImage: "archivebox")
                         .frame(maxWidth: .infinity)
                 }
                 .help("一键导出全部数据与设置（课表/学生/座位/提醒/备注/布局/设置）到备份文件")
                 Button {
                     BackupService.importBackup()
                 } label: {
-                    Label("从备份恢复", systemImage: "arrow.counterclockwise.circle")
+                    Label("恢复数据", systemImage: "arrow.counterclockwise.circle")
                         .frame(maxWidth: .infinity)
                 }
                 .help("从备份文件一键导入并恢复全部数据与设置（恢复后自动重启生效）")
                 Button {
                     AppCoordinator.shared.clearAllData()
                 } label: {
-                    Label("清空所有数据", systemImage: "trash.slash")
+                    Label("清空数据", systemImage: "trash.slash")
                         .frame(maxWidth: .infinity)
                 }
                 .foregroundStyle(.red)
