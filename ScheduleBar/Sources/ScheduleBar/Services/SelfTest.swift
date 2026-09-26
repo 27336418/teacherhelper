@@ -1038,12 +1038,26 @@ enum SelfTest {
             && !DragPayload.belongs(cardPayload, to: DragPayload.officeFloor)
         print("楼层载荷区分:   \(floorPayloadOK ? "✓" : "✗")")
 
+        // 23) 整层拖动落到「目标楼层的卡片/座位」上（不必对准标题条）：
+        //     三种落点都先归一成「目标楼层下标」，再走同一份提交逻辑。
+        resetCards()
+        let floorIdxOK = store.floorIndexOfOffice(oa) == 0      // A/B 在三楼 → 下标 0
+            && store.floorIndexOfOffice(oc) == 1                // C 在四楼 → 下标 1
+            && store.floorIndexOfOffice(UUID()) == nil          // 不存在的卡片 → nil（不会误伤）
+        store.beginFloorDrag(0)
+        if let fi = store.floorIndexOfOffice(oc) { store.swapFloors(0, fi) }
+        store.finishFloorDrag()
+        let dropOnCardOK = store.floorNames == ["四楼", "三楼", ""] && order() == [oc, oa, ob, od]
+        _ = UndoService.shared.undo()
+        print("整层落到卡片上: \(floorIdxOK && dropOnCardOK ? "✓" : "✗")")
+
         let ok = swap1 && restore && cross && selfNoOp && outNoOp
             && floorOrder && cardMove && toFloor && toUngrouped && cardUndo
             && floorMove && newFloor && renameFloor && delFloor && delFloorUndo
             && clearFloor && selfCardNoOp && legacyOK && payloadOK
             && addCount && addOfficeUndo && newFloorOneStep
             && swapFloorsOK && swapFloorsUndo && selfFloorNoOp && cancelFloorNoOp && floorPayloadOK
+            && floorIdxOK && dropOnCardOK
         print(ok ? "工位对换/楼层自检全部通过 ✓" : "工位对换/楼层自检存在问题 ✗")
     }
 

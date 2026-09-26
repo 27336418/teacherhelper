@@ -359,6 +359,14 @@ final class OfficeLayoutStore: ObservableObject {
         offices.filter { $0.floor == floor }
     }
 
+    /// 某间办公室所属楼层在 `floorNames` 里的下标（找不到 → nil）。
+    /// 用途：整层拖动时，落到「目标楼层的任意一张卡片/座位」上也能算出要跟哪一层对调 ——
+    /// 不然用户得精确对准那一条 30pt 高的楼层条，很难受。
+    func floorIndexOfOffice(_ id: UUID) -> Int? {
+        guard let o = offices.first(where: { $0.id == id }) else { return nil }
+        return floorNames.firstIndex(of: o.floor)
+    }
+
     func headcount(inFloor floor: String) -> Int {
         offices(inFloor: floor).reduce(0) { $0 + $1.headcount }
     }

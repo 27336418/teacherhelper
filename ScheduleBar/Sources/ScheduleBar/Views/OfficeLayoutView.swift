@@ -16,14 +16,21 @@ struct OfficeSeatSwapDelegate: DropDelegate {
     /// ⚠️ 「整张卡片」拖动经过座位区时也要接住：卡片中间的座位格占了大半面积，
     ///    如果只有标题条能落，用户会以为「卡片拖不动」。
     private var isCardDrag: Bool { DragContext.belongs(to: DragPayload.officeCard) }
+    /// 同理，「整个楼层」拖动经过座位区时也要接住（落到哪个座位 = 跟那一层对调）
+    private var isFloorDrag: Bool { DragContext.belongs(to: DragPayload.officeFloor) }
 
-    private var isOurs: Bool { isSeatDrag || isCardDrag }
+    private var isOurs: Bool { isSeatDrag || isCardDrag || isFloorDrag }
 
     func validateDrop(info: DropInfo) -> Bool { isOurs }
 
     private func highlight() {
-        if isCardDrag { store.setCardDropTarget(officeID) }
-        else { store.setDropHighlight(officeID: officeID, row: row, col: col) }
+        if isFloorDrag {
+            if let fi = store.floorIndexOfOffice(officeID) { store.setFloorSwapTarget(fi) }
+        } else if isCardDrag {
+            store.setCardDropTarget(officeID)
+        } else {
+            store.setDropHighlight(officeID: officeID, row: row, col: col)
+        }
     }
 
     func dropEntered(info: DropInfo) {
@@ -40,6 +47,13 @@ struct OfficeSeatSwapDelegate: DropDelegate {
     // 唯一提交点：**同步**执行一次交换并登记撤销，随后清除高亮。
     // （不能放进 loadObject 的异步回调：macOS 26 上拖拽会话会因此不复位，之后再也拖不动）
     func performDrop(info: DropInfo) -> Bool {
+        if isFloorDrag {
+            guard let fi = store.floorIndexOfOffice(officeID) else {
+                DragContext.reject(DragPayload.officeFloor)
+                return false
+            }
+            return OfficeFloorDrop.perform(store: store, targetIndex: fi)
+        }
         if isCardDrag { return OfficeCardDrop.perform(store: store, targetID: officeID) }
         guard isSeatDrag else { DragContext.reject(DragPayload.officeSeat); return false }
         store.swapSeatTo(officeID: officeID, row: row, col: col)
@@ -80,28 +94,63 @@ enum OfficeCardDrop {
     }
 }
 
+// MARK: - 「整个楼层」拖动的提交（楼层条 / 卡片 / 座位 三种落点共用）
+// 三种落点都归一成「目标楼层下标」，所以提交逻辑只有这一份。
+enum OfficeFloorDrop {
+    static func perform(store: OfficeLayoutStore, targetIndex: Int) -> Bool {
+        guard let src = DragPayload.officeFloorIndex(from: DragContext.payload) else {
+            DragContext.reject(DragPayload.officeFloor)
+            return false
+        }
+        store.swapFloors(src, targetIndex)
+        store.clearCardDropTargets()
+        store.finishFloorDrag()
+        DragContext.finish(reason: "办公室楼层")
+        return true
+    }
+}
+
 /// 落点 = 某张办公室卡片（整卡高亮）
+/// 另外也接「整个楼层」的拖动：落到目标楼层的任意一张卡片上 = 与那一层对调
+/// （不让用户非得精确对准 30pt 高的楼层条；见 `floorIndexOfOffice` 的说明）
 struct OfficeCardDropDelegate: DropDelegate {
     let targetID: UUID
     let store: OfficeLayoutStore
 
-    private var isOurs: Bool { DragContext.belongs(to: DragPayload.officeCard) }
+    private var isCardDrag: Bool { DragContext.belongs(to: DragPayload.officeCard) }
+    private var isFloorDrag: Bool { DragContext.belongs(to: DragPayload.officeFloor) }
+    private var isOurs: Bool { isCardDrag || isFloorDrag }
+
+    /// 这张卡片所属楼层在 floorNames 里的下标（整层拖动的落点）
+    private var targetFloorIndex: Int? { store.floorIndexOfOffice(targetID) }
 
     func validateDrop(info: DropInfo) -> Bool { isOurs }
 
+    private func highlight() {
+        if isFloorDrag {
+            if let fi = targetFloorIndex { store.setFloorSwapTarget(fi) }
+        } else {
+            store.setCardDropTarget(targetID)
+        }
+    }
+
     func dropEntered(info: DropInfo) {
         guard isOurs else { return }
-        store.setCardDropTarget(targetID)
+        highlight()
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         guard isOurs else { return nil }
-        store.setCardDropTarget(targetID)
+        highlight()
         return DropProposal(operation: .move)
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard isOurs else { DragContext.reject(DragPayload.officeCard); return false }
+        if isFloorDrag {
+            guard let fi = targetFloorIndex else { DragContext.reject(DragPayload.officeFloor); return false }
+            return OfficeFloorDrop.perform(store: store, targetIndex: fi)
+        }
+        guard isCardDrag else { DragContext.reject(DragPayload.officeCard); return false }
         return OfficeCardDrop.perform(store: store, targetID: targetID)
     }
 }
@@ -139,17 +188,7 @@ struct OfficeFloorDropDelegate: DropDelegate {
     // ⚠️ 唯一提交点必须**同步**改数据（见 DragSwapSupport 顶部说明）。
     //    不是本模块的拖拽要「原样拒绝、什么都不清」。
     func performDrop(info: DropInfo) -> Bool {
-        if isFloorDrag {
-            guard let src = DragPayload.officeFloorIndex(from: DragContext.payload) else {
-                DragContext.reject(DragPayload.officeFloor)
-                return false
-            }
-            store.swapFloors(src, floorIndex)
-            store.clearCardDropTargets()
-            store.finishFloorDrag()
-            DragContext.finish(reason: "办公室楼层")
-            return true
-        }
+        if isFloorDrag { return OfficeFloorDrop.perform(store: store, targetIndex: floorIndex) }
         guard isCardDrag else { DragContext.reject(DragPayload.officeCard); return false }
         return OfficeCardDrop.perform(store: store, floor: floor)
     }
