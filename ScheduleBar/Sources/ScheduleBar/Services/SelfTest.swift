@@ -1823,20 +1823,39 @@ enum SelfTest {
               ScheduleDayPrefsStore.shared.showSaturday == false
               && ScheduleDayPrefsStore.shared.showSunday == true)
 
-        // 9) 表格自然宽（决定面板要不要加宽）
-        print("--- 9) 表格自然宽 / 面板加宽依据 ---")
-        check("6 列自然宽 = 680（默认视图）",
-              ScheduleWeek.tableNaturalWidth(columns: 6) == 680,
-              "\(ScheduleWeek.tableNaturalWidth(columns: 6))")
-        check("7 列自然宽 = 782（已超过 709 的内容区）",
-              ScheduleWeek.tableNaturalWidth(columns: 7) == 782,
-              "\(ScheduleWeek.tableNaturalWidth(columns: 7))")
-        check("6 列（含滚动条余量）= 700 ≤ 709 → 默认视图面板不变宽",
-              ScheduleWeek.tableIdealWidth(columns: 6) <= 709,
-              "\(ScheduleWeek.tableIdealWidth(columns: 6))")
-        check("7 列（含滚动条余量）= 802 > 709 → 面板加宽 93pt",
-              ScheduleWeek.tableIdealWidth(columns: 7) == 802,
-              "\(ScheduleWeek.tableIdealWidth(columns: 7))")
+        // 9) 列宽自适应 —— 7 列时压缩列宽，**不撑宽面板**（2026-09-26 用户要求）
+        print("--- 9) 列宽自适应 / 整表必须放得进内容区 ---")
+        check("面板基础内容宽 = 709（= 880 − 170 − 1）",
+              ScheduleWeek.baseContentWidth == 709)
+        check("本人/班级课表：6 列列宽 = 94（默认视图零回归）",
+              ScheduleWeek.scheduleColumnWidth(columns: 6) == 94,
+              "\(ScheduleWeek.scheduleColumnWidth(columns: 6))")
+        check("本人/班级课表：7 列列宽被压到 80",
+              ScheduleWeek.scheduleColumnWidth(columns: 7) == 80,
+              "\(ScheduleWeek.scheduleColumnWidth(columns: 7))")
+        check("本人/班级课表：5 列不触发压缩（仍 94）",
+              ScheduleWeek.scheduleColumnWidth(columns: 5) == 94,
+              "\(ScheduleWeek.scheduleColumnWidth(columns: 5))")
+        check("本人/班级课表：6 列整表 = 680（与旧版逐像素一致）",
+              ScheduleWeek.scheduleTableWidth(columns: 6) == 680,
+              "\(ScheduleWeek.scheduleTableWidth(columns: 6))")
+        check("本人/班级课表：7 列整表 684 ≤ 689（709 − 20 滚动条余量）→ 一列都不会被切",
+              ScheduleWeek.scheduleTableWidth(columns: 7)
+                <= ScheduleWeek.baseContentWidth - ScheduleWeek.scrollBarAllowance,
+              "\(ScheduleWeek.scheduleTableWidth(columns: 7))")
+        check("他人课表：6 列列宽 = 85（默认视图零回归）",
+              ScheduleWeek.teacherColumnWidth(columns: 6) == 85,
+              "\(ScheduleWeek.teacherColumnWidth(columns: 6))")
+        check("他人课表：7 列列宽被压到 77",
+              ScheduleWeek.teacherColumnWidth(columns: 7) == 77,
+              "\(ScheduleWeek.teacherColumnWidth(columns: 7))")
+        check("他人课表：7 列整表 683 ≤ 689 → 一列都不会被切",
+              ScheduleWeek.teacherTableWidth(columns: 7)
+                <= ScheduleWeek.baseContentWidth - ScheduleWeek.scrollBarAllowance,
+              "\(ScheduleWeek.teacherTableWidth(columns: 7))")
+        check("列宽下限生效：列数极大时封底到 minColumnWidth（不会压成 0）",
+              ScheduleWeek.scheduleColumnWidth(columns: 20) == ScheduleWeek.minColumnWidth,
+              "\(ScheduleWeek.scheduleColumnWidth(columns: 20))")
 
         // 10) 真落盘：走 SaveHub.writeAll 里那两个 save()，写出来的必须是 7 列
         //     （load() 迁移对了但 save() 又写回 6 列的话，下次读回来还得再迁一次 —— 必须有这层）

@@ -16,8 +16,15 @@ struct PersonalScheduleView: View {
     @State private var selected: ScheduleCellID? = nil
     @State private var editing: ScheduleCellID? = nil
 
-    // 与班级课表严格一致：标签 52 + n×94 + 间距 8×n（n = 可见列数，周六/周日按开关增减）
-    private let colWidth: CGFloat = 94
+    // 与班级课表严格一致：节次标签 52 + n×(列宽 + 间距 8)（n = 可见列数，周六/周日按开关增减）
+    //
+    // ⚠️ 列宽**不是常量**：2026-09-26 用户要求「显示周六时自动缩小列宽，保证整体没有向右扩展宽度」。
+    //    面板内容区恒为 709（课表页不再撑宽面板），所以 7 列时列宽由 94 压到 80，
+    //    整表 684 ≤ 689（709 − 20 滚动条余量），一列都不会被切。
+    //    6 列以内仍是 94 → 默认视图与旧版像素级一致。
+    private var colWidth: CGFloat {
+        ScheduleWeek.scheduleColumnWidth(columns: dayPrefs.visibleDayCount)
+    }
 
     /// 跨天自动刷新（避免过了午夜仍高亮昨天那一列）
     @ObservedObject private var clock = TodayClock.shared

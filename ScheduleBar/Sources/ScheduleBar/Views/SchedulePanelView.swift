@@ -91,23 +91,28 @@ struct SchedulePanelView: View {
 
     @ObservedObject private var classroomStore = ClassroomStore.shared
 
-    /// 星期列显隐（三张课表共用）—— 课表的列数会变，面板宽度得跟着重算，
-    /// 所以这一页必须观察它，否则开关一切换面板宽度不更新（表格右侧被裁）。
+    /// 星期列显隐（三张课表共用）。
+    /// ⚠️ 面板宽度**不再**随它变（2026-09-26 起课表页固定基础宽度、靠压缩列宽容纳 7 列），
+    ///    这里观察它只是为了宽度取证日志能把「可见星期列」一起打出来。
     @ObservedObject private var dayPrefs = ScheduleDayPrefsStore.shared
 
-    /// 面板基础宽度下、内容区能拿到的宽度（减去侧栏与分隔线）
-    private var contentBaseWidth: CGFloat { basePanelWidth - navColumnWidth - 1 }
+    /// 面板基础宽度下、内容区能拿到的宽度（减去侧栏与分隔线）。
+    /// ⚠️ 课表页的版式常量 `ScheduleWeek.baseContentWidth` 必须与它相等（自检里有断言）。
+    private var contentBaseWidth: CGFloat {
+        let w = basePanelWidth - navColumnWidth - 1
+        assert(abs(w - ScheduleWeek.baseContentWidth) < 0.5,
+               "面板基础内容宽 \(w) 与 ScheduleWeek.baseContentWidth \(ScheduleWeek.baseContentWidth) 不一致")
+        return w
+    }
 
     /// 当前这一页「自然需要」的宽度 —— 只有会横向变长的板块登记在这里，其余按基础宽度。
+    /// ⚠️ 课表页**故意不登记**：2026-09-26 用户要求「显示周六时不往右扩宽、自动缩小列宽」，
+    ///    所以 `.personal` / `.class7` 一律返回基础宽度，列宽由 `ScheduleWeek.scheduleColumnWidth`
+    ///    按可见列数压缩（见 ScheduleDayPrefsStore 顶部说明）。
     private var currentPageIdealWidth: CGFloat {
         switch selectedTab {
         case .classroom: return classroomStore.idealContentWidth
         case .calendar:  return ChongqingCalendarView.idealWidth   // 备注栏加宽后需要的宽度
-        // 本人 / 班级课表：列数随「显示周六 / 周日」变化
-        // （6 列 = 700 不撑宽 709、7 列 = 802 → 面板加宽 93pt；含滚动条余量，见 ScheduleWeek）
-        case .personal, .class7:
-            return max(contentBaseWidth,
-                       ScheduleWeek.tableIdealWidth(columns: dayPrefs.visibleDayCount))
         default:         return contentBaseWidth
         }
     }
@@ -263,26 +268,32 @@ struct SchedulePanelView: View {
             //    「备份全部数据 → 备份数据」「从备份恢复 → 恢复数据」「清空所有数据 → 清空数据」。
             //    侧栏只有 170pt 宽，四个字一行刚好；「全部/所有」这类冗余词去掉更清爽。
             //    作用范围写在 `.help()` 里，"检查更新" 本来就是四个字、不用改。
+            // ⚠️ 2026-09-26 第二处修改：用户反馈「这图的两侧空白较多，尽量与上面的板块宽度相同」。
+            //    实测（截图 2x 量像素）：导航项目内的胶囊 = 16…154 = **138pt**，
+            //    而这里的按钮 = 22…148 = **126pt**，左右各多空 6pt。
+            //    所以内边距 22 → **16**（= 导航项的 `.padding(.horizontal, 16)`），
+            //    并把 Label 改成 `.leading` 对齐 —— 否则 bordered 按钮的标签是**居中**的，
+            //    与上面「图标在左、文字紧随」的导航项对不齐（宽度一样了但看着还是不齐）。
             VStack(alignment: .leading, spacing: 8) {
                 Button {
                     BackupService.exportBackup()
                 } label: {
                     Label("备份数据", systemImage: "archivebox")
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .help("一键导出全部数据与设置（课表/学生/座位/提醒/备注/布局/设置）到备份文件")
                 Button {
                     BackupService.importBackup()
                 } label: {
                     Label("恢复数据", systemImage: "arrow.counterclockwise.circle")
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .help("从备份文件一键导入并恢复全部数据与设置（恢复后自动重启生效）")
                 Button {
                     AppCoordinator.shared.clearAllData()
                 } label: {
                     Label("清空数据", systemImage: "trash.slash")
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .foregroundStyle(.red)
                 .help("清空全部业务数据（课表/师资/学生/工位/教室/座位/延时监考/提醒），保留表结构，重启生效")
@@ -290,7 +301,7 @@ struct SchedulePanelView: View {
                     AppCoordinator.shared.checkForUpdate(manually: true)
                 } label: {
                     Label("检查更新", systemImage: "arrow.triangle.2.circlepath.circle")
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .help("连接 GitHub 检查新版本；发现新版本会打开下载地址")
                 Toggle("Dock 图标", isOn: $showDockIcon)
@@ -301,14 +312,14 @@ struct SchedulePanelView: View {
                     NSApp.terminate(nil)
                 } label: {
                     Label("退出", systemImage: "power")
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .foregroundStyle(.red)
                 .keyboardShortcut("q", modifiers: [.command])
                 .help("退出教师助手 (⌘Q)")
             }
             .buttonStyle(.bordered)
-            .padding(.horizontal, 22)
+            .padding(.horizontal, 16)
             .padding(.vertical, 14)
         }
         // 宽度由外层 .frame(width: navColumnWidth) 统一决定，这里只负责填满并左对齐。

@@ -150,8 +150,11 @@ struct ClassScheduleView: View {
     @ObservedObject private var clock = TodayClock.shared
     private var store: ClassScheduleStore { classStore }
 
-    // 与个人课表严格一致：标签 52 + n×94 + 间距 8×n（n = 可见列数，周六/周日按开关增减）
-    private let colWidth: CGFloat = 94
+    // 与本人课表严格一致：节次标签 52 + n×(列宽 + 间距 8)（n = 可见列数，周六/周日按开关增减）
+    // ⚠️ 列宽随可见列数自适应（7 列时 94 → 80），面板不再为课表撑宽 —— 见 PersonalScheduleView 的说明。
+    private var colWidth: CGFloat {
+        ScheduleWeek.scheduleColumnWidth(columns: dayPrefs.visibleDayCount)
+    }
 
     /// 星期列显隐（三张课表共用一份设置）
     @ObservedObject private var dayPrefs = ScheduleDayPrefsStore.shared

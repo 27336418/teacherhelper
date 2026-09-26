@@ -62,24 +62,79 @@ enum ScheduleWeek {
         return map
     }
 
-    /// 本人课表 / 班级课表的表格自然宽度（两页版式完全一致，所以只留一份）：
-    /// 外层 `.padding(8)` → 16 + 标签 52 + n×94(列宽) + n×8(间距)
-    /// （n = 可见列数；6 列 = 680 不撑宽面板，7 列 = 782 → 面板要跟着加宽）
-    static func tableNaturalWidth(columns n: Int) -> CGFloat {
-        guard n > 0 else { return 0 }
-        return 16 + 52 + CGFloat(n) * 94 + CGFloat(n) * 8
-    }
+    // MARK: 列宽自适应（2026-09-26 用户要求）
+    //
+    // 用户原话：「显示星期6的时候自动缩小列宽，保证整体没有向右扩展宽度，保证协调性」。
+    // 旧做法是「7 列 → 把面板从 880 撑到 973」，实测有两个问题：
+    //   ① 撑宽会被屏幕右边缘截断（SchedulePanelView 里「右边缘不越屏」），
+    //      结果面板还是 880 而表格按 782 排 → **最后一列（周日）被切掉**（用户截图）；
+    //   ② 「回到周一~周五」时窗口又缩回去，一开一关整个面板左右跳。
+    // 现在改成：表格**永远**放进 `baseContentWidth` 里，多出列就**等分压缩列宽**。
+    // 效果：6 列以内列宽仍是 94（既有观感零回归）；7 列压到 80，整表 684 ≤ 689。
+
+    /// 课表页可用的内容宽度 —— 必须等于 `SchedulePanelView.contentBaseWidth`
+    /// （= 880 面板 − 170 侧栏 − 1 分隔线）。`--selftest-week` 里有断言守着。
+    static let baseContentWidth: CGFloat = 709
+
+    /// 列宽上限（6 列以内都用它，保持既有观感）
+    static let baseColumnWidth: CGFloat = 94
+    /// 列宽下限（7 列压缩后约 80；留点余量，免得以后再加列把字挤没）
+    static let minColumnWidth: CGFloat = 72
 
     /// 纵向滚动条占宽余量。
     /// ⚠️ macOS 系统设置里选「始终显示滚动条」时，滚动条会**占宽**而不是覆盖内容，
-    ///    不留余量的话最后一列会被切掉一小条（7 列时正好顶到边界，一点余量都没有）。
+    ///    不留余量的话最后一列会被切掉一小条。
     static let scrollBarAllowance: CGFloat = 20
 
-    /// 课表页真正向面板索要的宽度 = 表格自然宽 + 滚动条余量。
-    /// （6 列 = 700 ≤ 709 → 面板不变宽；7 列 = 802 > 709 → 面板加宽 93pt）
-    static func tableIdealWidth(columns n: Int) -> CGFloat {
+    /// 通用解：「固定宽 fixed + n 个（列宽 + gap）」的表格，在 available 里每列能分到多宽。
+    /// 优先用 base；放不下就**等分压缩**（下限 minWidth）—— 于是整表缩进原宽度、不往右扩。
+    /// 向下取整到整数 pt，避免半像素把格子画糊。
+    static func fittedColumnWidth(columns n: Int, available: CGFloat,
+                                  padding: CGFloat, fixed: CGFloat,
+                                  gap: CGFloat, base: CGFloat,
+                                  minWidth: CGFloat) -> CGFloat {
+        guard n > 0 else { return base }
+        let usable = available - padding - fixed - scrollBarAllowance
+        let raw = (usable - CGFloat(n) * gap) / CGFloat(n)
+        return max(minWidth, min(base, raw.rounded(.down)))
+    }
+
+    /// 本人课表 / 班级课表的列宽（两页版式完全一致，所以只留一份）：
+    /// 外层 `.padding(8)` → 16 + 节次标签 52 + n×(列宽 + 间距 8)
+    /// · 6 列 → 94（= 680，与旧版完全一致）
+    /// · 7 列 → 80（= 684，仍然 ≤ 709 − 20 滚动条余量）
+    static func scheduleColumnWidth(columns n: Int,
+                                    available: CGFloat = baseContentWidth) -> CGFloat {
+        fittedColumnWidth(columns: n, available: available,
+                          padding: 16, fixed: 52, gap: 8,
+                          base: baseColumnWidth, minWidth: minColumnWidth)
+    }
+
+    /// 本人课表 / 班级课表的整表宽度（含卡片内边距），用于自检断言「放得下」。
+    static func scheduleTableWidth(columns n: Int,
+                                   available: CGFloat = baseContentWidth) -> CGFloat {
         guard n > 0 else { return 0 }
-        return tableNaturalWidth(columns: n) + scrollBarAllowance
+        return 16 + 52
+            + CGFloat(n) * (scheduleColumnWidth(columns: n, available: available) + 8)
+    }
+
+    /// 他人课表的列宽（版式与上面两张不同）：
+    /// 页面 `.padding(16)` → 32 + 卡片 `.padding(10)` → 20，合计左右内边距 **52**；
+    /// 节次列 50、间距 6、基准列宽 85。
+    /// 7 列全开时 52 + 50 + 7×91 = 739 会远超 689（滚动条一占宽被切掉 ~30pt），
+    /// 所以同样走压缩：7 列 → 77（整表 683）。
+    static func teacherColumnWidth(columns n: Int,
+                                   available: CGFloat = baseContentWidth) -> CGFloat {
+        fittedColumnWidth(columns: n, available: available,
+                          padding: 52, fixed: 50, gap: 6,
+                          base: 85, minWidth: 66)
+    }
+
+    static func teacherTableWidth(columns n: Int,
+                                  available: CGFloat = baseContentWidth) -> CGFloat {
+        guard n > 0 else { return 0 }
+        return 52 + 50
+            + CGFloat(n) * (teacherColumnWidth(columns: n, available: available) + 6)
     }
 
     /// 表头认不出星期时的**位置兜底**：

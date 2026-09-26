@@ -19,10 +19,15 @@ struct TeacherScheduleView: View {
     /// 其余格子转灰 —— 与「班级课表」`ScheduleCell` 完全同一套观感。
     @State private var selectedCell: (row: Int, col: Int)?
 
-    // 网格尺寸：内容区可用宽度 ≈ 880(面板) − 170(侧栏) − 1(分隔) − 32(外边距) − 16(卡片内边距) ≈ 660
-    // 7 天全开时 50 + 6×gap + 7×85 ≈ 656 也放得下，隐藏周六/周日只会更宽裕。
+    // 网格尺寸：内容区 709（面板 880 − 侧栏 170 − 分隔 1）
+    //         − 页面内边距 32（`.padding(16)`）− 卡片内边距 20（`.padding(10)`）− 滚动条余量 20 = 637
+    // 6 列以内：50 + 6×91 = 596 放得下 → 保持 85（与旧版一致，零回归）
+    // 7 列全开：50 + 7×91 = 687 **放不下**（旧版会顶破、最后一列被切）
+    //           → 列宽自动压到 77（2026-09-26 用户要求「不往右扩宽、自动缩小列宽」）
     private let periodWidth: CGFloat = 50
-    private let cellWidth: CGFloat = 85
+    private var cellWidth: CGFloat {
+        ScheduleWeek.teacherColumnWidth(columns: dayPrefs.visibleDayCount)
+    }
     private let cellHeight: CGFloat = 38
     private let gap: CGFloat = 6
 
