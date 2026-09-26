@@ -19,12 +19,19 @@ struct TeacherScheduleView: View {
     /// 其余格子转灰 —— 与「班级课表」`ScheduleCell` 完全同一套观感。
     @State private var selectedCell: (row: Int, col: Int)?
 
-    // 网格尺寸：内容区可用宽度 ≈ 880(面板) − 118(侧栏) − 1(分隔) − 32(外边距) − 16(卡片内边距) ≈ 713
-    // 50 + 6 + 7×85 + 6×6 = 687 ≤ 713，右侧「周天」不会被裁掉。
+    // 网格尺寸：内容区可用宽度 ≈ 880(面板) − 170(侧栏) − 1(分隔) − 32(外边距) − 16(卡片内边距) ≈ 660
+    // 7 天全开时 50 + 6×gap + 7×85 ≈ 656 也放得下，隐藏周六/周日只会更宽裕。
     private let periodWidth: CGFloat = 50
     private let cellWidth: CGFloat = 85
     private let cellHeight: CGFloat = 38
     private let gap: CGFloat = 6
+
+    /// 星期列显隐（三张课表共用一份设置）
+    @ObservedObject private var dayPrefs = ScheduleDayPrefsStore.shared
+
+    /// 当前可见的星期列下标 —— 数据永远是 7 列（周一~周五 / 周六 / 周天），
+    /// 这里只是**渲染层过滤**，隐藏不会删掉任何一节课。
+    private var visibleDays: [Int] { dayPrefs.visibleDayIndices }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -68,6 +75,7 @@ struct TeacherScheduleView: View {
             HStack(spacing: 8) {
                 EditableCardTitle(icon: "tablecells", key: "teacher")
                 Spacer(minLength: 8)
+                WeekVisibilityMenu()
                 UndoButton()
                 SaveButton()
                 Button {
@@ -316,8 +324,8 @@ struct TeacherScheduleView: View {
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(.secondary)
                 .frame(width: periodWidth, height: 24)
-            ForEach(TeacherBlock.days, id: \.self) { d in
-                Text(d)
+            ForEach(visibleDays, id: \.self) { d in
+                Text(TeacherBlock.days[d])
                     .font(.system(size: 11, weight: .bold))
                     .frame(width: cellWidth, height: 24)
                     .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.06)))
@@ -339,7 +347,7 @@ struct TeacherScheduleView: View {
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
                             .frame(width: periodWidth, height: cellHeight)
-                        ForEach(TeacherBlock.days.indices, id: \.self) { col in
+                        ForEach(visibleDays, id: \.self) { col in
                             let cellText = block.cells[row][col]
                             let key = cellText.trimmingCharacters(in: .whitespacesAndNewlines)
                             TeacherCell(

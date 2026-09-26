@@ -45,12 +45,13 @@ final class TodayClock: ObservableObject {
         if start != today { today = start }
     }
 
-    /// 今天对应的课表列下标（周一~周五 → 0~4，周日 → 5，周六 → nil）
+    /// 今天对应的课表列下标（周一~周六 → 0~5，周日 → 6）
+    /// ⚠️ 课表现在是 7 列：周六在 index 5、周日在 index 6（见 `ScheduleWeek`）。
     var weekdayColumn: Int? {
-        let wd = Calendar.current.component(.weekday, from: today)
+        let wd = Calendar.current.component(.weekday, from: today)   // 1 = 周日 … 7 = 周六
         switch wd {
-        case 2...6: return wd - 2
-        case 1:     return 5
+        case 2...7: return wd - 2          // 周一~周六 → 0~5
+        case 1:     return ScheduleWeek.sunday
         default:    return nil
         }
     }

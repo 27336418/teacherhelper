@@ -150,10 +150,16 @@ struct ClassScheduleView: View {
     @ObservedObject private var clock = TodayClock.shared
     private var store: ClassScheduleStore { classStore }
 
-    // 与个人课表严格一致：标签 52 + 6×94 + 间距 8×5 = 656，撑满内容区
+    // 与个人课表严格一致：标签 52 + n×94 + 间距 8×n（n = 可见列数，周六/周日按开关增减）
     private let colWidth: CGFloat = 94
 
-    /// 今天对应的表头列下标（周一~周五→0~4，周日→5；周六无列返回 nil）
+    /// 星期列显隐（三张课表共用一份设置）
+    @ObservedObject private var dayPrefs = ScheduleDayPrefsStore.shared
+
+    /// 当前可见的星期列下标 —— 数据永远是 7 列，这里只是**渲染层过滤**，隐藏不删数据
+    private var visibleDays: [Int] { dayPrefs.visibleDayIndices }
+
+    /// 今天对应的表头列下标（周一~周六→0~5，周日→6）
     private var todayColumn: Int? { clock.weekdayColumn }
     private let labelWidth: CGFloat = 52
     private let spacing: CGFloat = 8
@@ -304,7 +310,7 @@ struct ClassScheduleView: View {
                                             }
                                         }
                                         .help("右键可删除此节次")
-                                    ForEach(0..<ClassLayout.days.count, id: \.self) { d in
+                                    ForEach(visibleDays, id: \.self) { d in
                                         let id = ScheduleCellID(period: p, day: d)
                                         let cellText = classStore.cell(p, d)
                                         let cellKey = courseKey(cellText)
@@ -377,6 +383,7 @@ struct ClassScheduleView: View {
                     .help("设为默认班级：下次打开应用直接显示这个班")
             }
             Spacer()
+            WeekVisibilityMenu()
             UndoButton()
             SaveButton()
             // 与个人课表风格一致：右上角「导入」下拉 + 「下载」
@@ -407,7 +414,7 @@ struct ClassScheduleView: View {
     private var columnHeaderRow: some View {
         HStack(spacing: spacing) {
             Text("节次").font(.caption.bold()).frame(width: labelWidth, alignment: .leading)
-            ForEach(0..<ClassLayout.days.count, id: \.self) { d in
+            ForEach(visibleDays, id: \.self) { d in
                 let isToday = d == todayColumn
                 Text(ClassLayout.days[d]).font(.caption.bold())
                     .frame(width: colWidth)

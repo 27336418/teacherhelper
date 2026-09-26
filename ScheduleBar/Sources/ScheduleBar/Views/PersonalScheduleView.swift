@@ -16,13 +16,19 @@ struct PersonalScheduleView: View {
     @State private var selected: ScheduleCellID? = nil
     @State private var editing: ScheduleCellID? = nil
 
-    // 与班级课表严格一致：标签 52 + 6×94 + 间距 8×5 = 656，撑满内容区
+    // 与班级课表严格一致：标签 52 + n×94 + 间距 8×n（n = 可见列数，周六/周日按开关增减）
     private let colWidth: CGFloat = 94
 
     /// 跨天自动刷新（避免过了午夜仍高亮昨天那一列）
     @ObservedObject private var clock = TodayClock.shared
 
-    /// 今天对应的表头列下标（周一~周五→0~4，周日→5；周六无列返回 nil）
+    /// 星期列显隐（三张课表共用一份设置）
+    @ObservedObject private var dayPrefs = ScheduleDayPrefsStore.shared
+
+    /// 当前可见的星期列下标 —— 数据永远是 7 列，这里只是**渲染层过滤**，隐藏不删数据
+    private var visibleDays: [Int] { dayPrefs.visibleDayIndices }
+
+    /// 今天对应的表头列下标（周一~周六→0~5，周日→6）
     private var todayColumn: Int? { clock.weekdayColumn }
     private let labelWidth: CGFloat = 52
     private let spacing: CGFloat = 8
@@ -115,6 +121,7 @@ struct PersonalScheduleView: View {
         HStack {
             EditableCardTitle(icon: "person.crop.rectangle", key: "personal")
             Spacer()
+            WeekVisibilityMenu()
             UndoButton()
             SaveButton()
             // 与班级课表风格一致：右上角「导入」下拉 + 「下载」
@@ -134,7 +141,7 @@ struct PersonalScheduleView: View {
     private var columnHeaderRow: some View {
         HStack(spacing: spacing) {
             Text("节次").font(.caption.bold()).frame(width: labelWidth, alignment: .leading)
-            ForEach(0..<ScheduleStore.days.count, id: \.self) { d in
+            ForEach(visibleDays, id: \.self) { d in
                 let isToday = d == todayColumn
                 Text(ScheduleStore.days[d]).font(.caption.bold())
                     .frame(width: colWidth)
@@ -165,7 +172,7 @@ struct PersonalScheduleView: View {
                 }
                 .help("右键可删除此节次")
 
-            ForEach(0..<ScheduleStore.days.count, id: \.self) { d in
+            ForEach(visibleDays, id: \.self) { d in
                 cellView(period: p, day: d)
             }
         }

@@ -16,13 +16,16 @@ struct PersonalData: Codable {
     var grid: [[String]]
 }
 
-/// 个人课表存储（6 天；周一~周五 + 周日）
+/// 个人课表存储（7 天；周一~周五 + 周六 + 周日 —— 周六/周日可在界面里显示或隐藏）
 /// 单元格内容为班级/巡班文本，如 "7"、"8"、"巡1-15班"、"8班+巡16-30"
 final class ScheduleStore: ObservableObject {
     static let shared = ScheduleStore()
 
-    // 列：星期（6 天；周六已移除，顺序：周一→周五，然后周日）
-    static let days = ["周一", "周二", "周三", "周四", "周五", "周日"]
+    // 列：星期（7 天；顺序：周一→周五、周六、周日）
+    // ⚠️ 周六在 index 5、周日在 index 6 —— 与 ClassLayout.days / TeacherBlock.days 保持一致。
+    //    6→7 列迁移必须在 index 5 **插入空白周六**（见 addSaturdayColumn），
+    //    整行右移或在末尾补空都会让用户的周日数据落到周六列上。
+    static let days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
     /// 默认布局：上午 5 节 + 下午 4 节 + 晚自习 4 节
     static let defaultGroups: [PersonalGroup] = [
@@ -271,29 +274,43 @@ final class ScheduleStore: ObservableObject {
     }
 
     // MARK: 加载与迁移
+
+    /// 6 列（周一~周五 + 周日）→ 7 列：在 **index 5 插入空白周六**。
+    ///
+    /// 历史沿革：最老的版本本来就是 7 列（周一~周日，周六在 index 5），
+    /// 后来「去掉周六」把那第 5 列删掉 → 周日从 index 6 落到 index 5。
+    /// 现在恢复 7 列，所以：
+    ///   · 7 列的老文件 ≈ 新布局，**原样保留**（⚠️ 千万不要再删 index 5）；
+    ///   · 6 列的文件必须把空白周六插回 index 5，周日才会回到 index 6。
+    private static func addSaturdayColumn(_ rows: [[String]]) -> [[String]] {
+        rows.map { row in
+            guard row.count == days.count - 1 else { return row }
+            var r = row
+            r.insert("", at: days.count - 2)   // 插在「周日」前面
+            return r
+        }
+    }
+
     static func load() -> PersonalData? {
         let url = fileURL()
         guard let raw = try? Data(contentsOf: url) else { return nil }
 
         // 新格式：{"groups","grid"}
         if let d = try? JSONDecoder().decode(PersonalData.self, from: raw), !d.groups.isEmpty {
-            return normalize(d)
+            return normalize(PersonalData(groups: d.groups, grid: addSaturdayColumn(d.grid)))
         }
         // 中间格式：{"periods","grid"} → 按名称归入 上午/下午/晚自习
         if let d = try? JSONDecoder().decode([String: [[String]]].self, from: raw),
            let oldPeriods = d["periods"]?.compactMap({ $0.first }),
            let oldGrid = d["grid"], !oldPeriods.isEmpty {
-            return normalize(regroup(periods: oldPeriods, grid: oldGrid))
+            return normalize(regroup(periods: oldPeriods, grid: addSaturdayColumn(oldGrid)))
         }
-        // 最旧格式：纯 [[String]]（7 列时去掉周六）
-        if var rows = try? JSONDecoder().decode([[String]].self, from: raw) {
-            if rows.first?.count == 7 {
-                for i in rows.indices where rows[i].count == 7 { rows[i].remove(at: 5) }
-            }
+        // 最旧格式：纯 [[String]]（7 列 = 周一~周日，已经是新布局，原样使用）
+        if let rows = try? JSONDecoder().decode([[String]].self, from: raw) {
             let oldPeriods = rows.count == legacyPeriods.count
                 ? legacyPeriods
                 : (0..<rows.count).map { "第\($0 + 1)节" }
-            return normalize(regroup(periods: oldPeriods, grid: rows))
+            return normalize(regroup(periods: oldPeriods, grid: addSaturdayColumn(rows)))
         }
         return nil
     }

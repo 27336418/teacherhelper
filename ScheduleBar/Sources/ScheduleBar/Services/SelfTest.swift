@@ -1684,4 +1684,197 @@ enum SelfTest {
             print("ERROR: \(error.localizedDescription)")
         }
     }
+
+    // MARK: 星期列自检（7 列 / 隐藏周六 / 6→7 列迁移）
+    // 用法：ScheduleBar --selftest-week
+    // 覆盖：三张表列定义一致、**6→7 列迁移必须把周日留在周日列**、最旧 7 列格式不再被删列、
+    //       星期标签识别、导入列定位（先认表头再兜底）、可见列下标、表格自然宽（面板加宽依据）。
+    static func runWeekColumnCheck() {
+        let tmp = "/tmp/selftest-week-\(UUID().uuidString.prefix(8))"
+        try? FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+        setenv("SCHEDULEBAR_DATA_DIR", tmp, 1)
+        defer {
+            unsetenv("SCHEDULEBAR_DATA_DIR")
+            try? FileManager.default.removeItem(atPath: tmp)
+        }
+        print("临时数据目录 = \(tmp)（真实 personal.json / classes.json 不受影响）")
+
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            print("  \(ok ? "✓" : "✗") \(name)\(detail.isEmpty ? "" : "  [\(detail)]")")
+            ok ? (pass += 1) : (fail += 1)
+        }
+
+        // 1) 三张课的星期列定义必须完全一致：周六 = index 5、周日 = index 6
+        print("--- 1) 三张表的星期列定义 ---")
+        check("本人课表 7 列、周六=5 / 周日=6",
+              ScheduleStore.days.count == 7 && ScheduleStore.days[5] == "周六" && ScheduleStore.days[6] == "周日",
+              ScheduleStore.days.joined(separator: ","))
+        check("班级课表 7 列、周六=5 / 周日=6",
+              ClassLayout.days.count == 7 && ClassLayout.days[5] == "星期6" && ClassLayout.days[6] == "周日",
+              ClassLayout.days.joined(separator: ","))
+        check("他人课表 7 列、周六=5 / 周天=6",
+              TeacherBlock.days.count == 7 && TeacherBlock.days[5] == "周六" && TeacherBlock.days[6] == "周天",
+              TeacherBlock.days.joined(separator: ","))
+        check("ScheduleWeek.saturday=5 / sunday=6 且与 days.count 一致",
+              ScheduleWeek.saturday == 5 && ScheduleWeek.sunday == 6
+              && ScheduleStore.days.count == ScheduleWeek.columnCount)
+
+        // 2) 6→7 列迁移：周日必须仍在 index 6，周六列补空
+        print("--- 2) 6→7 列迁移（不能把周日灌进周六列）---")
+        let six = ["一", "二", "三", "四", "五", "日"]
+        let migrated = ClassLayout.migrateDayColumns(six)
+        check("6 列 → 7 列", migrated.count == 7, "\(migrated.count)")
+        check("迁移后 index 6 仍是「日」、index 5 为空（补出周六列）",
+              migrated[6] == "日" && migrated[5] == "" && migrated[0] == "一",
+              migrated.joined(separator: "|"))
+        check("已是 7 列时原样保留（幂等）", ClassLayout.migrateDayColumns(migrated) == migrated)
+        check("行宽不足 6 列时只按尾补空、不插周六列",
+              ClassLayout.migrateDayColumns(["a", "b"]) == ["a", "b", "", "", "", "", ""])
+
+        // 3) 本人课表：把 6 列旧数据写盘 → 走真实 load()
+        print("--- 3) personal.json（6 列旧数据）→ load() ---")
+        let personal6 = PersonalData(groups: ScheduleStore.defaultGroups,
+                                     grid: (0..<13).map { _ in ["一", "二", "三", "四", "五", "周日标记"] })
+        if let d = try? JSONEncoder().encode(personal6) { try? d.write(to: ScheduleStore.fileURL()) }
+        if let loaded = ScheduleStore.load(), let row = loaded.grid.first {
+            check("load() 后每行 7 列",
+                  loaded.grid.allSatisfy { $0.count == 7 },
+                  "行数=\(loaded.grid.count) 首行宽=\(row.count)")
+            check("旧 6 列的周日仍在 index 6、周六列补空",
+                  row.count == 7 && row[6] == "周日标记" && row[5] == "",
+                  row.joined(separator: "|"))
+        } else {
+            check("load() 能读出 6 列旧数据", false)
+        }
+
+        // 4) 最旧格式（纯 [[String]]，7 列 = 周一~周日）曾经被删列，现在必须原样保留
+        print("--- 4) 最旧格式（纯数组 7 列）---")
+        let oldest: [[String]] = (0..<13).map { _ in ["一", "二", "三", "四", "五", "六", "日"] }
+        if let d = try? JSONEncoder().encode(oldest) { try? d.write(to: ScheduleStore.fileURL()) }
+        if let loaded = ScheduleStore.load(), let row = loaded.grid.first {
+            check("最旧 7 列格式：周六/周日都还在（不再删 index 5）",
+                  row.count == 7 && row[5] == "六" && row[6] == "日",
+                  row.joined(separator: "|"))
+        } else {
+            check("最旧 7 列格式能读出", false)
+        }
+
+        // 5) 班级课表：classes.json 6 列 → loadBank()
+        print("--- 5) classes.json（6 列旧数据）→ loadBank() ---")
+        let cell6: [String: [String]] = ["第1节": ["一", "二", "三", "四", "五", "周日标记"]]
+        let bank6 = ClassBankData(classes: ["测试班"], defaultClass: "测试班",
+                                  bank: ["测试班": ClassData(groups: ClassLayout.defaultGroups, cells: cell6)])
+        if let d = try? JSONEncoder().encode(bank6) { try? d.write(to: ClassScheduleStore.fileURL()) }
+        if let loaded = ClassScheduleStore.loadBank(),
+           let row = loaded.bank["测试班"]?.cells["第1节"] {
+            check("loadBank() 后行宽 7", row.count == 7, "\(row.count)")
+            check("旧 6 列的周日仍在 index 6、周六列补空",
+                  row.count == 7 && row[6] == "周日标记" && row[5] == "",
+                  row.joined(separator: "|"))
+        } else {
+            check("loadBank() 能读出 6 列旧数据", false)
+        }
+        let canon = ClassLayout.canonicalize(groups: ClassLayout.defaultGroups, cells: cell6)
+        check("canonicalize 复制旧单元格时也补出周六列",
+              canon.cells["第1节"]?.count == 7 && canon.cells["第1节"]?[6] == "周日标记",
+              "\(canon.cells["第1节"]?.count ?? -1)")
+
+        // 6) 星期标签识别（含 xlsx 竖排「星⏎期⏎五」）
+        print("--- 6) 星期标签 → 列下标 ---")
+        let dayCases: [(String, Int?)] = [
+            ("周一", 0), ("星期一", 0), ("礼拜一", 0), ("周1", 0),
+            ("星期三", 2), ("星\n期\n五", 4), ("周六", 5), ("星期六", 5), ("礼拜六", 5),
+            ("周日", 6), ("周天", 6), ("星期天", 6), ("星期日", 6),
+            ("节次", nil), ("", nil),
+        ]
+        for (raw, want) in dayCases {
+            let got = ScheduleWeek.dayIndex(from: raw)
+            check("「\(raw.replacingOccurrences(of: "\n", with: "⏎"))」→ \(want.map(String.init) ?? "nil")",
+                  got == want, "实得 \(got.map(String.init) ?? "nil")")
+        }
+        check("ClassLayout.dayIndex 已改为共用实现（周六不再是 nil）",
+              ClassLayout.dayIndex(from: "星期六") == 5 && ClassLayout.dayIndex(from: "星期日") == 6)
+
+        // 7) 导入列定位：先认表头，认不出再按位置兜底
+        print("--- 7) 导入列定位（先认表头，再按位置兜底）---")
+        let map6 = ScheduleWeek.headerColumnMap(["节次", "周一", "周二", "周三", "周四", "周五", "周日"])
+        check("旧 6 天表头：周日落到 index 6 而不是 5", map6[6] == 6 && map6[5] == nil, "\(map6)")
+        let map7 = ScheduleWeek.headerColumnMap(["节次"] + ScheduleStore.days)
+        check("新 7 天表头：周六取第 6 列、周日取第 7 列", map7[5] == 6 && map7[6] == 7, "\(map7)")
+        check("位置兜底：旧 7 宽行（节次+6天）d=6 → 第 6 列",
+              ScheduleWeek.fallbackColumn(dayIndex: 6, rowWidth: 7) == 6)
+        check("位置兜底：旧 7 宽行 d=5（周六）取不到（那时表里没这列）",
+              ScheduleWeek.fallbackColumn(dayIndex: 5, rowWidth: 7) == nil)
+        check("位置兜底：新 8 宽行 d=5→6、d=6→7",
+              ScheduleWeek.fallbackColumn(dayIndex: 5, rowWidth: 8) == 6
+              && ScheduleWeek.fallbackColumn(dayIndex: 6, rowWidth: 8) == 7)
+
+        // 8) 可见列下标（默认隐藏周六、显示周日）
+        print("--- 8) 显隐 —— 默认隐藏周六、显示周日 ---")
+        check("默认（周六关、周日开）= 周一~周五 + 周日",
+              ScheduleWeek.visibleIndices(showSaturday: false, showSunday: true) == [0, 1, 2, 3, 4, 6])
+        check("全开 = 7 列", ScheduleWeek.visibleIndices(showSaturday: true, showSunday: true) == Array(0...6))
+        check("只开周六 = 周一~周六",
+              ScheduleWeek.visibleIndices(showSaturday: true, showSunday: false) == [0, 1, 2, 3, 4, 5])
+        check("全关 = 周一~周五",
+              ScheduleWeek.visibleIndices(showSaturday: false, showSunday: false) == [0, 1, 2, 3, 4])
+        check("偏好默认值 = 隐藏周六 / 显示周日",
+              ScheduleDayPrefsStore.shared.showSaturday == false
+              && ScheduleDayPrefsStore.shared.showSunday == true)
+
+        // 9) 表格自然宽（决定面板要不要加宽）
+        print("--- 9) 表格自然宽 / 面板加宽依据 ---")
+        check("6 列自然宽 = 680（默认视图）",
+              ScheduleWeek.tableNaturalWidth(columns: 6) == 680,
+              "\(ScheduleWeek.tableNaturalWidth(columns: 6))")
+        check("7 列自然宽 = 782（已超过 709 的内容区）",
+              ScheduleWeek.tableNaturalWidth(columns: 7) == 782,
+              "\(ScheduleWeek.tableNaturalWidth(columns: 7))")
+        check("6 列（含滚动条余量）= 700 ≤ 709 → 默认视图面板不变宽",
+              ScheduleWeek.tableIdealWidth(columns: 6) <= 709,
+              "\(ScheduleWeek.tableIdealWidth(columns: 6))")
+        check("7 列（含滚动条余量）= 802 > 709 → 面板加宽 93pt",
+              ScheduleWeek.tableIdealWidth(columns: 7) == 802,
+              "\(ScheduleWeek.tableIdealWidth(columns: 7))")
+
+        // 10) 真落盘：走 SaveHub.writeAll 里那两个 save()，写出来的必须是 7 列
+        //     （load() 迁移对了但 save() 又写回 6 列的话，下次读回来还得再迁一次 —— 必须有这层）
+        print("--- 10) save() 落盘宽度 ---")
+        if let d = try? JSONEncoder().encode(personal6) { try? d.write(to: ScheduleStore.fileURL()) }
+        let pStore = ScheduleStore()            // 从 6 列旧文件装载 → 应迁成 7 列
+        pStore.save()
+        if let raw = try? Data(contentsOf: ScheduleStore.fileURL()),
+           let back = try? JSONDecoder().decode(PersonalData.self, from: raw) {
+            check("本人课表 save() 后文件里每行 7 列",
+                  !back.grid.isEmpty && back.grid.allSatisfy { $0.count == 7 },
+                  "宽度=\(Set(back.grid.map(\.count)).sorted())")
+            check("本人课表落盘后周日仍在 index 6、周六列空",
+                  back.grid.first?.count == 7 && back.grid.first?[6] == "周日标记"
+                  && back.grid.first?[5] == "",
+                  (back.grid.first ?? []).joined(separator: "|"))
+        } else {
+            check("本人课表 save() 能写出可读的 personal.json", false)
+        }
+
+        if let d = try? JSONEncoder().encode(bank6) { try? d.write(to: ClassScheduleStore.fileURL()) }
+        let cStore = ClassScheduleStore()       // 同理：从 6 列旧文件装载
+        cStore.save()
+        if let raw = try? Data(contentsOf: ClassScheduleStore.fileURL()),
+           let back = try? JSONDecoder().decode(ClassBankData.self, from: raw),
+           let row = back.bank["测试班"]?.cells["第1节"] {
+            check("班级课表 save() 后单元格 7 列", row.count == 7, "宽度=\(row.count)")
+            check("班级课表落盘后周日仍在 index 6、周六列空",
+                  row.count == 7 && row[6] == "周日标记" && row[5] == "",
+                  row.joined(separator: "|"))
+        } else {
+            check("班级课表 save() 能写出可读的 classes.json", false)
+        }
+
+        // ⚠️ 汇总行里别出现「✗」字形：脚本是按行 grep '✗' 统计失败数的，
+        //    写成「✗ 0」会被当成 1 个失败（2026-09-26 实际踩到）。
+        print(fail == 0
+              ? "星期列自检全部通过 ✓（\(pass) 项）"
+              : "星期列自检存在问题：失败 \(fail) / \(pass + fail) 项")
+    }
 }

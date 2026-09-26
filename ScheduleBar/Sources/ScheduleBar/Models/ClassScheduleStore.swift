@@ -23,7 +23,9 @@ enum ClassLayout {
         ClassGroup(title: "下午", periods: ["第6节", "第7节", "第8节", "第9节"]),
         ClassGroup(title: "晚自习", periods: ["第10节", "第11节", "第12节", "第13节"]),
     ]
-    static let days = ["星期1", "星期2", "星期3", "星期4", "星期5", "周日"]
+    // ⚠️ 周六在 index 5、周日在 index 6 —— 与 ScheduleStore.days / TeacherBlock.days 一致。
+    //    6→7 列迁移见 migrateDayColumns(_:)（必须在 index 5 插入空白周六）。
+    static let days = ["星期1", "星期2", "星期3", "星期4", "星期5", "星期6", "周日"]
 
     /// 去掉换行/空格/HTML 实体：xlsx 里「星期」常写成竖排（星␊␊期␊␊一）
     static func compact(_ raw: String) -> String {
@@ -35,6 +37,16 @@ enum ClassLayout {
            .replacingOccurrences(of: "\t", with: "")
            .replacingOccurrences(of: " ", with: "")
            .replacingOccurrences(of: "　", with: "")   // 全角空格
+    }
+
+    /// 6 列（周一~周五 + 周日）→ 7 列：**在 index 5 插入空白周六**，再把行宽归一到 `days.count`。
+    /// ⚠️ 必须先插入、再补空/截断：直接按宽度补空会让周日的单元格落到周六列上。
+    static func migrateDayColumns(_ row: [String]) -> [String] {
+        var r = row
+        if r.count == days.count - 1 { r.insert("", at: days.count - 2) }
+        if r.count < days.count { r.append(contentsOf: Array(repeating: "", count: days.count - r.count)) }
+        if r.count > days.count { r = Array(r.prefix(days.count)) }
+        return r
     }
 
     // MARK: 节次标签识别（统一「第N节」体系）
@@ -161,29 +173,22 @@ enum ClassLayout {
                     newCells[label] = Array(repeating: "", count: days.count)
                 } else {
                     usedOld.insert(old)
-                    newCells[label] = cells[old] ?? Array(repeating: "", count: days.count)
+                    // ⚠️ 历史数据可能只有 6 列 → 必须补回空白周六列，别只按宽度截断/补空
+                    newCells[label] = cells[old].map(migrateDayColumns)
+                        ?? Array(repeating: "", count: days.count)
                 }
             }
         }
         return (newGroups, newCells)
     }
 
-    /// 导出用的星期名（与列下标对应：0~4 = 周一~周五，5 = 周日）
-    static let dayNames = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期日"]
+    /// 导出用的星期名（与列下标对应：0~4 = 周一~周五，5 = 周六，6 = 周日）
+    static let dayNames = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
 
-    /// 文件里的星期标签 → 列下标（周六返回 nil，表里没有周六列）
+    /// 文件里的星期标签 → 列下标（周六 = 5，周日/周天 = 6）。
+    /// 实现统一在 `ScheduleWeek.dayIndex(from:)` —— 三张课表共用一份，别再各写一份。
     static func dayIndex(from raw: String) -> Int? {
-        let s = compact(raw)
-        switch s {
-        case "星期一", "周一", "礼拜一": return 0
-        case "星期二", "周二", "礼拜二": return 1
-        case "星期三", "周三", "礼拜三": return 2
-        case "星期四", "周四", "礼拜四": return 3
-        case "星期五", "周五", "礼拜五": return 4
-        case "星期六", "周六", "礼拜六": return nil
-        case "星期日", "星期天", "周日", "周天", "礼拜日": return 5
-        default: return nil
-        }
+        ScheduleWeek.dayIndex(from: raw)
     }
 }
 
@@ -630,10 +635,9 @@ final class ClassScheduleStore: ObservableObject {
         if out.groups.isEmpty { out.groups = ClassLayout.defaultGroups }
         let n = ClassLayout.days.count
         for (k, arr) in out.cells {
-            var a = arr
-            if a.count < n { a.append(contentsOf: Array(repeating: "", count: n - a.count)) }
-            if a.count > n { a = Array(a.prefix(n)) }
-            out.cells[k] = a
+            // ⚠️ 走 migrateDayColumns：旧数据的 6 列要**在 index 5 插入空白周六**，
+            //    直接按宽度补空会让周日的单元格落到周六列上。
+            out.cells[k] = ClassLayout.migrateDayColumns(arr)
         }
         // 分组里有、cells 里没有的节次补空行
         for p in out.groups.flatMap({ $0.periods }) where out.cells[p] == nil {

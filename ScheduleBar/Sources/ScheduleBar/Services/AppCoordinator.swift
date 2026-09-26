@@ -260,7 +260,7 @@ final class AppCoordinator: ObservableObject {
                 let compactDay = ClassLayout.compact(dayRaw)
                 let looksLikeDay = compactDay.contains("星期") || compactDay.contains("周") || compactDay.contains("礼拜")
                 if looksLikeDay {
-                    // 认得出的星期 → 切块；「星期六」等表里没有的日期 → nil，跳过该块
+                    // 认得出的星期 → 切块（周六 = 5、周日/周天 = 6 都能认；认不出的标签 → nil，跳过该块）
                     currentDay = ClassLayout.dayIndex(from: dayRaw)
                 }
                 // 不是星期标签（例如合并单元格残留的字）→ 沿用上一个星期块
@@ -286,7 +286,7 @@ final class AppCoordinator: ObservableObject {
         // 3) 分组：上午（前 4 节）/ 下午（其余白天）/ 晚自习（晚X）
         let groups = makeGroups(from: periodOrder)
 
-        // 4) 组装每班数据（补齐所有节次 × 6 天）
+        // 4) 组装每班数据（补齐所有节次 × 7 天：周一~周五 + 周六 + 周日）
         var out: [(name: String, data: ClassData)] = []
         for (_, name) in classCols {
             var cells: [String: [String]] = [:]
@@ -1110,21 +1110,19 @@ final class AppCoordinator: ObservableObject {
     private func importPersonal(_ grid: [[String]]) {
         let store = ScheduleStore.shared
         var newGrid = ScheduleStore.emptyGrid(periods: store.periods)
-        for row in AppCoordinator.dropTitleRows(grid).dropFirst() {
+        let rows = AppCoordinator.dropTitleRows(grid)
+        // 星期列定位：**先认表头**（「周一 / 星期一 / 周天」都认），认不出再按位置兜底。
+        // ⚠️ 不能只按位置取：旧模板（节次 + 6 天）的第 6 个数据列是**周日**，
+        //    按位置取会把周日的内容灌进新的周六列。
+        let dayCols = rows.first.map { ScheduleWeek.headerColumnMap($0) } ?? [:]
+        for row in rows.dropFirst() {
             guard row.count > 0 else { continue }
             let label = row[0].trimmingCharacters(in: .whitespaces)
-            if let pIdx = store.periods.firstIndex(of: label) {
-                for d in 0..<ScheduleStore.days.count {
-                    // 个人课表去周六：列顺序 周一~周五(0-4)、周日(5)
-                    // 旧模板（7 列）周日在 index 6；新模板（6 列）周日在 index 5
-                    let col: Int
-                    if row.count >= 7 {
-                        col = d < 5 ? d + 1 : 6   // 旧：周五→col=5，周日→col=6
-                    } else {
-                        col = d + 1
-                    }
-                    if col < row.count { newGrid[pIdx][d] = row[col] }
-                }
+            guard let pIdx = store.periods.firstIndex(of: label) else { continue }
+            for d in 0..<ScheduleStore.days.count {
+                guard let col = dayCols[d] ?? ScheduleWeek.fallbackColumn(dayIndex: d, rowWidth: row.count),
+                      col > 0, col < row.count else { continue }
+                newGrid[pIdx][d] = row[col]
             }
         }
         store.grid = newGrid
@@ -1138,7 +1136,10 @@ final class AppCoordinator: ObservableObject {
         for p in ordered {
             newCells[p] = Array(repeating: "", count: ClassLayout.days.count)
         }
-        for row in AppCoordinator.dropTitleRows(grid).dropFirst() {
+        let rows = AppCoordinator.dropTitleRows(grid)
+        // 星期列定位：先认表头、再按位置兜底（旧模板第 6 个数据列是周日，不能傻按位置取）
+        let dayCols = rows.first.map { ScheduleWeek.headerColumnMap($0) } ?? [:]
+        for row in rows.dropFirst() {
             guard row.count > 0 else { continue }
             let raw = row[0].trimmingCharacters(in: .whitespaces)
             // 文件里的节次标签（1 / 五 / 第5节 / 晚1 …）→ 全表连续序号 → 对应节次
@@ -1146,24 +1147,22 @@ final class AppCoordinator: ObservableObject {
             let label = ordered[ord - 1]
             var dayVals = Array(repeating: "", count: ClassLayout.days.count)
             for d in 0..<ClassLayout.days.count {
-                let col = d + 1
-                if col < row.count {
-                    // 清理特殊字符：换行/回车→"·"，便于单行显示
-                    let raw = row[col]
-                    let cleaned = raw
-                        // HTML 实体（xlsx 中常以 &#10; 表示换行）
-                        .replacingOccurrences(of: "&#10;", with: "·")
-                        .replacingOccurrences(of: "&#13;", with: "·")
-                        .replacingOccurrences(of: "&#9;", with: "")
-                        .replacingOccurrences(of: "&nbsp;", with: " ")
-                        // 真实换行
-                        .replacingOccurrences(of: "\r\n", with: "·")
-                        .replacingOccurrences(of: "\n", with: "·")
-                        .replacingOccurrences(of: "\r", with: "·")
-                        .replacingOccurrences(of: "\t", with: "")
-                        .trimmingCharacters(in: .whitespaces)
-                    dayVals[d] = cleaned
-                }
+                guard let col = dayCols[d] ?? ScheduleWeek.fallbackColumn(dayIndex: d, rowWidth: row.count),
+                      col > 0, col < row.count else { continue }
+                // 清理特殊字符：换行/回车→"·"，便于单行显示
+                let cleaned = row[col]
+                    // HTML 实体（xlsx 中常以 &#10; 表示换行）
+                    .replacingOccurrences(of: "&#10;", with: "·")
+                    .replacingOccurrences(of: "&#13;", with: "·")
+                    .replacingOccurrences(of: "&#9;", with: "")
+                    .replacingOccurrences(of: "&nbsp;", with: " ")
+                    // 真实换行
+                    .replacingOccurrences(of: "\r\n", with: "·")
+                    .replacingOccurrences(of: "\n", with: "·")
+                    .replacingOccurrences(of: "\r", with: "·")
+                    .replacingOccurrences(of: "\t", with: "")
+                    .trimmingCharacters(in: .whitespaces)
+                dayVals[d] = cleaned
             }
             newCells[label] = dayVals
         }

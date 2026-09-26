@@ -41,6 +41,11 @@ struct ScheduleBarApp {
             SelfTest.runTemplateCheck()
             return
         }
+        // 星期列自检（7 列 / 隐藏周六 / 6→7 列迁移，临时数据目录）：--selftest-week
+        if args.contains("--selftest-week") {
+            SelfTest.runWeekColumnCheck()
+            return
+        }
         if let i = args.firstIndex(of: "--selftest-update") {
             let repo = (i + 1 < args.count && !args[i + 1].hasPrefix("--")) ? args[i + 1] : nil
             SelfTest.runUpdateCheck(override: repo)

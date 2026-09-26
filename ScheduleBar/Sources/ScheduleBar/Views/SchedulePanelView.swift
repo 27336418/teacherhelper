@@ -91,6 +91,10 @@ struct SchedulePanelView: View {
 
     @ObservedObject private var classroomStore = ClassroomStore.shared
 
+    /// 星期列显隐（三张课表共用）—— 课表的列数会变，面板宽度得跟着重算，
+    /// 所以这一页必须观察它，否则开关一切换面板宽度不更新（表格右侧被裁）。
+    @ObservedObject private var dayPrefs = ScheduleDayPrefsStore.shared
+
     /// 面板基础宽度下、内容区能拿到的宽度（减去侧栏与分隔线）
     private var contentBaseWidth: CGFloat { basePanelWidth - navColumnWidth - 1 }
 
@@ -99,6 +103,11 @@ struct SchedulePanelView: View {
         switch selectedTab {
         case .classroom: return classroomStore.idealContentWidth
         case .calendar:  return ChongqingCalendarView.idealWidth   // 备注栏加宽后需要的宽度
+        // 本人 / 班级课表：列数随「显示周六 / 周日」变化
+        // （6 列 = 700 不撑宽 709、7 列 = 802 → 面板加宽 93pt；含滚动条余量，见 ScheduleWeek）
+        case .personal, .class7:
+            return max(contentBaseWidth,
+                       ScheduleWeek.tableIdealWidth(columns: dayPrefs.visibleDayCount))
         default:         return contentBaseWidth
         }
     }
@@ -111,6 +120,18 @@ struct SchedulePanelView: View {
     /// 内容区可用宽度（面板实际宽度 − 侧栏 − 分隔线）。
     /// 现在只用于核对/日志：内容本身是弹性的，宽度由窗口决定。
     private var contentAvailableWidth: CGFloat { panelWidth - navColumnWidth - 1 }
+
+    /// 宽度取证（§35）：`SCHEDULEBAR_TRACE_WIDTH=1` → 日志打
+    /// 「当前页 / 可见星期列数 / 需要宽 / 面板宽 / 内容区宽」。
+    /// ⚠️ 内容被裁、左侧栏被挤时先开这个看数字，别再靠肉眼量截图。
+    /// ⚠️ 必须**在 onAppear 也调一次**：用 `--tab` 直接落在目标页时 panelWidth 从来没「变化」过，
+    ///    只挂在 `onChange(of: panelWidth)` 上会一条日志都打不出来（2026-09-26 踩到）。
+    private func traceWidth(_ tag: String) {
+        guard ProcessInfo.processInfo.environment["SCHEDULEBAR_TRACE_WIDTH"] != nil else { return }
+        SaveHub.log("面板宽度[\(tag)] 页=\(selectedTab.rawValue) 可见星期列=\(dayPrefs.visibleDayCount)"
+            + " 需要=\(Int(currentPageIdealWidth)) 面板=\(Int(panelWidth))"
+            + " 内容区=\(Int(contentAvailableWidth))")
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -135,6 +156,13 @@ struct SchedulePanelView: View {
         // 否则 SwiftUI 这边变宽了、窗口还是 880，右边照样被裁。
         .onChange(of: panelWidth) { w in
             AppDelegate.applyPanelWidth(w)
+            // 宽度取证（§35）：SCHEDULEBAR_TRACE_WIDTH=1 → 打「当前页 / 可见星期列数 / 需要宽 / 面板宽」
+            // ⚠️ 面板宽度异常（内容被裁 / 左侧栏被挤）时先开这个，别再肉眼量截图。
+            if ProcessInfo.processInfo.environment["SCHEDULEBAR_TRACE_WIDTH"] != nil {
+                SaveHub.log("面板宽度 页=\(selectedTab.rawValue) 可见星期列=\(dayPrefs.visibleDayCount)"
+                    + " 需要=\(Int(currentPageIdealWidth)) 面板=\(Int(w))"
+                    + " 内容区=\(Int(w - navColumnWidth - 1))")
+            }
         }
         // 每次切页登记缓存，之后切回不再重建（消除卡顿）
         .onChange(of: selectedTab) { t in
@@ -156,7 +184,10 @@ struct SchedulePanelView: View {
             // 那一帧 panelWidth 已经是最终值、**没有「变化」过**，光靠 onChange 会漏掉，
             // 结果是停在 880 而内容按 948 排（右边被裁）。
             let w = panelWidth
-            DispatchQueue.main.async { AppDelegate.applyPanelWidth(w) }
+            DispatchQueue.main.async {
+                AppDelegate.applyPanelWidth(w)
+                traceWidth("首帧")
+            }
         }
     }
 
