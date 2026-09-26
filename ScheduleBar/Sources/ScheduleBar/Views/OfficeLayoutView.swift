@@ -538,7 +538,9 @@ struct OfficeLayoutView: View {
         .background(RoundedRectangle(cornerRadius: 8)
             .fill(isTarget ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.05)))
         .overlay(RoundedRectangle(cornerRadius: 8)
-            .stroke(isTarget ? Color.accentColor : Color.primary.opacity(0.10), lineWidth: isTarget ? 2 : 1))
+            .stroke(isTarget ? Color.accentColor : Color.primary.opacity(0.10), lineWidth: isTarget ? 2 : 1)
+            // ⚠️ 装饰层不拦鼠标 —— 否则会挡住这一条上的「整层拖动」落点
+            .allowsHitTesting(false))
         // 整层拖动：来源楼层画淡一点，一眼看出「正在搬哪一层」
         .opacity(isSource ? 0.5 : 1)
         .contentShape(Rectangle())
@@ -937,6 +939,9 @@ struct OfficeCard: View {
                             .fill(Color.accentColor.opacity(0.06)))
                 }
             }
+            // ⚠️ 高亮层不拦鼠标：整张卡本身就是「整卡拖动 / 整层拖动」的落点，
+            //    被自己盖住就会出现「有高亮、松手却没反应」
+            .allowsHitTesting(false)
         )
         // 正在被拖动的卡片画淡一点，便于看清「哪张在动、要落到哪」
         .opacity(store.cardDragSourceID == office.id ? 0.45 : 1)
@@ -1087,6 +1092,8 @@ struct OfficeCard: View {
                         .background(RoundedRectangle(cornerRadius: 5).fill(Color.accentColor.opacity(0.18)))
                 }
             }
+            // ⚠️ 同上：格子高亮不能拦住自己身上的落点检测
+            .allowsHitTesting(false)
         )
         .contentShape(Rectangle())
         .onDrag {
@@ -1122,6 +1129,7 @@ private struct BreathingWrap<Content: View>: View {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(Color.orange, lineWidth: on ? 3 : 2)
                     .opacity(on ? 1 : 0.5)
+                    .allowsHitTesting(false)   // 呼吸高亮只是装饰，别拦住工位本身的拖拽
             )
             .shadow(color: Color.orange.opacity(on ? 0.5 : 0.15), radius: on ? 7 : 3)
             .scaleEffect(on ? 1.15 : 0.85)

@@ -313,6 +313,9 @@ struct FloorCard: View {
                         RoundedRectangle(cornerRadius: 10)
                             .strokeBorder(Color.accentColor, lineWidth: 2)
                     }
+                    // ⚠️ 高亮层绝不能拦鼠标：否则拖到这张卡上之后，
+                    //    落点检测（`.onDrop` 在标题条上）被它自己盖住 → 有高亮却松手没反应
+                    .allowsHitTesting(false)
             }
         }
         // 被拎起来的那一层自己半透明 —— 一看就知道「正在搬这一层」

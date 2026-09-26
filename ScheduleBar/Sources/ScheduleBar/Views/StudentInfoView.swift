@@ -47,6 +47,18 @@ private struct HorizontalScrollOffsetReader: NSViewRepresentable {
                 queue: .main
             ) { [weak self] _ in self?.emit() }
             emit()
+
+            // 取证（`SCHEDULEBAR_TRACE_STUDENT_SCROLL=1`）：不依赖用户交互的闭环验证 ——
+            // 程序化把 NSScrollView 滚到 300pt，再看读数是否真的传回来。
+            // 这样「滚动 → 读数 → 姓名列贴左」整条链路在一次启动内就能自证，不必靠人手滑。
+            guard ProcessInfo.processInfo.environment["SCHEDULEBAR_TRACE_STUDENT_SCROLL"] == "1" else { return }
+            DragSessionGuard.log("学生信息列冻结·读数器已挂上 NSScrollView（初始 origin=\(sv.contentView.bounds.origin)）")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak sv] in
+                guard let sv else { return }
+                sv.contentView.scroll(to: NSPoint(x: 300, y: sv.contentView.bounds.origin.y))
+                sv.reflectScrolledClipView(sv.contentView)
+                DragSessionGuard.log("学生信息列冻结·已程序化横向滚动到 300pt")
+            }
         }
 
         private func emit() {
