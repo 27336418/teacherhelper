@@ -173,6 +173,14 @@ final class ClassroomStore: ObservableObject {
     // MARK: 拖动经过的目标（只用于高亮，绝不改数据）
     @Published var dropTarget: ClassroomDropTarget?
 
+    // MARK: 整层拖动对调（2026-09-26 用户要求「整个楼层也要可以拖动，上下交换整个楼层」）
+    /// 拖动中的来源楼层下标（非 @Published，不触发视图刷新）
+    var floorDragSource: Int?
+    /// 整层拖动开始时的快照（用于撤销）
+    private var floorDragSnapshot: [ClassroomFloor]?
+    /// 拖动经过的目标楼层下标（只用于高亮）。与 `dropTarget`（格子落点）互斥，同时只亮一个。
+    @Published var floorSwapTarget: Int?
+
     // MARK: 版面宽度（供面板「右侧自动扩宽」用）
     // ⚠️ 这套数字以前是「散在 FloorCard 里写死 + 这里抄一份」，抄漏一个就会出事：
     //    2026-09-26 用户截图「右边的减号没有显示完整」—— 就是因为 `rowTailWidth` 里
@@ -228,6 +236,8 @@ final class ClassroomStore: ObservableObject {
     }
 
     func setDropTarget(floorID: UUID, rowID: UUID?, index: Int) {
+        // 格子落点与整层落点互斥：亮格子就先把整层高亮清掉（同时只亮一个，用户才分得清落点）
+        if floorSwapTarget != nil { floorSwapTarget = nil }
         let t = ClassroomDropTarget(floorID: floorID, rowID: rowID, index: index)
         if dropTarget != t { dropTarget = t }
     }
@@ -396,6 +406,59 @@ final class ClassroomStore: ObservableObject {
         dragSnapshot = nil
         if dropTarget != nil { dropTarget = nil }
         return had
+    }
+
+    // MARK: 整层拖动对调
+    func beginFloorDrag(_ index: Int) {
+        floorDragSnapshot = floors
+        floorDragSource = index
+    }
+
+    /// 高亮目标楼层（拖动经过时调用）。整层落点与格子落点互斥。
+    func setFloorSwapTarget(_ index: Int?) {
+        if dropTarget != nil { dropTarget = nil }
+        if floorSwapTarget != index { floorSwapTarget = index }
+    }
+
+    /// 整层对调：把两个楼层在列表里的位置互换（a == b 视为原地，只更新来源下标）。
+    /// 用 `swapAt` 而不是相邻位移 —— 用户要的是「上下交换整个楼层」。
+    func swapFloors(_ a: Int, _ b: Int) {
+        guard floors.indices.contains(a), floors.indices.contains(b) else { return }
+        guard a != b else { floorDragSource = b; return }
+        floors.swapAt(a, b)
+        // 松手前继续拖的话，下一跳从新位置起算
+        if floorDragSource == a { floorDragSource = b }
+        else if floorDragSource == b { floorDragSource = a }
+    }
+
+    /// 整层拖动结束：确实换过位置就注册一次撤销
+    func finishFloorDrag() {
+        defer {
+            floorDragSource = nil
+            floorDragSnapshot = nil
+            if floorSwapTarget != nil { floorSwapTarget = nil }
+        }
+        guard let snap = floorDragSnapshot, snap != floors else { return }
+        UndoService.shared.register("调整楼层顺序") { [weak self] in
+            guard let self else { return }
+            self.floors = snap
+            self.scheduleSave()
+        }
+    }
+
+    /// 整层拖动被外部打断时复位（切走 App / 窗口失去 key / 面板收起）。只清状态，不改内容、不登记撤销。
+    @discardableResult
+    func cancelFloorDrag() -> Bool {
+        let had = floorDragSource != nil || floorSwapTarget != nil
+        floorDragSource = nil
+        floorDragSnapshot = nil
+        if floorSwapTarget != nil { floorSwapTarget = nil }
+        return had
+    }
+
+    /// 某楼层当前的下标。楼层顺序会被拖动改变，所以**不要缓存下标**，每次按 id 现算。
+    func floorIndex(of id: UUID) -> Int? {
+        floors.firstIndex { $0.id == id }
     }
 
     /// 清空所有教室/办公室的名称与房号（保留楼层与格子结构，便于直接双击填写）

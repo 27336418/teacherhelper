@@ -33,6 +33,9 @@ enum DragPayload {
     /// 办公室「整个楼层」前缀（拖动楼层条 → 整层上下交换）
     /// ⚠️ 同样靠 `|` 与上面两个区分：`officefloor|floor|…` / `officecard|card|…` / `office|seat|…`
     static let officeFloor = "officefloor"
+    /// 教室分布「整个楼层」前缀（拖动楼层条 → 整层上下交换）
+    /// ⚠️ 与 classroomCell 靠 `|` 区分：`classroomfloor|floor|…` / `classroom|cell|…`
+    static let classroomFloor = "classroomfloor"
     /// 学生座位（单元格 / 待用 / 待用小组 / 小组区域）统一模块名
     static let seating = "seating"
 
@@ -70,6 +73,20 @@ enum DragPayload {
     /// 从载荷里取回「被拖动的楼层下标」（不是楼层载荷 → nil）
     static func officeFloorIndex(from raw: String?) -> Int? {
         guard let raw, belongs(raw, to: officeFloor) else { return nil }
+        let parts = raw.split(separator: "|")
+        guard parts.count >= 3 else { return nil }
+        return Int(parts[2])
+    }
+
+    /// 教室分布的楼层载荷：同样用「楼层在 `floors` 里的下标」表示来源
+    /// （拖动期间只有松手才提交，所以下标在整次拖拽里是稳定的）。
+    static func classroomFloorPayload(_ index: Int) -> String {
+        "\(classroomFloor)|floor|\(index)"
+    }
+
+    /// 从载荷里取回「被拖动的教室楼层下标」（不是该载荷 → nil）
+    static func classroomFloorIndex(from raw: String?) -> Int? {
+        guard let raw, belongs(raw, to: classroomFloor) else { return nil }
         let parts = raw.split(separator: "|")
         guard parts.count >= 3 else { return nil }
         return Int(parts[2])

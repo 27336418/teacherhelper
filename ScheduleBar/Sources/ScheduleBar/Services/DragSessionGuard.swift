@@ -159,6 +159,7 @@ enum DragSessionGuard {
         if OfficeLayoutStore.shared.cancelCardDrag() { had = true }
         if OfficeLayoutStore.shared.cancelFloorDrag() { had = true }
         if ClassroomStore.shared.cancelDrag() { had = true }
+        if ClassroomStore.shared.cancelFloorDrag() { had = true }
         // 座位表的拖动标记保存在视图 @State 里，用通知让它一起清掉
         NotificationCenter.default.post(name: .dragSessionDidReset, object: nil)
         if had { log("拖动状态已复位（\(reason)，此前有一次未完成的拖动）") }

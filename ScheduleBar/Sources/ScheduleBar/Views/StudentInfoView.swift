@@ -1,12 +1,82 @@
 import SwiftUI
 
-// MARK: - 横向滚动探针（冻结「姓名」列用）
-// 滚动容器里铺一张和整表同尺寸的透明 GeometryReader，它的 minX 就等于「表格内容左边缘」的位置，
-// 取负号即横向滚动位移。详见 `StudentInfoView` 里 `hOffset` 的说明。
-private struct StudentTableHOffsetKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+// MARK: - 横向滚动位移读取器（冻结「姓名」列用）
+//
+// ⚠️ 第一版用 `GeometryReader` + `.coordinateSpace(name:)` 读「内容左边缘的 minX」，
+//    结果冻不住：SwiftUI 的 ScrollView 在 macOS 上就是 NSScrollView，滚动是**在渲染层平移内容**，
+//    内容的布局位置（frame）并不随滚动改变 → `frame(in: .named(space)).minX` 永远等于初始值，
+//    读出来的位移恒为 0，姓名列自然跟着一起滑走（2026-09-26 用户实测截图复现）。
+//    唯一可靠的办法是直接读 NSScrollView 的真实 contentOffset（contentView.bounds.origin.x）。
+private struct HorizontalScrollOffsetReader: NSViewRepresentable {
+    /// 横向位移变化时回调（pt，已按弹性回弹方向取正）
+    var onChange: (CGFloat) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
+
+    func makeNSView(context: Context) -> NSView {
+        let v = HookView()
+        // 等它真正进入视图层级（superview 链完整）再沿链找 NSScrollView
+        v.onAttach = { [weak v] _ in
+            guard let v, let sv = v.enclosingScrollView else { return }
+            context.coordinator.attach(sv)
+        }
+        return v
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onChange = onChange      // 闭包每次重建都会更新，保证读到最新状态
+        if let sv = nsView.enclosingScrollView { context.coordinator.attach(sv) }
+    }
+
+    final class Coordinator {
+        var onChange: (CGFloat) -> Void
+        private weak var scrollView: NSScrollView?
+        private var token: NSObjectProtocol?
+        private var last: CGFloat = .nan
+
+        init(onChange: @escaping (CGFloat) -> Void) { self.onChange = onChange }
+
+        func attach(_ sv: NSScrollView) {
+            guard scrollView !== sv else { return }
+            detach()
+            scrollView = sv
+            sv.contentView.postsBoundsChangedNotifications = true
+            token = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: sv.contentView,
+                queue: .main
+            ) { [weak self] _ in self?.emit() }
+            emit()
+        }
+
+        private func emit() {
+            guard let sv = scrollView else { return }
+            let x = max(0, sv.contentView.bounds.origin.x)
+            // 去抖：变化不足 0.5pt 不回调，避免每帧都触发整表重绘
+            if last.isNaN || abs(x - last) > 0.5 {
+                last = x
+                onChange(x)
+            }
+        }
+
+        func detach() {
+            if let token { NotificationCenter.default.removeObserver(token) }
+            token = nil
+            scrollView = nil
+        }
+
+        deinit { if let token { NotificationCenter.default.removeObserver(token) } }
+    }
+
+    /// 只为了拿到 `enclosingScrollView`；`hitTest` 一律返回 nil，绝不拦截任何鼠标事件
+    final class HookView: NSView {
+        var onAttach: ((NSView) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard window != nil else { return }
+            onAttach?(self)
+        }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
 
@@ -32,10 +102,7 @@ struct StudentInfoView: View {
     private let rowHeight: CGFloat = 26
     private let gap: CGFloat = 4
 
-    /// 表格滚动容器的坐标空间名（探针与它配对使用）
-    private static let tableSpace = "studentInfoTable"
-
-    /// 当前横向滚动位移（pt）。
+    /// 当前横向滚动位移（pt），由 `HorizontalScrollOffsetReader` 直接读 NSScrollView 得到。
     ///
     /// ⚠️ 为什么用「读位移 + 反向 offset」这种土办法冻结姓名列，而不是把它拆成独立的一列：
     ///   表格是**一个** `ScrollView([.vertical, .horizontal])`，表头靠 `pinnedViews` 钉在顶部。
@@ -105,6 +172,21 @@ struct StudentInfoView: View {
             + "｜姓名列 #\(n.map(String.init) ?? "无")（\(n.map { store.headers.indices.contains($0) ? store.headers[$0] : "?" } ?? "—")）"
             + "｜该列前宽 \(prefix)pt → 横向滚过 \(prefix)pt 后钉在左边缘"
             + "｜列宽：\(store.headers.map { "\($0)=\(Int(colWidth($0).rounded()))" }.joined(separator: " "))")
+    }
+
+    /// 实时滚动位移取证（只在 `SCHEDULEBAR_TRACE_STUDENT=1` 时打印）。
+    /// 每滚过约 40pt 记一条 —— 「冻住没冻住」在日志里直接可判：位移 > 前宽时，贴左位移应 > 0。
+    @State private var tracedBucket = -1
+
+    private func traceOffset(_ x: CGFloat) {
+        guard ProcessInfo.processInfo.environment["SCHEDULEBAR_TRACE_STUDENT"] == "1" else { return }
+        let b = Int(x / 40)
+        guard b != tracedBucket else { return }
+        tracedBucket = b
+        DragSessionGuard.log("学生信息列冻结·滚动：横向位移 \(Int(x.rounded()))pt"
+            + "｜前宽 \(Int(frozenPrefixWidth.rounded()))pt"
+            + "｜贴左位移 \(Int(frozenStickX.rounded()))pt"
+            + (frozenStickX > 0 ? "｜已钉住 ✓" : "｜还没滚到该列"))
     }
 
     var body: some View {
@@ -183,19 +265,13 @@ struct StudentInfoView: View {
                     }
                 }
                 .frame(width: totalWidth)
-                // 探针：和整表同尺寸的透明层，它的 minX = 内容左边缘 → 取负即横向滚动位移
+                // 读外层 NSScrollView 的真实 contentOffset（见 HorizontalScrollOffsetReader 的说明）
                 .background(alignment: .topLeading) {
-                    GeometryReader { g in
-                        Color.clear.preference(key: StudentTableHOffsetKey.self,
-                                               value: -g.frame(in: .named(Self.tableSpace)).minX)
+                    HorizontalScrollOffsetReader { x in
+                        if abs(x - hOffset) > 0.5 { hOffset = x }
+                        traceOffset(x)
                     }
                 }
-            }
-            .coordinateSpace(name: Self.tableSpace)
-            .onPreferenceChange(StudentTableHOffsetKey.self) { v in
-                // 去抖：位移变化小于 0.5pt 不写 @State，避免每帧都触发整表重绘
-                let clamped = max(0, v)
-                if abs(clamped - hOffset) > 0.5 { hOffset = clamped }
             }
             .frame(maxHeight: .infinity)
             .padding(6)

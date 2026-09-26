@@ -1147,6 +1147,38 @@ enum SelfTest {
         let noSel = !store.deleteSelectedCell()
             && store.floors.reduce(0) { $0 + $1.cellCount } == countBefore
 
+        // 10) 整层拖动：把两层在列表里的位置互换（2026-09-26 用户要求「上下交换整个楼层」）
+        store.beginFloorDrag(0)
+        store.swapFloors(0, 1)
+        store.finishFloorDrag()
+        let floorSwap = store.floors.map(\.title) == ["5楼", "4楼"]
+
+        // 11) 整层对调可撤销
+        _ = UndoService.shared.undo()
+        let floorSwapUndo = store.floors.map(\.title) == ["4楼", "5楼"]
+
+        // 12) 整层「原地」（来源 == 目标）不改变任何数据、也不登记撤销
+        let floorSnap = store.floors
+        store.beginFloorDrag(0)
+        store.swapFloors(0, 0)
+        store.finishFloorDrag()
+        let floorSelfNoOp = store.floors == floorSnap
+
+        // 13) 整层拖动被外部打断 → 只复位状态，不动数据
+        store.beginFloorDrag(1)
+        store.setFloorSwapTarget(0)
+        let floorCancelHad = store.cancelFloorDrag()
+        let floorCancelNoOp = floorCancelHad && store.floors == floorSnap && store.floorSwapTarget == nil
+
+        // 14) 楼层下标按 id 现算（整层拖动会改顺序，不能缓存下标）
+        let floorIdxOK = store.floorIndex(of: f1) == 0 && store.floorIndex(of: f2) == 1
+
+        // 15) 整层载荷与格子载荷互不误判
+        let floorPayload = DragPayload.classroomFloorPayload(1)
+        let floorPayloadOK = DragPayload.classroomFloorIndex(from: floorPayload) == 1
+            && DragPayload.classroomFloorIndex(from: DragPayload.classroom(floor: f1, row: nil, index: 0)) == nil
+            && !DragPayload.belongs(floorPayload, to: DragPayload.classroomCell)
+
         print("跨楼层对换:     \(crossFloor ? "✓" : "✗")")
         print("对换可撤销:     \(undoSwap ? "✓" : "✗")")
         print("主行↔附加行:    \(crossRow ? "✓" : "✗")")
@@ -1156,10 +1188,18 @@ enum SelfTest {
         print("删除可撤销:     \(delUndo ? "✓" : "✗")")
         print("选中跟随换位:   \(followOK ? "✓" : "✗")")
         print("无选中不误删:   \(noSel ? "✓" : "✗")")
+        print("整层对调:       \(floorSwap ? "✓" : "✗")")
+        print("整层对调可撤销: \(floorSwapUndo ? "✓" : "✗")")
+        print("整层原地不变:   \(floorSelfNoOp ? "✓" : "✗")")
+        print("整层取消复位:   \(floorCancelNoOp ? "✓" : "✗")")
+        print("楼层下标现算:   \(floorIdxOK ? "✓" : "✗")")
+        print("整层载荷区分:   \(floorPayloadOK ? "✓" : "✗")")
         print("临时目录已写盘: \((try? Data(contentsOf: ClassroomStore.fileURL())) != nil ? "✓" : "✗")")
 
         let ok = crossFloor && undoSwap && crossRow && selfNoOp && outNoOp
             && delGone && delUndo && followOK && noSel
+            && floorSwap && floorSwapUndo && floorSelfNoOp && floorCancelNoOp
+            && floorIdxOK && floorPayloadOK
         print(ok ? "教室自检全部通过 ✓" : "教室自检存在问题 ✗")
     }
 
