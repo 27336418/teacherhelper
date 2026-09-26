@@ -37,6 +37,51 @@ final class StaffStore: ObservableObject {
 
     static let defaultHeaders = ["班级", "班主任", "班型", "语文", "英语", "政治", "历史", "数学", "物理", "化学", "体育"]
 
+    // MARK: 学科配色（2026-09-26 用户要求：「年级师资里面不同学科用不同颜色」）
+    //
+    // 这张表是「班级 × 学科」矩阵，一列 = 一个学科。所以配色按**列**来：
+    // 同一学科整列同色 → 一眼就能看出哪几列是同一门课、谁教什么，不用逐个读表头。
+    // 颜色的**唯一来源**就是下面这两个表，视图只负责取色，别在视图里另写一份（会漂移）。
+    /// 非学科列：保持原来的默认灰底（序号/班级/班主任/班型这类不是「学科」）
+    static let nonSubjectHeaders: Set<String> = ["班级", "班主任", "班型", "序号", "年级", "班号", "备注"]
+    /// 常见学科 → 颜色 hex
+    static let subjectColors: [String: String] = [
+        "语文": "E74C3C", "数学": "2E86C1", "英语": "16A085",
+        "物理": "8E44AD", "化学": "E67E22", "生物": "27AE60",
+        "政治": "C2185B", "历史": "8D6E63", "地理": "0288D1",
+        "体育": "D4AC0D", "音乐": "7E57C2", "美术": "EC407A",
+        "信息": "00838F", "科学": "5D4037", "心理": "00ACC1",
+        "道法": "C2185B", "道德与法治": "C2185B", "信息技术": "00838F",
+    ]
+    /// 表头名字对不上已知学科时的兜底色板（按名字稳定散列取一个 → 同一名字永远同色）
+    static let subjectFallbackPalette = ["E74C3C", "2E86C1", "16A085", "8E44AD", "E67E22",
+                                         "27AE60", "C2185B", "8D6E63", "0288D1", "D4AC0D"]
+
+    /// 该列是不是「学科列」（非学科列 → 视图用默认灰）
+    static func isSubjectColumn(_ header: String) -> Bool {
+        let h = header.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !h.isEmpty && !nonSubjectHeaders.contains(h)
+    }
+
+    /// 该列对应的学科色 hex；非学科列 → nil（用默认灰）
+    static func subjectColor(forColumnHeader header: String) -> String? {
+        let h = header.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isSubjectColumn(h) else { return nil }
+        if let exact = subjectColors[h] { return exact }
+        // 表头可能被改成「语文(含作文)」这类 → 取「包含关系里最长」的那个已知学科
+        // ⚠️ 必须自己定序：字典 key 的顺序在 Swift 里是不稳定的，
+        //    直接 max(by:) 会让同一边界情况在不同进程里取到不同颜色。
+        let hit = subjectColors.keys
+            .filter { h.contains($0) }
+            .sorted { $0.count != $1.count ? $0.count > $1.count : $0 < $1 }
+            .first
+        if let hit, let hex = subjectColors[hit] { return hex }
+        // 仍不认得（新加的科目列）→ 按名字散列到兜底色板
+        var hash = 0
+        for u in h.unicodeScalars { hash = (hash &* 31 &+ Int(u.value)) & 0x7fff_ffff }
+        return subjectFallbackPalette[hash % subjectFallbackPalette.count]
+    }
+
     @Published var headers: [String] {
         didSet { scheduleSave() }
     }

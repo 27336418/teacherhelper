@@ -1002,11 +1002,48 @@ enum SelfTest {
         let newFloorOneStep = store.offices.count == 4 && store.floorNames == ["三楼", "四楼", ""]
         print("新建楼层一步撤销: \(newFloorOneStep ? "✓" : "✗")")
 
+        // 20) 整层拖动：两个楼层整层对调（楼内顺序原样保留、一间办公室都不丢）
+        //     A/B 在三楼、C 在四楼 → 拖「三楼」落到「四楼」→ 四楼整块提到前面
+        resetCards()
+        store.beginFloorDrag(0)
+        store.swapFloors(0, 1)
+        store.finishFloorDrag()
+        let swapFloorsOK = store.floorNames == ["四楼", "三楼", ""]
+            && order() == [oc, oa, ob, od]
+            && floorOf(oc) == "四楼" && floorOf(oa) == "三楼" && floorOf(ob) == "三楼"
+        _ = UndoService.shared.undo()
+        let swapFloorsUndo = store.floorNames == ["三楼", "四楼", ""] && order() == [oa, ob, oc, od]
+        print("整层交换+撤销:  \(swapFloorsOK && swapFloorsUndo ? "✓" : "✗")")
+
+        // 21) 整层落到自己身上 / 中途取消 → 数据一点不动（不能压出空撤销）
+        resetCards()
+        let beforeFloor = store.offices
+        store.beginFloorDrag(0)
+        store.swapFloors(0, 0)
+        store.finishFloorDrag()
+        let selfFloorNoOp = store.offices == beforeFloor
+        store.beginFloorDrag(1)
+        let floorCancelled = store.cancelFloorDrag()
+        let cancelFloorNoOp = floorCancelled && store.offices == beforeFloor
+        print("整层自身落点不变: \(selfFloorNoOp && cancelFloorNoOp ? "✓" : "✗")")
+
+        // 22) 楼层载荷 vs 卡片载荷 vs 工位载荷：三者必须互不误判
+        let floorPayload = DragPayload.officeFloorPayload(1)
+        let floorPayloadOK = DragPayload.officeFloorIndex(from: floorPayload) == 1
+            && DragPayload.officeFloorIndex(from: cardPayload) == nil
+            && DragPayload.officeFloorIndex(from: seatPayload) == nil
+            && DragPayload.officeCardID(from: floorPayload) == nil
+            && !DragPayload.belongs(floorPayload, to: DragPayload.officeCard)
+            && !DragPayload.belongs(floorPayload, to: DragPayload.officeSeat)
+            && !DragPayload.belongs(cardPayload, to: DragPayload.officeFloor)
+        print("楼层载荷区分:   \(floorPayloadOK ? "✓" : "✗")")
+
         let ok = swap1 && restore && cross && selfNoOp && outNoOp
             && floorOrder && cardMove && toFloor && toUngrouped && cardUndo
             && floorMove && newFloor && renameFloor && delFloor && delFloorUndo
             && clearFloor && selfCardNoOp && legacyOK && payloadOK
             && addCount && addOfficeUndo && newFloorOneStep
+            && swapFloorsOK && swapFloorsUndo && selfFloorNoOp && cancelFloorNoOp && floorPayloadOK
         print(ok ? "工位对换/楼层自检全部通过 ✓" : "工位对换/楼层自检存在问题 ✗")
     }
 
@@ -1187,6 +1224,37 @@ enum SelfTest {
         } else {
             cases.append(("旧版数据（无 colors）兼容", false))
         }
+
+        // 9) 学科配色（2026-09-26「不同学科用不同颜色」）：
+        //    同一学科整列同色、不同学科不同色、非学科列不配色、未知科目也稳定给色
+        let cChinese = StaffStore.subjectColor(forColumnHeader: "语文")
+        let cMath = StaffStore.subjectColor(forColumnHeader: "数学")
+        let cEnglish = StaffStore.subjectColor(forColumnHeader: "英语")
+        cases.append(("学科色：语文/数学/英语各不相同",
+                      cChinese != nil && cMath != nil && cEnglish != nil
+                      && Set([cChinese!, cMath!, cEnglish!]).count == 3))
+        cases.append(("学科色：同一学科名永远同色",
+                      StaffStore.subjectColor(forColumnHeader: "语文") == cChinese
+                      && StaffStore.subjectColor(forColumnHeader: " 语文 ") == cChinese))
+        cases.append(("学科色：非学科列不配色（班级/班主任/班型）",
+                      StaffStore.subjectColor(forColumnHeader: "班级") == nil
+                      && StaffStore.subjectColor(forColumnHeader: "班主任") == nil
+                      && StaffStore.subjectColor(forColumnHeader: "班型") == nil
+                      && !StaffStore.isSubjectColumn("班型")))
+        cases.append(("学科色：表头带后缀也能认出（「语文(含作文)」）",
+                      StaffStore.subjectColor(forColumnHeader: "语文(含作文)") == cChinese))
+        // 未知科目（视图里「添加科目」会生成这类名字）→ 仍给一个稳定颜色，且不会与已知学科混用同一套判断
+        let c1 = StaffStore.subjectColor(forColumnHeader: "科目12")
+        let c2 = StaffStore.subjectColor(forColumnHeader: "科目12")
+        cases.append(("学科色：未知科目稳定给色（同一名字同色）", c1 != nil && c1 == c2))
+        // 全部默认表头都拿到确定的取舍：非学科列 nil，其余必修色
+        let defaultMap = StaffStore.defaultHeaders.map { ($0, StaffStore.subjectColor(forColumnHeader: $0)) }
+        cases.append(("学科色：默认表头 3 列不配色、8 个学科都有色",
+                      defaultMap.prefix(3).allSatisfy { $0.1 == nil }
+                      && defaultMap.dropFirst(3).allSatisfy { $0.1 != nil }))
+        // 8 个默认学科两两不同色（一眼能区分哪几列是同一门课）
+        let subjectHexes = defaultMap.dropFirst(3).compactMap { $0.1 }
+        cases.append(("学科色：8 个默认学科两两不同色", Set(subjectHexes).count == subjectHexes.count))
 
         for (name, ok) in cases { print("\(ok ? "✓" : "✗") \(name)") }
         print(cases.allSatisfy { $0.1 } ? "师资颜色自检全部通过 ✓" : "师资颜色自检存在问题 ✗")

@@ -1,8 +1,19 @@
 import SwiftUI
 
+// MARK: - 横向滚动探针（冻结「姓名」列用）
+// 滚动容器里铺一张和整表同尺寸的透明 GeometryReader，它的 minX 就等于「表格内容左边缘」的位置，
+// 取负号即横向滚动位移。详见 `StudentInfoView` 里 `hOffset` 的说明。
+private struct StudentTableHOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 // MARK: - 学生信息视图（表头冻结、姓名搜索、增删行、双击编辑、导入导出 xlsx）
 // 身份证列自动校验：有效=绿，无效=红并提示原因；性别列文字色区分男/女（行不加底色）；
 // 「姓名」「身份证…」列为关键列，禁止删除；支持按姓名/性别升序或降序排序。
+// 2026-09-26 新增：左右滑动时「姓名」列冻结在左边缘（见 frozenStickX 的说明）。
 struct StudentInfoView: View {
     @EnvironmentObject var store: StudentStore
     @EnvironmentObject var coordinator: AppCoordinator
@@ -21,8 +32,72 @@ struct StudentInfoView: View {
     private let rowHeight: CGFloat = 26
     private let gap: CGFloat = 4
 
+    /// 表格滚动容器的坐标空间名（探针与它配对使用）
+    private static let tableSpace = "studentInfoTable"
+
+    /// 当前横向滚动位移（pt）。
+    ///
+    /// ⚠️ 为什么用「读位移 + 反向 offset」这种土办法冻结姓名列，而不是把它拆成独立的一列：
+    ///   表格是**一个** `ScrollView([.vertical, .horizontal])`，表头靠 `pinnedViews` 钉在顶部。
+    ///   如果把姓名列拆出去单独放，就会出现两个新问题 ——
+    ///   ① 表头和数据各自一个横向滚动视图 → 横向滚动不同步，列头与列内容立刻错位（§39a 的老坑）；
+    ///   ② 冻结列与右侧区各自纵向滚动 → 行高对不上就上下错位。
+    ///   反向 offset 不复制任何布局，只把「姓名格」按滚动量推回去，因此天然与表头/行严格对齐。
+    @State private var hOffset: CGFloat = 0
+
+    /// 「姓名」列之前的列宽总和（含列间距）—— 横向滚过这段距离，姓名列就贴到左边缘
+    private var frozenPrefixWidth: CGFloat {
+        guard let n = store.nameColumn, n > 0 else { return 0 }
+        let upper = min(n, store.headers.count)
+        return (0..<upper).reduce(0) { $0 + colWidth(store.headers[$1]) + gap }
+    }
+
+    /// 姓名列的「贴左」位移：0 = 还没滚到该列，>0 = 已经钉在左边缘（Excel 冻结窗格的手感）
+    private var frozenStickX: CGFloat {
+        store.nameColumn == nil ? 0 : max(0, hOffset - frozenPrefixWidth)
+    }
+
+    /// 冻结列的底色：**只在真的钉住时**才铺不透明底
+    /// （否则行行都变不透明白条，磨砂面板的观感就没了）
+    @ViewBuilder
+    private func frozenBackground(_ on: Bool) -> some View {
+        if on && frozenStickX > 0 {
+            RoundedRectangle(cornerRadius: 5).fill(Color(NSColor.windowBackgroundColor))
+        } else {
+            Color.clear
+        }
+    }
+
+    /// 冻结列右边缘的分隔线（钉住时才画）：让「这是一列被冻住的名字」一眼可见
+    @ViewBuilder
+    private func frozenEdge(_ on: Bool) -> some View {
+        if on && frozenStickX > 0 {
+            Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 1)
+        } else {
+            Color.clear.frame(width: 0)
+        }
+    }
+
     private var totalWidth: CGFloat {
         store.headers.reduce(0) { $0 + colWidth($1) + gap } + 30
+    }
+
+    /// 取证用（用户要求「不用截图说明」）：把冻结姓名列的实测几何打进日志。
+    /// 用法：`SCHEDULEBAR_TRACE_STUDENT=1 ./教师助手.app/Contents/MacOS/Student… --tab 学生信息`
+    /// 关键判读：
+    ///   · **表宽 > 可视宽** 才谈得上「左右滑动」；否则整张表本来就放得下，冻结无从谈起。
+    ///   · 「该列前宽」= 横向滚过这么多 pt 后，姓名列贴到左边缘（Excel 冻结窗格的手感）。
+    private func traceFrozenColumn(viewWidth: CGFloat) {
+        guard ProcessInfo.processInfo.environment["SCHEDULEBAR_TRACE_STUDENT"] == "1" else { return }
+        let n = store.nameColumn
+        let prefix = Int(frozenPrefixWidth.rounded())
+        let table = Int(totalWidth.rounded())
+        let view = Int(viewWidth.rounded())
+        DragSessionGuard.log("学生信息列冻结：列数 \(store.headers.count)｜表宽 \(table)pt｜可视 \(view)pt｜"
+            + (table > view ? "需横向滑动 ✓" : "⚠️ 表宽未超可视宽，冻不冻都看不出差别")
+            + "｜姓名列 #\(n.map(String.init) ?? "无")（\(n.map { store.headers.indices.contains($0) ? store.headers[$0] : "?" } ?? "—")）"
+            + "｜该列前宽 \(prefix)pt → 横向滚过 \(prefix)pt 后钉在左边缘"
+            + "｜列宽：\(store.headers.map { "\($0)=\(Int(colWidth($0).rounded()))" }.joined(separator: " "))")
     }
 
     var body: some View {
@@ -89,7 +164,7 @@ struct StudentInfoView: View {
             .padding(.vertical, 5)
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
 
-            // 表格：横向 + 纵向滚动，表头冻结在顶部
+            // 表格：横向 + 纵向滚动，表头冻结在顶部、姓名列冻结在左侧
             ScrollView([.vertical, .horizontal]) {
                 LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
                     Section {
@@ -101,9 +176,28 @@ struct StudentInfoView: View {
                     }
                 }
                 .frame(width: totalWidth)
+                // 探针：和整表同尺寸的透明层，它的 minX = 内容左边缘 → 取负即横向滚动位移
+                .background(alignment: .topLeading) {
+                    GeometryReader { g in
+                        Color.clear.preference(key: StudentTableHOffsetKey.self,
+                                               value: -g.frame(in: .named(Self.tableSpace)).minX)
+                    }
+                }
+            }
+            .coordinateSpace(name: Self.tableSpace)
+            .onPreferenceChange(StudentTableHOffsetKey.self) { v in
+                // 去抖：位移变化小于 0.5pt 不写 @State，避免每帧都触发整表重绘
+                let clamped = max(0, v)
+                if abs(clamped - hOffset) > 0.5 { hOffset = clamped }
             }
             .frame(maxHeight: .infinity)
             .padding(6)
+            // 量一次「可视宽」给取证日志用（只在 SCHEDULEBAR_TRACE_STUDENT=1 时打印）
+            .background(alignment: .topLeading) {
+                GeometryReader { g in
+                    Color.clear.onAppear { traceFrozenColumn(viewWidth: g.size.width) }
+                }
+            }
             .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
         }
         .padding(16)
@@ -111,6 +205,7 @@ struct StudentInfoView: View {
     }
 
     // MARK: 冻结表头（点击列头排序，双击改名，右键删除/改名）
+    // 「姓名」列表头与数据格用同一套冻结位移，所以左右滑动时表头与内容永远对齐。
     private var headerRow: some View {
         HStack(spacing: gap) {
             ForEach(Array(store.headers.enumerated()), id: \.offset) { i, h in
@@ -125,6 +220,10 @@ struct StudentInfoView: View {
                     onDelete: store.isProtectedColumn(i) ? nil : { store.removeColumn(i) },
                     lockedNote: store.isProtectedColumn(i) ? "「\(h)」为关键列，不可改名或删除" : nil
                 )
+                .background(frozenBackground(i == store.nameColumn))
+                .overlay(alignment: .trailing) { frozenEdge(i == store.nameColumn) }
+                .offset(x: i == store.nameColumn ? frozenStickX : 0)
+                .zIndex(i == store.nameColumn ? 2 : 0)
             }
             Spacer(minLength: 0)
         }
@@ -156,32 +255,41 @@ struct StudentInfoView: View {
     @ViewBuilder
     private func cellView(_ row: Binding<StudentRow>, col c: Int) -> some View {
         let header = store.headers[c]
-        if c == store.idCardColumn {
-            let text = row.wrappedValue.cells[c]
-            let check = IdCardValidator.validate(text)   // nil=空串
-            let bg: Color? = check == nil ? nil
-                : (check!.valid ? Color(hex: 0x27AE60).opacity(0.16)
-                                : Color(hex: 0xE74C3C).opacity(0.18))
-            let tc: Color? = check == nil ? nil
-                : (check!.valid ? Color(hex: 0x1E8449) : Color(hex: 0xC0392B))
-            EditableGridCell(text: row.cells[c],
-                             width: colWidth(header),
-                             height: rowHeight,
-                             font: .system(size: 11),
-                             backgroundColor: bg,
-                             textColor: tc)
-                .help(check?.message ?? "双击编辑身份证号")
-        } else {
-            // 性别列：文字色区分男/女（行不加底色）
-            let tc = (c == store.genderColumn)
-                ? genderTextColor(row.wrappedValue.cells[c])
-                : nil
-            EditableGridCell(text: row.cells[c],
-                             width: colWidth(header),
-                             height: rowHeight,
-                             font: .system(size: 11),
-                             textColor: tc)
+        let frozen = (c == store.nameColumn)
+        Group {
+            if c == store.idCardColumn {
+                let text = row.wrappedValue.cells[c]
+                let check = IdCardValidator.validate(text)   // nil=空串
+                let bg: Color? = check == nil ? nil
+                    : (check!.valid ? Color(hex: 0x27AE60).opacity(0.16)
+                                    : Color(hex: 0xE74C3C).opacity(0.18))
+                let tc: Color? = check == nil ? nil
+                    : (check!.valid ? Color(hex: 0x1E8449) : Color(hex: 0xC0392B))
+                EditableGridCell(text: row.cells[c],
+                                 width: colWidth(header),
+                                 height: rowHeight,
+                                 font: .system(size: 11),
+                                 backgroundColor: bg,
+                                 textColor: tc)
+                    .help(check?.message ?? "双击编辑身份证号")
+            } else {
+                // 性别列：文字色区分男/女（行不加底色）
+                let tc = (c == store.genderColumn)
+                    ? genderTextColor(row.wrappedValue.cells[c])
+                    : nil
+                EditableGridCell(text: row.cells[c],
+                                 width: colWidth(header),
+                                 height: rowHeight,
+                                 font: .system(size: 11),
+                                 textColor: tc)
+            }
         }
+        // 冻结「姓名」列：按横向滚动量反向位移把它推回左边缘；
+        // 钉住时铺不透明底 + 画右分隔线，并抬 zIndex（否则会被它右边那些列盖住）。
+        .background(frozenBackground(frozen))
+        .overlay(alignment: .trailing) { frozenEdge(frozen) }
+        .offset(x: frozen ? frozenStickX : 0)
+        .zIndex(frozen ? 2 : 0)
     }
 
     // 性别文字色：男=蓝、女=粉；其它/无性别列返回无色（行底色一律不加）

@@ -30,6 +30,9 @@ enum DragPayload {
     /// ⚠️ 与 officeSeat 靠 `|` 分隔符区分：载荷分别是 `office|seat|…` 与 `officecard|card|…`，
     ///    `belongs` 用 `table + "|"` 前缀匹配，两者不会互相误判。
     static let officeCard = "officecard"
+    /// 办公室「整个楼层」前缀（拖动楼层条 → 整层上下交换）
+    /// ⚠️ 同样靠 `|` 与上面两个区分：`officefloor|floor|…` / `officecard|card|…` / `office|seat|…`
+    static let officeFloor = "officefloor"
     /// 学生座位（单元格 / 待用 / 待用小组 / 小组区域）统一模块名
     static let seating = "seating"
 
@@ -55,6 +58,21 @@ enum DragPayload {
         let parts = raw.split(separator: "|")
         guard parts.count >= 3 else { return nil }
         return UUID(uuidString: String(parts[2]))
+    }
+
+    /// 楼层载荷：用「楼层在 floorNames 里的下标」表示来源。
+    /// 不用楼层名原因：① 未分组是空串，载荷里会变成连续 `||`；② 名字里可能带 `|`。
+    /// 拖动期间数据不会被改（只有松手才提交），所以下标在整次拖拽里是稳定的。
+    static func officeFloorPayload(_ index: Int) -> String {
+        "\(officeFloor)|floor|\(index)"
+    }
+
+    /// 从载荷里取回「被拖动的楼层下标」（不是楼层载荷 → nil）
+    static func officeFloorIndex(from raw: String?) -> Int? {
+        guard let raw, belongs(raw, to: officeFloor) else { return nil }
+        let parts = raw.split(separator: "|")
+        guard parts.count >= 3 else { return nil }
+        return Int(parts[2])
     }
 
     /// 载荷是否属于某个模块（前缀匹配）

@@ -106,28 +106,51 @@ struct OfficeCardDropDelegate: DropDelegate {
     }
 }
 
-/// 落点 = 楼层标题条（把卡片挪到这一层）
+/// 落点 = 楼层标题条。两种拖拽都落在这里：
+///   ① 拖「办公室卡片」上来 → 把卡片挪进这一层（原有行为）；
+///   ② 拖「整个楼层」上来 → 两个楼层整层对调（2026-09-26 新增）。
 struct OfficeFloorDropDelegate: DropDelegate {
+    let floorIndex: Int
     let floor: String
     let store: OfficeLayoutStore
 
-    private var isOurs: Bool { DragContext.belongs(to: DragPayload.officeCard) }
+    private var isCardDrag: Bool { DragContext.belongs(to: DragPayload.officeCard) }
+    private var isFloorDrag: Bool { DragContext.belongs(to: DragPayload.officeFloor) }
+    private var isOurs: Bool { isCardDrag || isFloorDrag }
 
     func validateDrop(info: DropInfo) -> Bool { isOurs }
 
+    private func highlight() {
+        if isFloorDrag { store.setFloorSwapTarget(floorIndex) }
+        else { store.setFloorDropTarget(floor) }
+    }
+
     func dropEntered(info: DropInfo) {
         guard isOurs else { return }
-        store.setFloorDropTarget(floor)
+        highlight()
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         guard isOurs else { return nil }
-        store.setFloorDropTarget(floor)
+        highlight()
         return DropProposal(operation: .move)
     }
 
+    // ⚠️ 唯一提交点必须**同步**改数据（见 DragSwapSupport 顶部说明）。
+    //    不是本模块的拖拽要「原样拒绝、什么都不清」。
     func performDrop(info: DropInfo) -> Bool {
-        guard isOurs else { DragContext.reject(DragPayload.officeCard); return false }
+        if isFloorDrag {
+            guard let src = DragPayload.officeFloorIndex(from: DragContext.payload) else {
+                DragContext.reject(DragPayload.officeFloor)
+                return false
+            }
+            store.swapFloors(src, floorIndex)
+            store.clearCardDropTargets()
+            store.finishFloorDrag()
+            DragContext.finish(reason: "办公室楼层")
+            return true
+        }
+        guard isCardDrag else { DragContext.reject(DragPayload.officeCard); return false }
         return OfficeCardDrop.perform(store: store, floor: floor)
     }
 }
@@ -400,8 +423,12 @@ struct OfficeLayoutView: View {
     private func floorHeaderBar(_ floor: String) -> some View {
         let count = store.offices(inFloor: floor).count
         let people = store.headcount(inFloor: floor)
-        let isTarget = store.floorDropTarget == floor
         let index = store.floorNames.firstIndex(of: floor) ?? 0
+        // 两种落点高亮：① 卡片落点 = 把卡片挪进这一层；② 整层落点 = 两个楼层对调
+        let isCardTarget = store.floorDropTarget == floor
+        let isSwapTarget = store.floorSwapTarget == index
+        let isTarget = isCardTarget || isSwapTarget
+        let isSource = store.floorDragSourceIndex == index
         let canUp = index > 0
         let canDown = index < store.floorNames.count - 1
         let label = floor.isEmpty ? "未分组" : floor
@@ -473,9 +500,18 @@ struct OfficeLayoutView: View {
             .fill(isTarget ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.05)))
         .overlay(RoundedRectangle(cornerRadius: 8)
             .stroke(isTarget ? Color.accentColor : Color.primary.opacity(0.10), lineWidth: isTarget ? 2 : 1))
+        // 整层拖动：来源楼层画淡一点，一眼看出「正在搬哪一层」
+        .opacity(isSource ? 0.5 : 1)
         .contentShape(Rectangle())
-        .onDrop(of: [.text], delegate: OfficeFloorDropDelegate(floor: floor, store: store))
-        .help("把办公室卡片拖到这一条上，就能把它挪到「\(label)」")
+        .onDrag {
+            // 拿起整层：同步登记来源模块（落点据此判断归属，见 DragSwapSupport 顶部说明）
+            store.beginFloorDrag(index)
+            let payload = DragPayload.officeFloorPayload(index)
+            DragContext.begin(module: DragPayload.officeFloor, payload: payload)
+            return NSItemProvider(object: payload as NSString)
+        }
+        .onDrop(of: [.text], delegate: OfficeFloorDropDelegate(floorIndex: index, floor: floor, store: store))
+        .help("拖动这一条可以把「\(label)」整层上下搬动（松手与目标楼层对调）；把办公室卡片拖上来则挪进这一层")
     }
 
     /// 楼层名称输入行：新建（列表末尾）/ 改名（楼层标题处）共用

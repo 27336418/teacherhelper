@@ -181,6 +181,8 @@ struct SortableHeaderCell: View {
     var onRename: ((String) -> Void)? = nil    // nil = 不支持改名（如锁定的「班级」）
     var onDelete: (() -> Void)? = nil          // nil = 不显示删除（关键列等）
     var lockedNote: String? = nil              // 关键列：右键显示该提示并禁用改名/删除
+    /// 学科配色：传了就把表头底色染成该学科的颜色，充当图例（师资表用；其它页不传 = 原样）
+    var accentHex: String? = nil
 
     @State private var editing = false
     @State private var draft = ""
@@ -239,10 +241,16 @@ struct SortableHeaderCell: View {
         }
         .padding(.horizontal, hPadding)
         .frame(width: width, height: height)
-        .background(RoundedRectangle(cornerRadius: 5)
-            .fill(isSorted ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.04)))
+        .background(RoundedRectangle(cornerRadius: 5).fill(headerFill))
         .overlay(RoundedRectangle(cornerRadius: 5)
             .stroke(Color.accentColor.opacity(isSorted ? 0.45 : 0.08), lineWidth: isSorted ? 1 : 0.5))
+    }
+
+    /// 表头底色：正在排序 > 学科配色 > 默认
+    private var headerFill: Color {
+        if isSorted { return Color.accentColor.opacity(0.14) }
+        if let hex = accentHex, !hex.isEmpty { return Color(hexString: hex).opacity(0.30) }
+        return Color.primary.opacity(0.04)
     }
 
     private var sortIcon: String {

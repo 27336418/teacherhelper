@@ -69,10 +69,20 @@ struct StaffView: View {
         }
     }
 
-    /// 单元格底色：默认灰；设置过颜色则用该色（略加深，保证文字可读）
-    private func cellFill(_ hex: String?) -> Color {
-        guard let hex, !hex.isEmpty else { return Color.gray.opacity(0.20) }
-        return Color(hexString: hex).opacity(0.55)
+    /// 单元格底色（优先级从高到低）：
+    /// ① 右键设过自定义色 → 用自定义色；
+    /// ② 学科列 → 用该学科的配色（**不同学科不同颜色**，同一学科整列同色）；
+    /// ③ 非学科列（班级 / 班主任 / 班型…）→ 原来的默认灰。
+    private func cellFill(_ hex: String?, col: Int) -> Color {
+        if let hex, !hex.isEmpty { return Color(hexString: hex).opacity(0.55) }
+        guard let subject = subjectHex(col) else { return Color.gray.opacity(0.20) }
+        return Color(hexString: subject).opacity(0.30)
+    }
+
+    /// 该列对应的学科色（非学科列 → nil）。取色规则集中在 StaffStore，视图不另存一份。
+    private func subjectHex(_ col: Int) -> String? {
+        guard store.headers.indices.contains(col) else { return nil }
+        return StaffStore.subjectColor(forColumnHeader: store.headers[col])
     }
 
     var body: some View {
@@ -142,7 +152,9 @@ struct StaffView: View {
                                     isSortable: isSortableColumn(i),
                                     onToggleSort: { toggleSort(i) },
                                     onRename: { newName in store.renameColumn(i, newName) },
-                                    onDelete: { store.removeColumn(i) }
+                                    onDelete: { store.removeColumn(i) },
+                                    // 学科列的表头也染成该学科的颜色 —— 表头即图例
+                                    accentHex: subjectHex(i)
                                 )
                                 .frame(width: colWidths[i], alignment: .leading)
                                 .overlay(alignment: .trailing) {
@@ -224,7 +236,7 @@ struct StaffView: View {
                                  width: colWidths[c],
                                  height: 28,
                                  bold: c == 0,
-                                 backgroundColor: cellFill(hex),
+                                 backgroundColor: cellFill(hex, col: c),
                                  isSelected: selected == ref,
                                  isHighlighted: isHighlighted(r, c),
                                  highlightColor: .red,
@@ -232,7 +244,7 @@ struct StaffView: View {
                 .contextMenu {
                     cellMenu(rowID: r.id, col: c, text: r.cells[c], hex: hex)
                 }
-                .help("单击：高亮同一个人 / 同班型的全部格子；双击：编辑；右键：换颜色")
+                .help("单击：高亮同一个人 / 同班型的全部格子；双击：编辑；右键：换颜色（默认按学科配色）")
             }
             Button {
                 store.removeRow(r.id)
@@ -263,12 +275,14 @@ struct StaffView: View {
         }
 
         Divider()
-        Button("清除本格颜色") { store.setColor(nil, rowID: rowID, col: col) }
+        // ⚠️ 文案用「恢复默认色」而不是「清除颜色」：清掉自定义色后会回到**学科配色**，
+        //    不是回到灰色，说「清除」会让用户以为格子会变白。
+        Button("恢复本格默认色") { store.setColor(nil, rowID: rowID, col: col) }
             .disabled(hex == nil)
         Button(role: .destructive) {
             store.clearAllColors()
         } label: {
-            Label("清除整表颜色", systemImage: "eraser")
+            Label("恢复整表默认色（学科配色）", systemImage: "eraser")
         }
     }
 

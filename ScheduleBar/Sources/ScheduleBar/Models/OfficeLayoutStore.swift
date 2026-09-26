@@ -203,11 +203,14 @@ final class OfficeLayoutStore: ObservableObject {
     func setFloorDropTarget(_ floor: String?) {
         if floorDropTarget != floor { floorDropTarget = floor }
         if cardDropTarget != nil { cardDropTarget = nil }
+        // 「卡片落楼层」与「整层对调」两种高亮互斥：卡片拖动经过楼层条时清掉整层高亮
+        if floor != nil, floorSwapTarget != nil { floorSwapTarget = nil }
     }
 
     func clearCardDropTargets() {
         if cardDropTarget != nil { cardDropTarget = nil }
         if floorDropTarget != nil { floorDropTarget = nil }
+        if floorSwapTarget != nil { floorSwapTarget = nil }
     }
 
     /// 落点 = 某张卡片：把拖动卡插到该卡片的位置（并跟随它的楼层）。
@@ -256,6 +259,67 @@ final class OfficeLayoutStore: ObservableObject {
         cardDragSourceID = nil
         cardDropTarget = nil
         floorDropTarget = nil
+        return had
+    }
+
+    // MARK: 整层拖动（2026-09-26 用户要求：「整个楼层也要可以拖动，上下交换整个楼层」）
+    // 与卡片拖动同一套约定：拿起只记来源 + 快照；经过只改高亮（@Published 必须去重）；
+    // 松手时**同步**交换一次 + 登记撤销。
+    // 楼层没有独立表，顺序 = floorNames（首次出现顺序）→ 交换两个楼层的下标即可整层对调。
+    /// 正在被拖动的楼层下标（用于把来源楼层条画淡）
+    @Published private(set) var floorDragSourceIndex: Int? = nil
+    /// 当前悬停的落点楼层下标（整条高亮）
+    @Published var floorSwapTarget: Int? = nil
+    private var floorDragOrigin: Int?
+    private var floorDragSnapshot: [OfficeBlock]?
+
+    func beginFloorDrag(_ index: Int) {
+        guard floorNames.indices.contains(index) else { return }
+        floorDragSnapshot = offices
+        floorDragOrigin = index
+        floorDragSourceIndex = index
+        floorSwapTarget = nil
+    }
+
+    /// 悬停高亮（去重：dropUpdated 每帧都调用）
+    func setFloorSwapTarget(_ index: Int?) {
+        if floorSwapTarget != index { floorSwapTarget = index }
+        if index != nil, floorDropTarget != nil { floorDropTarget = nil }
+    }
+
+    /// 交换两个楼层的位置（整层上下对调）；交换后顺序改变，两边办公室一间不少
+    func swapFloors(_ a: Int, _ b: Int) {
+        var order = floorNames
+        guard order.indices.contains(a), order.indices.contains(b), a != b else { return }
+        let la = order[a].isEmpty ? "未分组" : order[a]
+        let lb = order[b].isEmpty ? "未分组" : order[b]
+        order.swapAt(a, b)
+        // 按新顺序把各楼层的卡片整块拼回去（楼内顺序原样保留）
+        var buckets: [String: [OfficeBlock]] = [:]
+        for o in offices { buckets[o.floor, default: []].append(o) }
+        offices = order.flatMap { buckets[$0] ?? [] }
+        DragSessionGuard.log("办公室楼层：「\(la)」与「\(lb)」整层对调（第 \(a + 1) 层 ↔ 第 \(b + 1) 层）")
+    }
+
+    /// 松手：与快照比对，真的变了才登记撤销
+    func finishFloorDrag() {
+        defer { floorDragOrigin = nil; floorDragSnapshot = nil; floorDragSourceIndex = nil }
+        guard let snap = floorDragSnapshot, snap != offices else { return }
+        UndoService.shared.register("交换楼层顺序") { [weak self] in
+            guard let self else { return }
+            self.offices = snap
+            self.scheduleSave()
+        }
+    }
+
+    /// 拖动被外部打断（切走 App / 面板收起）→ 只复位状态，不动数据、不登记撤销
+    @discardableResult
+    func cancelFloorDrag() -> Bool {
+        let had = floorDragOrigin != nil
+        floorDragOrigin = nil
+        floorDragSnapshot = nil
+        floorDragSourceIndex = nil
+        floorSwapTarget = nil
         return had
     }
 
