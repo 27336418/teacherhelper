@@ -87,8 +87,15 @@ struct StudentInfoView: View {
     /// 关键判读：
     ///   · **表宽 > 可视宽** 才谈得上「左右滑动」；否则整张表本来就放得下，冻结无从谈起。
     ///   · 「该列前宽」= 横向滚过这么多 pt 后，姓名列贴到左边缘（Excel 冻结窗格的手感）。
+    /// ⚠️ 面板是**从窄往宽长**的（popover 先小后大），所以只在宽度变化 > 20pt 时才记一条，
+    ///    否则会先打出一条「可视 225pt」这种展开前的瞬时值，看着像 bug。
+    @State private var tracedWidth: CGFloat = -1
+
     private func traceFrozenColumn(viewWidth: CGFloat) {
         guard ProcessInfo.processInfo.environment["SCHEDULEBAR_TRACE_STUDENT"] == "1" else { return }
+        // 面板最小宽度 880（内容区 ≥ 700），所以 < 300pt 一定是「popover 还没长开」的瞬时值，丢掉
+        guard viewWidth >= 300, abs(viewWidth - tracedWidth) > 20 else { return }
+        tracedWidth = viewWidth
         let n = store.nameColumn
         let prefix = Int(frozenPrefixWidth.rounded())
         let table = Int(totalWidth.rounded())
@@ -192,10 +199,13 @@ struct StudentInfoView: View {
             }
             .frame(maxHeight: .infinity)
             .padding(6)
-            // 量一次「可视宽」给取证日志用（只在 SCHEDULEBAR_TRACE_STUDENT=1 时打印）
+            // 量「可视宽」给取证日志用（只在 SCHEDULEBAR_TRACE_STUDENT=1 时打印）
+            // ⚠️ 面板是先从窄往宽长的，所以要 onAppear + onChange 一起挂，才能记到展开后的真实宽度。
             .background(alignment: .topLeading) {
                 GeometryReader { g in
-                    Color.clear.onAppear { traceFrozenColumn(viewWidth: g.size.width) }
+                    Color.clear
+                        .onAppear { traceFrozenColumn(viewWidth: g.size.width) }
+                        .onChange(of: g.size.width) { w in traceFrozenColumn(viewWidth: w) }
                 }
             }
             .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
