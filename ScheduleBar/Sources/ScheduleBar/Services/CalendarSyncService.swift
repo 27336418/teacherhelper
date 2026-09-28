@@ -189,18 +189,17 @@ final class CalendarSyncService: ObservableObject {
     private func upsertReminder(_ r: Reminder) -> UpsertResult {
         let key = r.id.uuidString
 
-        // 未勾任何星期 → 一次性提醒（只在 oneShotDay 当天那个时刻），照常写一条「不重复」的日程；
-        // 但「没记日期的老数据」和「那天已经过去的一次性提醒」不该在日历里留垃圾 → 删掉已有事件后返回。
-        // （2026-09-17 改：老版本把「没勾星期」一律当死数据，用户要求改成当天提醒一次）
-        if r.weekdays.isEmpty {
-            let keep = (r.oneShotDay.map { $0 >= Reminder.dayString(Date()) }) ?? false
-            if !keep {
-                if let eid = eventIDs[key], deleteEvent(eid) {
-                    eventIDs.removeValue(forKey: key)
-                    return .deleted
-                }
-                return .failed
+        // 未勾任何星期 → 一次性提醒（只在 oneShotDay 当天那个时刻），照常写一条「不重复」的日程。
+        // ⚠️ 2026-09-28 用户要求：一次性提醒的日历事件**始终保留** ——
+        //    · 已完成的（已弹过）只是不再显示在提醒列表里，日历里要留档；
+        //    · 过期未完成的也一直留着，直到用户删除提醒（删提醒才会连带删事件）。
+        //    唯一例外：没记日期的老数据无法安放事件日期 → 清掉已有事件后返回。
+        if !Self.keepsEventInCalendar(r) {
+            if let eid = eventIDs[key], deleteEvent(eid) {
+                eventIDs.removeValue(forKey: key)
+                return .deleted
             }
+            return .failed
         }
 
         let trimmed = r.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -277,6 +276,14 @@ final class CalendarSyncService: ObservableObject {
     }
 
     // MARK: - 纯函数（供自检复用）
+
+    /// 这条提醒是否要在系统日历里保留/生成事件（2026-09-28 用户要求）：
+    /// · 每周重复的提醒 → 保留；
+    /// · 一次性提醒 → 已完成、已过期都**保留**（用户要「留档在日历里」）；
+    /// · 唯一不保留：一次性但没记提醒日的老数据（没有日期可安放事件）。
+    static func keepsEventInCalendar(_ r: Reminder) -> Bool {
+        !r.weekdays.isEmpty || r.oneShotDay != nil
+    }
 
     /// 提醒的星期集合 → 有序数组（1=周日 … 7=周六，与 Calendar.weekday 一致）
     static func orderedWeekdays(_ weekdays: Set<Int>) -> [Int] {

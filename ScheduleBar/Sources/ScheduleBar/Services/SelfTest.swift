@@ -795,6 +795,49 @@ enum SelfTest {
         if !s3ok { oneShotBad.append("rearmOneShot 未重置") }
         print("  rearmOneShot：过期日期→今天 且 清掉已提醒标记 \(s3ok ? "✓" : "✗")（oneShotDay=\(s3.oneShotDay ?? "nil") firedOn=\(s3.firedOn ?? "nil")）")
 
+        // 「已完成」语义（2026-09-28 用户要求）：在弹窗点「马上处理 / 打开链接」才算完成（completedOn）；
+        // 仅仅弹过窗（firedOn）不算 —— 点过「等会处理」还挂着的要继续留在列表里。
+        let firedOnly = Reminder(title: "K", hour: 8, minute: 0, weekdays: [], url: "",
+                                 oneShotDay: todayKey, firedOn: todayKey)
+        let doneOne = Reminder(title: "L", hour: 8, minute: 0, weekdays: [], url: "",
+                               oneShotDay: todayKey, firedOn: todayKey, completedOn: todayKey)
+        let weeklyOne = Reminder(title: "M", hour: 8, minute: 0, weekdays: [2, 3], url: "")
+        let c1 = !firedOnly.isCompleted      // 弹过 ≠ 完成：仍留在列表（待处理）
+        let c2 = doneOne.isCompleted         // 点过马上处理 → 完成 → 列表不再显示
+        let c3 = !weeklyOne.isCompleted      // 每周重复的提醒没有「完成」概念
+        if !c1 { oneShotBad.append("弹过≠完成 判定错") }
+        if !c2 { oneShotBad.append("completedOn 未判定完成") }
+        if !c3 { oneShotBad.append("每周提醒被误判完成") }
+        print("  已完成判定：弹过≠完成 \(c1 ? "✓" : "✗")；completedOn→完成 \(c2 ? "✓" : "✗")；每周提醒无完成概念 \(c3 ? "✓" : "✗")")
+
+        // 改时间重新武装 → 连「已完成」一起清掉，回到列表（「直到删掉或者已经完成」的逆操作）
+        var s4 = doneOne
+        s4.rearmOneShot(now: noon)
+        let s4ok = (s4.completedOn == nil && !s4.isCompleted)
+        if !s4ok { oneShotBad.append("rearmOneShot 未清 completedOn") }
+        print("  rearmOneShot：清掉已完成标记、回到未完成 \(s4ok ? "✓" : "✗")")
+
+        // markOneShotCompleted：点「马上处理」落盘 completedOn（不动防重弹的 firedOn）
+        let store = ReminderStore.shared
+        let probe = Reminder(title: "自检·完成", hour: 8, minute: 0, weekdays: [], url: "", oneShotDay: todayKey)
+        store.add(probe)
+        store.markOneShotCompleted(probe.id, day: todayKey)
+        let got = store.reminders.first(where: { $0.id == probe.id })
+        let c4 = (got?.completedOn == todayKey && got?.firedOn == nil && got?.isCompleted == true)
+        if !c4 { oneShotBad.append("markOneShotCompleted 未落 completedOn") }
+        store.remove(probe.id)
+        print("  markOneShotCompleted：写入 completedOn、不动 firedOn \(c4 ? "✓" : "✗")")
+
+        // 日历保留（2026-09-28 用户要求「保留在日历里面」）：一次性提醒已完成 / 已过期都保留事件；
+        // 只有没记日期的老数据才清掉。
+        let k1 = CalendarSyncService.keepsEventInCalendar(doneOne)
+        let k2 = CalendarSyncService.keepsEventInCalendar(
+            Reminder(title: "N", hour: 8, minute: 0, weekdays: [], url: "", oneShotDay: yKey))
+        let k3 = !CalendarSyncService.keepsEventInCalendar(
+            Reminder(title: "O", hour: 8, minute: 0, weekdays: [], url: ""))
+        if !(k1 && k2 && k3) { oneShotBad.append("keepsEventInCalendar 判定错") }
+        print("  日历保留：已完成保留 \(k1 ? "✓" : "✗")；已过期保留 \(k2 ? "✓" : "✗")；无日期清除 \(k3 ? "✓" : "✗")")
+
         // 旧版 reminders.json（无 oneShotDay 字段）必须还能解码
         let legacyJSON = #"[{"id":"00000000-0000-0000-0000-0000000000AA","title":"旧数据","hour":17,"minute":43,"weekdays":[],"url":""}]"#
         if let list = try? JSONDecoder().decode([Reminder].self, from: Data(legacyJSON.utf8)) {
@@ -1400,8 +1443,8 @@ enum SelfTest {
         check("兜底落盘后脏状态清空", !hub.hasUnsaved)
 
         // ⑧ 每个走 SaveHub 的板块都能把自己标脏（名字必须与 writeAll 的覆盖面一致）
-        // ⚠️ 「教室布局」不在此列：用户 2026-09-23 要求教室的编辑/新增**即时落盘**，
-        //    它的 scheduleSave() 直接 save()，不经过 markDirty（见下面的单独检查）。
+        // ⚠️ 「教室布局」「日程提醒」不在此列：用户分别于 2026-09-23 / 2026-09-28 要求
+        //    它们的编辑**即时落盘**，scheduleSave() 直接 save()，不经过 markDirty（见下面的单独检查）。
         let areas: [(String, () -> Void)] = [
             ("本人课表", { ScheduleStore.shared.scheduleSave() }),
             ("班级课表", { ClassScheduleStore.shared.scheduleSave() }),
@@ -1411,7 +1454,6 @@ enum SelfTest {
             ("学生信息", { StudentStore.shared.scheduleSave() }),
             ("教师工位", { OfficeLayoutStore.shared.scheduleSave() }),
             ("延时监考", { ExtendScheduleStore.shared.scheduleSave() }),
-            ("日程提醒", { ReminderStore.shared.scheduleSave() }),
             ("校历备注", { CalendarRemarkStore.shared.scheduleSave() }),
             ("校历配色", { CalendarDayColorStore.shared.scheduleSave() }),
             ("导航排序", { NavPrefsStore.shared.scheduleSave() }),
@@ -1419,7 +1461,7 @@ enum SelfTest {
             ("板块标题", { CardTitleStore.shared.scheduleSave() }),
         ]
         // 必须与 SaveHub.writeAll 覆盖的 store 数量一致（漏一个就会有板块改了不落盘）
-        // = 上面 14 个走「标脏」的 + 1 个「即时落盘」的教室布局
+        // = 上面 13 个走「标脏」的 + 2 个「即时落盘」的（教室布局、日程提醒）
         let expectedAreaCount = 15
         var missing: [String] = []
         for (name, mark) in areas {
@@ -1429,14 +1471,22 @@ enum SelfTest {
         }
         check("每个走统一保存的板块都能把自己标脏", missing.isEmpty,
               missing.isEmpty ? "共 \(areas.count) 个" : "缺失=\(missing.joined(separator: "、"))")
-        check("标脏板块（14）+ 即时落盘板块（教室布局）与 writeAll 覆盖面一致",
-              areas.count + 1 == expectedAreaCount, "\(areas.count) + 1 / 期望 \(expectedAreaCount)")
+        check("标脏板块（13）+ 即时落盘板块（教室布局、日程提醒）与 writeAll 覆盖面一致",
+              areas.count + 2 == expectedAreaCount, "\(areas.count) + 2 / 期望 \(expectedAreaCount)")
 
         // 「教室布局」即时落盘：改一下就写文件，不进「未保存」列表
         hub.clearDirty()
         ClassroomStore.shared.scheduleSave()
         check("教室布局改为即时落盘（不标脏、不进未保存列表）",
               !hub.dirtyAreas.contains("教室布局"))
+
+        // 「日程提醒」即时落盘（2026-09-28 用户要求「默认自动保存」）：同样不进「未保存」列表。
+        // ⚠️ 这里直接调 save() 链是安全的：ReminderStore.save() 在无 App bundle 的 CLI 里
+        //    只落盘、跳过 UNUserNotificationCenter（见 ReminderStore.save 的 guard）。
+        hub.clearDirty()
+        ReminderStore.shared.scheduleSave()
+        check("日程提醒改为即时落盘（不标脏、不进未保存列表）",
+              !hub.dirtyAreas.contains("日程提醒"))
 
         // ⑨ 单板块清除不影响其他
         hub.clearDirty()
@@ -1451,9 +1501,8 @@ enum SelfTest {
               "\(Int(SaveHub.fallbackDelay)) 秒")
 
         // ⑪ 端到端：换成「真的写文件」的落盘实现，确认 json 确实落到了磁盘
-        //    ⚠️ 这里不能用 SaveHub 的默认 writeAll：它会调 ReminderStore.save()，
-        //       而那条链要建系统通知（UNUserNotificationCenter）——命令行进程没有 App bundle，
-        //       会直接抛 NSException 崩掉（不是数据问题，是 CLI 无 bundle 的固有限制）。
+        //    （2026-09-28 起 ReminderStore.save() 自带「无 App bundle 则跳过通知/日历副作用」
+        //     的防护，writeAll 在 CLI 下已不再会崩；这里仍沿用 stub 写指定三份，保持用例聚焦。）
         hub.useStubWriter {
             ScheduleStore.shared.save()
             StaffStore.shared.save()

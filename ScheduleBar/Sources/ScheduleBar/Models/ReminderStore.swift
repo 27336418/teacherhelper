@@ -18,13 +18,26 @@ struct Reminder: Identifiable, Codable, Equatable {
     var oneShotDay: String? = nil
     /// 一次性提醒**已经弹过**的那一天（"yyyy-MM-dd"）。只对一次性提醒有意义：
     /// 用来保证「中断/重启 App 后当天不会再重复弹一遍」（弹过就落盘，重启也记得）。
+    /// ⚠️ 这只是「弹过」，不等于「已完成」——用户可能点了「等会处理」还挂着。完成与否看 `completedOn`。
     var firedOn: String? = nil
+    /// 一次性提醒**已完成**的那一天（"yyyy-MM-dd"）。
+    /// 2026-09-28 用户明确：在弹窗上点「马上处理」（或「打开链接」）才算处理完成 ——
+    /// 与 `firedOn`（到点弹窗就记，用来防重启重弹）是两回事：点「等会处理」的不算完成。
+    var completedOn: String? = nil
 
     /// 是否在 weekdayIndex（1-7，周日=1）当天触发
     func fires(on weekday: Int) -> Bool { weekdays.contains(weekday) }
 
     /// 一次性提醒（没勾任何星期）
     var isOneShot: Bool { weekdays.isEmpty }
+
+    /// 一次性提醒已「完成」＝ 用户在弹窗上点过「马上处理 / 打开链接」（completedOn 落盘；
+    /// 改时间/改星期重新武装时会清回 nil，所以 `completedOn != nil` ⟺ 已完成）。
+    ///
+    /// 2026-09-28 用户要求：
+    ///   · 已完成 → **提醒列表里不再显示**（但系统日历里的事件要保留，见 `CalendarSyncService.keepsEventInCalendar`）；
+    ///   · 过期未完成（oneShotDay 已过、没点过完成）→ 列表里**一直保留**，直到用户删掉或把它改时间「完成」。
+    var isCompleted: Bool { isOneShot && completedOn != nil }
 
     /// "yyyy-MM-dd"（本地时区），用于一次性提醒的日期键
     static let dayFormatter: DateFormatter = {
@@ -50,19 +63,21 @@ struct Reminder: Identifiable, Codable, Equatable {
     /// · 勾了任意星期 → 清掉 oneShotDay（回到每周重复）
     /// · 一个都没勾 → 记下「今天」为提醒日；若原来记的日期已经过去（提醒已到期），重设为今天
     mutating func syncOneShot(now: Date = Date()) {
-        guard weekdays.isEmpty else { oneShotDay = nil; firedOn = nil; return }
+        guard weekdays.isEmpty else { oneShotDay = nil; firedOn = nil; completedOn = nil; return }
         let today = Reminder.dayString(now)
         if let d = oneShotDay, d >= today { return }
         oneShotDay = today
         firedOn = nil                     // 重新定为今天 → 允许今天再提醒一次
+        completedOn = nil                 // 重新武装 → 上一次的「已完成」作废
     }
 
-    /// 用户改了提醒时间（或想再来一次）→ 清掉「今天已提醒过」的标记，好让今天按新时间再提醒
+    /// 用户改了提醒时间（或想再来一次）→ 清掉「今天已提醒过」和「已完成」的标记，好让今天按新时间再提醒
     mutating func rearmOneShot(now: Date = Date()) {
         guard weekdays.isEmpty else { return }
         let today = Reminder.dayString(now)
         if let d = oneShotDay, d < today { oneShotDay = today }
         firedOn = nil
+        completedOn = nil                 // 重新武装 → 回到「未完成」，列表里重新显示
     }
 }
 
@@ -146,6 +161,17 @@ final class ReminderStore: ObservableObject {
         reminders[i].firedOn = day
     }
 
+    /// 一次性提醒「处理完成」（2026-09-28 用户要求）：在弹窗点「马上处理 / 打开链接」时调用。
+    /// 赋值触发 didSet → scheduleSave() 立即落盘 + 自动同步系统日历：
+    /// 列表里归入「已完成」不再显示，日历事件保留（keepsEventInCalendar）。
+    func markOneShotCompleted(_ id: UUID, day: String) {
+        guard let i = reminders.firstIndex(where: { $0.id == id }),
+              reminders[i].weekdays.isEmpty,
+              reminders[i].completedOn != day else { return }
+        reminders[i].completedOn = day
+        SeatingStore.seatLog("提醒：「\(reminders[i].title)」已处理完成（不再显示，日历保留）")
+    }
+
     /// 清空全部提醒（保留设置，仅删除已配置的提醒项）
     func clearAll() {
         reminders = []
@@ -177,15 +203,21 @@ final class ReminderStore: ObservableObject {
     ///    （2026-09-18 实测）。init 末尾把它置回 false。
     private var isInitializing = true
 
-    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
-    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
+    /// 用户编辑 → **立即落盘**（用户 2026-09-28 要求「默认自动保存」）。
+    /// ⚠️ 与「教室布局」同一惯例（2026-09-23 起）：改一下就写盘，不走 SaveHub 标脏，
+    ///    不等「停手 8 秒」的兜底，直接关掉 App 也不丢改动。
+    ///    因此这里**不调 `markDirty`** —— 保存按钮不该为它亮起「有未保存的改动」。
     func scheduleSave() {
         guard !isInitializing else { return }   // 装载期不算用户编辑
-        SaveHub.shared.markDirty("日程提醒")
+        save()
     }
 
     func save() {
         ReminderStore.writeToDisk(reminders)
+        // ⚠️ CLI 自检进程没有 App bundle，碰 `UNUserNotificationCenter` 会抛 NSException
+        //    （`--selftest-save` 注释里记录过这个限制）。无 bundle 时只落盘、
+        //    跳过通知/日历副作用 —— 数据行为一致，副作用本来也只属于真实 App 运行。
+        guard Bundle.main.bundleIdentifier != nil else { return }
         // 提醒列表变化后重建系统通知
         NotificationScheduler.shared.scheduleAll()
         // 同步到系统自带日历（去抖，避免编辑文字时每敲一个字都写一次）

@@ -20,7 +20,10 @@ struct ReminderSettingsView: View {
                     calendarSyncCard
 
                     // 提醒列表
-                    ForEach(reminderStore.reminders) { r in
+                    // 2026-09-28 用户要求：一次性提醒「已完成」（当天已弹过）就不再显示，
+                    // 但事件仍保留在系统日历里（见 CalendarSyncService.keepsEventInCalendar）；
+                    // 过期未完成的继续留在列表里，直到用户删掉或改时间完成它。
+                    ForEach(reminderStore.reminders.filter { !$0.isCompleted }) { r in
                         // ⚠️ 别在这里再加 .onTapGesture { editing = r }：ReminderRow 内部已有
                         //    `.onTapGesture { onEdit() }`，外面再挂一层就是同一次点击设两遍 editing。
                         ReminderRow(reminder: r) {
@@ -29,9 +32,17 @@ struct ReminderSettingsView: View {
                     }
 
                     // 添加
+                    // 2026-09-28 用户要求三条默认值：
+                    //   ① 不默认勾选周一～周五 —— 一个都不勾 = 一次性提醒，只在今天该时刻提醒一次；
+                    //   ② 默认时间 = 点「添加」这一刻的当前时间；
+                    //   ③ 默认自动保存 —— add() 触发 didSet → ReminderStore.scheduleSave() 立即落盘。
                     Button {
-                        let new = Reminder(title: "新提醒", hour: 9, minute: 0,
-                                           weekdays: ReminderStore.weekdayWorkdays, url: "")
+                        let now = Date()
+                        var new = Reminder(title: "新提醒",
+                                           hour: Calendar.current.component(.hour, from: now),
+                                           minute: Calendar.current.component(.minute, from: now),
+                                           weekdays: [], url: "")
+                        new.syncOneShot()   // 一次性提醒：记下「今天」为提醒日
                         reminderStore.add(new)
                         editing = new
                     } label: {
@@ -62,7 +73,7 @@ struct ReminderSettingsView: View {
 
     // MARK: - 使用说明（冻结在滚动区外）
     private var hintText: some View {
-        Text("到点会弹窗提醒，可点「等会处理」选择稍后再提醒；文字与网址可自定义并自动保存。不勾任何星期 = 只在当天该时刻提醒一次。")
+        Text("到点会弹窗提醒：点「马上处理」= 处理完成（一次性提醒完成后从列表消失、日历里保留），点「等会处理」可稍后再提醒。文字与网址可自定义并自动保存。不勾任何星期 = 只在当天该时刻提醒一次。")
             .font(.caption)
             .foregroundStyle(.secondary)
     }
@@ -125,10 +136,12 @@ struct ReminderRow: View {
                     if reminder.weekdays.isEmpty {
                         // 一天都没勾 = **一次性提醒**（只在该天提醒一次），不再是「不会提醒」
                         // 2026-09-17 用户要求：未勾星期默认为当天设定的时间提醒
+                        // 2026-09-28：「已完成」的整条不再显示（上面 ForEach 已过滤）；
+                        //    弹过窗但没点「马上处理」的还留在列表里，标「已弹窗·待处理」。
                         if reminder.firedOn == Reminder.dayString(Date()) {
-                            Text("今天已提醒")
+                            Text("已弹窗 · 待处理")
                                 .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.orange)
                         } else if reminder.oneShotDay == Reminder.dayString(Date()) {
                             Text("今天提醒")
                                 .font(.system(size: 10, weight: .semibold))

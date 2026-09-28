@@ -7,9 +7,11 @@ import SwiftUI
 // 1) 菜单栏应用会被 App Nap 挂起计时器 → 用 beginActivity(.userInitiated) 阻止；
 // 2) Timer 默认只在 runloop default 模式跑，弹窗/菜单打开时会停 → 改用 DispatchSourceTimer（主队列不受模式影响）；
 // 3) 系统睡眠错过整点 → 唤醒后补检：3 分钟内的错过的提醒仍会弹出；
-// 4) 每条提醒每天同一时刻只弹一次；
+// 4) 每条提醒每天同一时刻只弹一次（一次性提醒靠 firedOn 落盘防重启重弹）；
 // 5) 弹窗提供「马上处理 / 等会处理」：点「等会处理」可在弹窗内选择稍后间隔
 //    （默认 30 分钟，可选 10 分钟 / 1 小时 / 2 小时 / 明天），到点再弹，循环直到「马上处理」。
+//    点「马上处理 / 打开链接」= 处理完成：一次性提醒记 completedOn → 列表归入「已完成」
+//    不再显示，系统日历里的事件保留（2026-09-28 用户要求）。
 // 6) 弹窗改为**独立非模态浮窗**（不再用 NSAlert.runModal）。runModal 会启动模态运行循环，
 //    锁死整个应用 —— 菜单栏面板打不开、无法切换过去查看课表/处理事情。现在弹窗开着时
 //    面板可照常打开操作，处理完再回来点「马上处理」即可。
@@ -182,6 +184,11 @@ final class ReminderFirer {
             hasURL: validURL != nil,
             onDone: { [weak self] in
                 self?.closeWindow(for: r.id)
+                // 2026-09-28 用户要求：点「马上处理」= 处理完成 → 一次性提醒归入「已完成」
+                // （落盘 + 自动同步日历由 ReminderStore 的 didSet→save 链完成）
+                if r.isOneShot && !isTest {
+                    ReminderStore.shared.markOneShotCompleted(r.id, day: Self.dayFormatter.string(from: Date()))
+                }
                 onFinish(.done)
             },
             onSnooze: { [weak self] t in
@@ -191,7 +198,11 @@ final class ReminderFirer {
             onOpenURL: validURL == nil ? nil : { [weak self] in
                 if let u = validURL { NSWorkspace.shared.open(u) }
                 self?.closeWindow(for: r.id)
-                onFinish(.done)                      // 打开链接视为已处理
+                // 打开链接视为已处理 → 同样归入「已完成」
+                if r.isOneShot && !isTest {
+                    ReminderStore.shared.markOneShotCompleted(r.id, day: Self.dayFormatter.string(from: Date()))
+                }
+                onFinish(.done)
             })
 
         let hosting = NSHostingController(rootView: view)
