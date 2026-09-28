@@ -268,36 +268,23 @@ struct ReminderEditSheet: View {
             }
 
             // 快捷定到「现在 + N」（2026-09-28 用户要求：30分钟 / 1小时 / 2小时 / 4小时后；
-            // 要定具体时刻仍用上面的时间框）
+            // 要定具体时刻仍用上面的时间框。同日晚：改成与星期一致的芯片按钮样式）
             HStack(spacing: 6) {
                 Text("快捷")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 ForEach(Self.quickOffsets, id: \.label) { item in
-                    Button(item.label) { setRelative(item.seconds) }
-                        .buttonStyle(.borderless)
-                        .font(.system(size: 11))
+                    WeekdayChip(label: item.label, isOn: false,
+                                helpText: "一键定为 \(item.label) 的时刻") {
+                        setRelative(item.seconds)
+                    }
                 }
                 Spacer()
             }
 
             // 星期循环（显示顺序：周一…周六、周日；取值仍是 1=周日…7=周六）
-            HStack(spacing: 6) {
-                Text("一周哪些天重复")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("每天") { mutate { r in r.weekdays = ReminderStore.weekdayEveryDay; r.longCycle = nil; r.syncOneShot() } }
-                    .buttonStyle(.borderless)
-                    .font(.system(size: 11))
-                    .help("勾选周一到周日全部七天")
-                Button("周一至周五") { mutate { r in r.weekdays = ReminderStore.weekdayWorkdays; r.longCycle = nil; r.syncOneShot() } }
-                    .buttonStyle(.borderless)
-                    .font(.system(size: 11))
-                Button("周一至周六") { mutate { r in r.weekdays = ReminderStore.weekdayMonToSat; r.longCycle = nil; r.syncOneShot() } }
-                    .buttonStyle(.borderless)
-                    .font(.system(size: 11))
-                Spacer()
-            }
+            // 2026-09-28 用户要求：删掉「每天 / 周一至周五 / 周一至周六」预设按钮和说明文字，
+            // 只留星期芯片（全选/清空就逐个点）
             HStack(spacing: 6) {
                 ForEach(ReminderStore.weekdayDisplayOrder, id: \.self) { w in
                     WeekdayChip(label: ReminderStore.weekdayLabel(w),
@@ -305,7 +292,7 @@ struct ReminderEditSheet: View {
                         mutate { r in
                             if r.weekdays.contains(w) { r.weekdays.remove(w) }
                             else { r.weekdays.insert(w) }
-                            // 勾星期 = 放弃长周期循环（三者互斥）；一个都没勾就记成今天（一次性）
+                            // 勾星期 = 放弃长周期循环（三者互斥）；一个都没勾就记成下一次该时刻（一次性）
                             r.longCycle = nil
                             r.syncOneShot()
                         }
@@ -315,22 +302,20 @@ struct ReminderEditSheet: View {
             }
 
             // 长周期循环（2026-09-28 用户要求：每月 / 每半年 / 每年；与按星期、一次性三者互斥，
-            // 循环月/日以「锚点日期」为准 —— 默认今天，可先用下面时间框调整）
+            // 循环月/日以「锚点日期」为准。同日晚：改成芯片样式，选中态实心高亮，再点一次=取消循环）
             HStack(spacing: 6) {
-                Text("长周期循环")
+                Text("长周期")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 ForEach(Reminder.LongCycle.allCases, id: \.self) { c in
-                    Button(c.label) { setCycle(c) }
-                        .buttonStyle(.borderless)
-                        .font(.system(size: 11))
-                        .foregroundStyle(draft.longCycle == c ? Color.accentColor : Color.secondary)
-                }
-                if draft.longCycle != nil {
-                    Button("取消循环") { mutate { r in r.longCycle = nil; r.syncOneShot() } }
-                        .buttonStyle(.borderless)
-                        .font(.system(size: 11))
-                        .help("回到「一次性提醒」（日期记成今天）")
+                    WeekdayChip(label: c.label, isOn: draft.longCycle == c,
+                                helpText: draft.longCycle == c ? "再点一次取消循环" : "设为\(c.label)循环（再点一次取消）") {
+                        if draft.longCycle == c {
+                            mutate { r in r.longCycle = nil; r.syncOneShot() }   // 再点一次 = 取消循环
+                        } else {
+                            setCycle(c)
+                        }
+                    }
                 }
                 Spacer()
             }
@@ -338,16 +323,17 @@ struct ReminderEditSheet: View {
             // 长周期循环说明
             if let cycle = draft.longCycle {
                 Text("\(draft.longCycleText)：每到循环日 \(String(format: "%02d:%02d", draft.hour, draft.minute)) 提醒（锚点 "
-                     + "\(ReminderRow.shortDay(draft.oneShotDay ?? Reminder.dayString(Date())))）；要改回按星期或一次性，直接勾星期或点「取消循环」。")
+                     + "\(ReminderRow.shortDay(draft.oneShotDay ?? Reminder.dayString(Date())))）；要改回按星期或一次性，直接勾星期或再点一次已选中的循环把它取消。")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             // 未勾任何星期、也没设长周期 → 一次性提醒（2026-09-17 用户要求：默认为当天设定的时间提醒，而不是不提醒）
+            // 2026-09-28 用户要求：设置的时刻比当前时间早 → 自动顺延到第二天（不在当天补弹）
             if draft.isOneShot {
                 Text("未勾选星期 = 一次性提醒：只在 \(ReminderRow.shortDay(draft.oneShotDay ?? Reminder.dayString(Date()))) "
-                     + "\(String(format: "%02d:%02d", draft.hour, draft.minute)) 提醒一次（不每周重复）；要每周重复请勾选上面的星期，要每月/每半年/每年请点上面的长周期。")
+                     + "\(String(format: "%02d:%02d", draft.hour, draft.minute)) 提醒一次（不每周重复）；设置的时刻早于当前时间会自动顺延到第二天。要每周重复请勾选上面的星期，要每月/每半年/每年请点上面的长周期。")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
@@ -424,7 +410,9 @@ struct ReminderEditSheet: View {
                 mutate { r in
                     r.hour = cal.component(.hour, from: date)
                     r.minute = cal.component(.minute, from: date)
-                    // 改了时间 → 一次性提醒若已过期就重新定成今天，并允许按新时间再提醒一次
+                    // 改了时间 → 一次性提醒按新时刻重定提醒日：
+                    // 时刻今天已过 → 顺延到明天（2026-09-28 用户要求：设置的时间比当前时间早
+                    // = 第二天，绝不当场补弹），并允许按新时间再提醒一次
                     r.rearmOneShot()
                 }
             }
@@ -442,9 +430,16 @@ struct ReminderEditSheet: View {
 //    现在把选中态**自己画出来**（实心填充 + 白字加粗 vs 浅灰填充 + 次要色文字 + 细描边），
 //    差异是明度/几何级的，任何系统、深色浅色背景下都一眼可辨，不再依赖系统控件的着色实现。
 //    ⚠️ 别再改回 `.tint(...)` 表达选中态；也别只靠改文字颜色（对比太弱）。
+//
+// 2026-09-28 晚泛化成通用「芯片按钮」：快捷时段（30分钟后…）、长周期循环（每月/每半年/每年）
+// 与星期芯片共用同一套外观（用户要求统一成星期按钮样式）。
+// · `minWidth`：星期两字定宽 44；更长的文字（"30分钟后"）自动加宽；
+// · `helpText`：悬停提示由调用方给（星期的「已勾选/未勾选」话术不适用于别的芯片）。
 struct WeekdayChip: View {
     let label: String
     let isOn: Bool
+    var minWidth: CGFloat = 44
+    var helpText: String?
     let action: () -> Void
 
     var body: some View {
@@ -452,7 +447,8 @@ struct WeekdayChip: View {
             Text(label)
                 .font(.system(size: 12, weight: isOn ? .semibold : .regular))
                 .foregroundStyle(isOn ? Color.white : Color.secondary)
-                .frame(width: 44, height: 24)
+                .padding(.horizontal, 8)
+                .frame(minWidth: minWidth, minHeight: 24)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(isOn ? Color.accentColor : Color.gray.opacity(0.16))
@@ -465,6 +461,6 @@ struct WeekdayChip: View {
                 .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .buttonStyle(.plain)
-        .help(isOn ? "\(label)：已勾选（点一下取消）" : "\(label)：未勾选（点一下勾上）")
+        .help(helpText ?? (isOn ? "\(label)：已选中（点一下取消）" : "\(label)：未选中（点一下选上）"))
     }
 }

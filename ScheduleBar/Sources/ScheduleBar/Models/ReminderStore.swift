@@ -104,6 +104,22 @@ struct Reminder: Identifiable, Codable, Equatable {
     }()
     static func dayString(_ d: Date) -> String { dayFormatter.string(from: d) }
 
+    /// 一次性提醒日推断（2026-09-28 用户要求）：设定时刻今天还没到 → 今天；
+    /// **已经过了（含正好此刻）→ 顺延到明天**。
+    /// 背景：用户 23:29 把提醒时间设成 17:30，旧逻辑记成「今天」→ dueCheck 当场补弹
+    /// （日志「一次性提醒补弹（已过 331 分钟）」）。规则改为：设置的时间比当前时间早
+    /// = 用户指的必然是下一次（明天）的那个时刻，绝不当场弹。
+    static func oneShotDayFor(hour: Int, minute: Int, now: Date = Date(), calendar cal: Calendar = .current) -> String {
+        guard let target = cal.date(bySettingHour: hour, minute: minute, second: 0, of: now) else {
+            return dayString(now)   // 时刻构造失败（理论上不会）→ 至少不崩
+        }
+        guard now < target else {
+            let tomorrow = cal.date(byAdding: .day, value: 1, to: now) ?? now
+            return dayString(tomorrow)
+        }
+        return dayString(now)
+    }
+
     /// 一次性提醒的目标时刻（oneShotDay 当天 hour:minute）；非一次性或未设日期 → nil
     func oneShotDate(calendar cal: Calendar = .current) -> Date? {
         guard weekdays.isEmpty, let day = oneShotDay else { return nil }
@@ -117,23 +133,31 @@ struct Reminder: Identifiable, Codable, Equatable {
 
     /// 让「星期勾选」与「一次性日期」保持同步：
     /// · 勾了任意星期 → 清掉 oneShotDay（回到每周重复）
-    /// · 一个都没勾 → 记下「今天」为提醒日；若原来记的日期已经过去（提醒已到期），重设为今天
+    /// · 一个都没勾 → 记下提醒日：日期没设或已过期时，按「下一次该时刻」重定 ——
+    ///   今天该时刻还没到 = 今天；**已过 = 明天**（2026-09-28 用户要求，见 oneShotDayFor）。
+    ///   今天已定（含「已弹窗·待处理」）的保持不动，不影响重启补弹。
     mutating func syncOneShot(now: Date = Date()) {
         // 长周期循环：oneShotDay 是循环锚点（月/日定义循环日期），绝不能当「一次性日期」改写
         guard longCycle == nil else { return }
         guard weekdays.isEmpty else { oneShotDay = nil; firedOn = nil; completedOn = nil; return }
         let today = Reminder.dayString(now)
         if let d = oneShotDay, d >= today { return }
-        oneShotDay = today
-        firedOn = nil                     // 重新定为今天 → 允许今天再提醒一次
+        oneShotDay = Reminder.oneShotDayFor(hour: hour, minute: minute, now: now)
+        firedOn = nil                     // 重新定日 → 允许按新日期再提醒一次
         completedOn = nil                 // 重新武装 → 上一次的「已完成」作废
     }
 
-    /// 用户改了提醒时间（或想再来一次）→ 清掉「今天已提醒过」和「已完成」的标记，好让今天按新时间再提醒
+    /// 用户改了提醒时间（或想再来一次）→ 清掉「今天已提醒过」和「已完成」的标记，好按新时间再提醒；
+    /// 提醒日同步重定：未来日期保持不动；今天/已过期 → 按「下一次该时刻」
+    /// （时刻今天已过 → 明天，2026-09-28 用户要求：设置的时间比当前早 = 第二天）。
     mutating func rearmOneShot(now: Date = Date()) {
         guard weekdays.isEmpty, longCycle == nil else { return }
         let today = Reminder.dayString(now)
-        if let d = oneShotDay, d < today { oneShotDay = today }
+        if let d = oneShotDay, d > today {
+            // 已定的未来日期不动：改时间不该把「10月1日」的提醒搬到今天/明天
+        } else {
+            oneShotDay = Reminder.oneShotDayFor(hour: hour, minute: minute, now: now)
+        }
         firedOn = nil
         completedOn = nil                 // 重新武装 → 回到「未完成」，列表里重新显示
     }
@@ -167,7 +191,10 @@ final class ReminderStore: ObservableObject {
             loaded[$0].weekdays.isEmpty && loaded[$0].oneShotDay == nil
         }
         if !needOneShot.isEmpty {
-            for i in needOneShot { loaded[i].oneShotDay = Reminder.dayString(Date()) }
+            // 2026-09-28 起按「下一次该时刻」补日期：时刻今天已过 → 明天（不当天补弹）
+            for i in needOneShot {
+                loaded[i].oneShotDay = Reminder.oneShotDayFor(hour: loaded[i].hour, minute: loaded[i].minute)
+            }
             ReminderStore.writeToDisk(loaded)
             SeatingStore.seatLog("提醒：\(needOneShot.count) 条未勾选星期的提醒已改为「当天提醒一次」（不再永远不提醒）")
         }

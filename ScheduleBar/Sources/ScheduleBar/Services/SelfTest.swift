@@ -821,27 +821,32 @@ enum SelfTest {
             print("  \(c.name)：判定=\(v.due ? "弹" : "不弹")（\(v.reason)）\(ok ? "✓" : "✗ 期望\(c.shouldFire ? "弹" : "不弹")")")
         }
 
-        // syncOneShot 语义：没勾→记今天；勾了→清空；日期已过→重设为今天
+        // syncOneShot 语义：没勾→按「下一次该时刻」记日（2026-09-28 用户要求：时刻已过=明天）；
+        // 勾了→清空；日期未过期→保持不动
         var s1 = Reminder(title: "s1", hour: 9, minute: 0, weekdays: [], url: "")
         s1.syncOneShot(now: noon)
-        let s1ok = s1.oneShotDay == todayKey
-        if !s1ok { oneShotBad.append("syncOneShot 未填当天") }
+        let s1ok = s1.oneShotDay == tKey   // 9:00 在 noon 已过 → 顺延到明天（不再记今天当场补弹）
+        if !s1ok { oneShotBad.append("syncOneShot 时刻已过未顺延到明天") }
+        var s1f = Reminder(title: "s1f", hour: 23, minute: 0, weekdays: [], url: "")
+        s1f.syncOneShot(now: noon)
+        let s1fok = s1f.oneShotDay == todayKey   // 23:00 还没到 → 今天
+        if !s1fok { oneShotBad.append("syncOneShot 时刻未到未记今天") }
         s1.syncOneShot(now: cal.date(byAdding: .day, value: 1, to: noon) ?? noon)
-        let s1b = s1.oneShotDay == tKey
-        if !s1b { oneShotBad.append("syncOneShot 过期后未重设") }
+        let s1b = s1.oneShotDay == tKey   // 已定的未来日期保持不动
+        if !s1b { oneShotBad.append("syncOneShot 未过期日期被改写") }
         var s2 = Reminder(title: "s2", hour: 9, minute: 0, weekdays: [2, 3], url: "", oneShotDay: todayKey)
         s2.syncOneShot(now: noon)
         let s2ok = s2.oneShotDay == nil
         if !s2ok { oneShotBad.append("勾了星期未清 oneShotDay") }
-        print("  syncOneShot：空→记今天 \(s1ok ? "✓" : "✗")；过期→重设明天 \(s1b ? "✓" : "✗")；勾了星期→清空 \(s2ok ? "✓" : "✗")")
+        print("  syncOneShot：空·时刻已过→明天 \(s1ok ? "✓" : "✗")；空·时刻未到→今天 \(s1fok ? "✓" : "✗")；未过期→不动 \(s1b ? "✓" : "✗")；勾了星期→清空 \(s2ok ? "✓" : "✗")")
 
-        // rearmOneShot：改时间 → 过期日期搬回今天，并清掉「今天已提醒」标记（好按新时间再提醒）
+        // rearmOneShot（改时间）：过期日期按新时刻重定（时刻已过→明天），并清掉「已提醒/已完成」标记
         var s3 = Reminder(title: "s3", hour: 9, minute: 0, weekdays: [], url: "",
                           oneShotDay: yKey, firedOn: yKey)
         s3.rearmOneShot(now: noon)
-        let s3ok = (s3.oneShotDay == todayKey && s3.firedOn == nil)
-        if !s3ok { oneShotBad.append("rearmOneShot 未重置") }
-        print("  rearmOneShot：过期日期→今天 且 清掉已提醒标记 \(s3ok ? "✓" : "✗")（oneShotDay=\(s3.oneShotDay ?? "nil") firedOn=\(s3.firedOn ?? "nil")）")
+        let s3ok = (s3.oneShotDay == tKey && s3.firedOn == nil)
+        if !s3ok { oneShotBad.append("rearmOneShot 未按新时刻重定") }
+        print("  rearmOneShot：过期日期→下一次时刻(明天) 且 清掉已提醒标记 \(s3ok ? "✓" : "✗")（oneShotDay=\(s3.oneShotDay ?? "nil") firedOn=\(s3.firedOn ?? "nil")）")
 
         // 「已完成」语义（2026-09-28 用户要求）：在弹窗点「马上处理 / 打开链接」才算完成（completedOn）；
         // 仅仅弹过窗（firedOn）不算 —— 点过「等会处理」还挂着的要继续留在列表里。
