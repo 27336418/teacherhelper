@@ -107,10 +107,11 @@ final class ReminderFirer {
 
     /// 纯函数（供自检复用）：这条提醒在 now 这一刻该不该弹、以及为什么。
     /// · 勾了星期：命中勾选星期 + 已到点 + 错过的仍在 3 分钟补弹窗口内。
-    /// · 没勾星期：一次性 —— 只在 `oneShotDay` 当天；当天不论迟多久都补弹一次（错过一整天＝那天不再提醒）。
+    /// · 长周期循环（每月/每半年/每年，2026-09-28）：命中循环日 + 到点 + 同样的 3 分钟窗口。
+    /// · 没勾星期也没循环：一次性 —— 只在 `oneShotDay` 当天；当天不论迟多久都补弹一次（错过一整天＝那天不再提醒）。
     static func dueCheck(_ r: Reminder, now: Date, calendar cal: Calendar = .current)
         -> (due: Bool, lateMinutes: Int, reason: String) {
-        let oneShot = r.weekdays.isEmpty
+        let oneShot = r.weekdays.isEmpty && r.longCycle == nil
 
         if oneShot {
             guard let day = r.oneShotDay else { return (false, 0, "未设置提醒日") }
@@ -122,6 +123,11 @@ final class ReminderFirer {
             //    弹窗窗口是纯内存状态，App 重启窗口就丢；若用户还没点完成，
             //    重启后必须能再补弹，否则「已弹窗·待处理」却永远找不到窗口（死锁）。
             if r.completedOn == today { return (false, 0, "今天已完成") }
+        } else if let cycle = r.longCycle {
+            // 长周期循环：只在命中的循环日弹（月/日由 oneShotDay 锚点决定）
+            guard r.matchesLongCycle(on: now, calendar: cal) else {
+                return (false, 0, "今天不在「\(cycle.label)」循环日")
+            }
         } else {
             let weekday = cal.component(.weekday, from: now)
             guard r.fires(on: weekday) else { return (false, 0, "今天不在勾选的星期里") }

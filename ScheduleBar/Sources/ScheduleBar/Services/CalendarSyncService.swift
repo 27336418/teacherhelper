@@ -242,11 +242,19 @@ final class CalendarSyncService: ObservableObject {
         ev.isAllDay = false
         ev.startDate = start
         ev.endDate = start.addingTimeInterval(30 * 60)
-        // 一次性提醒（没勾星期）不写重复规则 → 日历里就只有那一天那一条
-        ev.recurrenceRules = r.weekdays.isEmpty ? nil : [Self.weeklyRule(for: r.weekdays)]
-        ev.notes = r.weekdays.isEmpty
-            ? "由「教师助手 · 提醒设置」自动同步：未勾选星期 = 只在 \(r.oneShotDay ?? "-") 当天提醒一次。要改时间或文字，请回到应用内编辑。"
-            : "由「教师助手 · 提醒设置」自动同步；要改时间或文字，请回到应用内编辑。"
+        // 重复规则（2026-09-28）：长周期（每月/每半年/每年）> 按星期循环 > 一次性（不写重复规则，只有那一天那一条）
+        if let cycle = r.longCycle, let rule = Self.longCycleRule(cycle, anchor: r.oneShotDay) {
+            ev.recurrenceRules = [rule]
+        } else {
+            ev.recurrenceRules = r.weekdays.isEmpty ? nil : [Self.weeklyRule(for: r.weekdays)]
+        }
+        if r.longCycle != nil {
+            ev.notes = "由「教师助手 · 提醒设置」自动同步：\(r.longCycleText)（锚点 \(r.oneShotDay ?? "-")）。要改时间或文字，请回到应用内编辑。"
+        } else {
+            ev.notes = r.weekdays.isEmpty
+                ? "由「教师助手 · 提醒设置」自动同步：未勾选星期 = 只在 \(r.oneShotDay ?? "-") 当天提醒一次。要改时间或文字，请回到应用内编辑。"
+                : "由「教师助手 · 提醒设置」自动同步；要改时间或文字，请回到应用内编辑。"
+        }
         if !r.url.isEmpty, let u = URL(string: r.url) {
             ev.url = u
         } else {
@@ -288,6 +296,33 @@ final class CalendarSyncService: ObservableObject {
     /// 提醒的星期集合 → 有序数组（1=周日 … 7=周六，与 Calendar.weekday 一致）
     static func orderedWeekdays(_ weekdays: Set<Int>) -> [Int] {
         weekdays.filter { (1...7).contains($0) }.sorted()
+    }
+
+    /// 长周期重复规则（2026-09-28）：每月=锚点的「日」；每半年=每年规则带相隔 6 个月的两个月份；
+    /// 每年=锚点月-日。锚点 = oneShotDay（"yyyy-MM-dd"），没设锚点 → nil（调用方回退到「无重复」）。
+    static func longCycleRule(_ cycle: Reminder.LongCycle, anchor: String?) -> EKRecurrenceRule? {
+        guard let anchor else { return nil }
+        let parts = anchor.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        let aMonth = parts[1], aDay = parts[2]
+        switch cycle {
+        case .monthly:
+            return EKRecurrenceRule(recurrenceWith: .monthly, interval: 1,
+                                    daysOfTheWeek: nil, daysOfTheMonth: [aDay as NSNumber],
+                                    monthsOfTheYear: nil, weeksOfTheYear: nil,
+                                    daysOfTheYear: nil, setPositions: nil, end: nil)
+        case .halfYearly:
+            let m2 = ((aMonth - 1 + 6) % 12) + 1
+            return EKRecurrenceRule(recurrenceWith: .yearly, interval: 1,
+                                    daysOfTheWeek: nil, daysOfTheMonth: [aDay as NSNumber],
+                                    monthsOfTheYear: [aMonth as NSNumber, m2 as NSNumber],
+                                    weeksOfTheYear: nil, daysOfTheYear: nil, setPositions: nil, end: nil)
+        case .yearly:
+            return EKRecurrenceRule(recurrenceWith: .yearly, interval: 1,
+                                    daysOfTheWeek: nil, daysOfTheMonth: [aDay as NSNumber],
+                                    monthsOfTheYear: [aMonth as NSNumber],
+                                    weeksOfTheYear: nil, daysOfTheYear: nil, setPositions: nil, end: nil)
+        }
     }
 
     /// 每周重复规则（同一条事件里覆盖所勾选的所有星期）

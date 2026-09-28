@@ -5,12 +5,28 @@ import SwiftUI
 // 持久化 reminders.json。
 
 struct Reminder: Identifiable, Codable, Equatable {
+    /// 长周期循环（2026-09-28 用户要求）：每月 / 每半年 / 每年。
+    /// 与「按星期循环」「一次性」三者互斥：设了长周期 → weekdays 必为空、且不再算「一次性」。
+    /// 循环日期以 `oneShotDay` 为锚点（每月=锚点的「日」；每半年=锚点月-日 与 半年后同月-日；每年=锚点月-日）。
+    enum LongCycle: String, Codable, CaseIterable {
+        case monthly, halfYearly, yearly
+        var label: String {
+            switch self {
+            case .monthly: return "每月"
+            case .halfYearly: return "每半年"
+            case .yearly: return "每年"
+            }
+        }
+    }
+
     var id: UUID = UUID()
     var title: String          // 提醒文字
     var hour: Int              // 0-23
     var minute: Int            // 0-59
     var weekdays: Set<Int>     // 1=周日 ... 7=周六（与 Calendar.weekday 一致）
     var url: String            // 可选 web 地址（空则无）
+    /// 长周期循环（nil = 旧逻辑：weekdays 非空=按星期循环；空=一次性提醒）。
+    var longCycle: LongCycle? = nil
     /// 未勾选任何星期时，这条提醒 = **一次性**：只在 oneShotDay 这一天的 hour:minute 提醒一次（"yyyy-MM-dd"）。
     /// 勾了星期则恒为 nil。
     /// ⚠️ 2026-09-17 用户反馈：老版本「空星期 = 永远不会提醒」是错的（界面还挂着「未勾选任何星期，不会提醒」
@@ -30,8 +46,46 @@ struct Reminder: Identifiable, Codable, Equatable {
     /// 是否在 weekdayIndex（1-7，周日=1）当天触发
     func fires(on weekday: Int) -> Bool { weekdays.contains(weekday) }
 
-    /// 一次性提醒（没勾任何星期）
-    var isOneShot: Bool { weekdays.isEmpty }
+    /// 一次性提醒（没勾任何星期、也没设长周期循环）
+    var isOneShot: Bool { weekdays.isEmpty && longCycle == nil }
+
+    /// 长周期循环的触发日匹配（anchor = oneShotDay 的「月 / 日」；未设锚点 → 永不命中）。
+    /// 每月 = anchor 的「日」；每半年 = anchor 月-日 与 半年后的同月-日；每年 = anchor 月-日。
+    /// ⚠️ 每月 29/30/31 日在没有该日的月份里当月跳过（与系统日历的每月重复行为一致）。
+    func matchesLongCycle(on date: Date, calendar cal: Calendar = .current) -> Bool {
+        guard let cycle = longCycle, let anchor = oneShotDay else { return false }
+        let parts = anchor.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return false }
+        let aMonth = parts[1], aDay = parts[2]
+        let m = cal.component(.month, from: date), d = cal.component(.day, from: date)
+        switch cycle {
+        case .monthly:
+            return d == aDay
+        case .halfYearly:
+            let m2 = ((aMonth - 1 + 6) % 12) + 1
+            return d == aDay && (m == aMonth || m == m2)
+        case .yearly:
+            return m == aMonth && d == aDay
+        }
+    }
+
+    /// 长周期循环的显示文本（列表行用）：每月28日 / 每半年（3月28日、9月28日）/ 每年9月28日
+    var longCycleText: String {
+        guard let cycle = longCycle else { return "" }
+        guard let anchor = oneShotDay else { return "\(cycle.label)（未设日期）" }
+        let parts = anchor.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return cycle.label }
+        let aMonth = parts[1], aDay = parts[2]
+        switch cycle {
+        case .monthly:
+            return "每月\(aDay)日"
+        case .halfYearly:
+            let m2 = ((aMonth - 1 + 6) % 12) + 1
+            return "每半年（\(aMonth)月\(aDay)日、\(m2)月\(aDay)日）"
+        case .yearly:
+            return "每年\(aMonth)月\(aDay)日"
+        }
+    }
 
     /// 一次性提醒已「完成」＝ 用户在弹窗上点过「马上处理 / 打开链接」（completedOn 落盘；
     /// 改时间/改星期重新武装时会清回 nil，所以 `completedOn != nil` ⟺ 已完成）。
@@ -65,6 +119,8 @@ struct Reminder: Identifiable, Codable, Equatable {
     /// · 勾了任意星期 → 清掉 oneShotDay（回到每周重复）
     /// · 一个都没勾 → 记下「今天」为提醒日；若原来记的日期已经过去（提醒已到期），重设为今天
     mutating func syncOneShot(now: Date = Date()) {
+        // 长周期循环：oneShotDay 是循环锚点（月/日定义循环日期），绝不能当「一次性日期」改写
+        guard longCycle == nil else { return }
         guard weekdays.isEmpty else { oneShotDay = nil; firedOn = nil; completedOn = nil; return }
         let today = Reminder.dayString(now)
         if let d = oneShotDay, d >= today { return }
@@ -75,7 +131,7 @@ struct Reminder: Identifiable, Codable, Equatable {
 
     /// 用户改了提醒时间（或想再来一次）→ 清掉「今天已提醒过」和「已完成」的标记，好让今天按新时间再提醒
     mutating func rearmOneShot(now: Date = Date()) {
-        guard weekdays.isEmpty else { return }
+        guard weekdays.isEmpty, longCycle == nil else { return }
         let today = Reminder.dayString(now)
         if let d = oneShotDay, d < today { oneShotDay = today }
         firedOn = nil

@@ -17,8 +17,6 @@ struct ReminderSettingsView: View {
             //    标题行 + 使用说明留在滚动区**外面**，提醒条数多时往下翻也一直看得见。
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    calendarSyncCard
-
                     // 提醒列表
                     // 2026-09-28 用户要求：一次性提醒「已完成」（当天已弹过）就不再显示，
                     // 但事件仍保留在系统日历里（见 CalendarSyncService.keepsEventInCalendar）；
@@ -49,6 +47,16 @@ struct ReminderSettingsView: View {
                         Label("添加提醒", systemImage: "plus")
                     }
                     .buttonStyle(.bordered)
+
+                    // 查看已完成（2026-09-28 用户要求）：已完成的一次性提醒不再显示在列表里，
+                    // 但事件留档在系统「日历」的「教师助手」日历中 → 一键打开日历去看。
+                    Button {
+                        NSWorkspace.shared.launchApplication("Calendar")
+                    } label: {
+                        Label("查看已完成", systemImage: "calendar")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("已完成的一次性提醒已保留在系统「日历」（\(CalendarSyncService.calendarName)）里，点击打开日历查看")
                 }
             }
         }
@@ -66,6 +74,25 @@ struct ReminderSettingsView: View {
             Label("定时提醒", systemImage: "bell.badge.fill")
                 .font(.headline)
             Spacer()
+            // 同步到系统「日历」（2026-09-28 用户要求：默认开启；开关放在撤销左边、一行对齐，
+            //    原来滚动区里的整卡简介已删）。权限被拒时旁边亮一个橙色告警图标。
+            Toggle(isOn: $calendarSync.syncReminders) {
+                Label("同步日历", systemImage: "calendar.badge.plus")
+                    .font(.caption.weight(.medium))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help("每条提醒在 Mac 自带「日历」的「\(CalendarSyncService.calendarName)」日历里生成日程；改/删提醒自动同步，已完成的提醒留档在日历里")
+            if calendarSync.permissionDenied {
+                Button {
+                    CalendarSyncService.openCalendarPrivacySettings()
+                } label: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                .buttonStyle(.plain)
+                .help("日历权限被拒绝，点击去系统设置授权（\(calendarSync.summary)）")
+            }
             UndoButton()
         }
     }
@@ -75,41 +102,6 @@ struct ReminderSettingsView: View {
         Text("到点会弹窗提醒：点「马上处理」= 处理完成（一次性提醒完成后从列表消失、日历里保留），点「等会处理」可稍后再提醒。文字与网址可自定义并自动保存。不勾任何星期 = 只在当天该时刻提醒一次。")
             .font(.caption)
             .foregroundStyle(.secondary)
-    }
-
-    // MARK: 系统日历同步卡片
-    private var calendarSyncCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle(isOn: $calendarSync.syncReminders) {
-                Label("同步到系统「日历」", systemImage: "calendar.badge.plus")
-                    .font(.caption.weight(.medium))
-            }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-
-            Text("开启后，每条提醒会在 Mac 自带「日历」里生成一条每周重复的日程（时间、文字与提醒一致），改提醒或删提醒都会立即自动同步；日程位于「\(CalendarSyncService.calendarName)」日历中，可随时在系统日历里整体隐藏。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 8) {
-                Text(calendarSync.summary)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
-                if calendarSync.permissionDenied {
-                    Button("去系统设置授权") {
-                        CalendarSyncService.openCalendarPrivacySettings()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                }
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.3)))
     }
 }
 
@@ -132,8 +124,8 @@ struct ReminderRow: View {
                     Text(timeText + " · " + weekText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if reminder.weekdays.isEmpty {
-                        // 一天都没勾 = **一次性提醒**（只在该天提醒一次），不再是「不会提醒」
+                    if reminder.isOneShot {
+                        // 一天都没勾、也没设长周期 = **一次性提醒**（只在该天提醒一次），不再是「不会提醒」
                         // 2026-09-17 用户要求：未勾星期默认为当天设定的时间提醒
                         // 2026-09-28：「已完成」的整条不再显示（上面 ForEach 已过滤）；
                         //    今天已过点但没点「马上处理」的标「已弹窗 · 待处理」。
@@ -188,6 +180,8 @@ struct ReminderRow: View {
         String(format: "%02d:%02d", reminder.hour, reminder.minute)
     }
     private var weekText: String {
+        // 长周期循环（每月 / 每半年 / 每年，2026-09-28）：显示循环锚点
+        if reminder.longCycle != nil { return reminder.longCycleText + " 循环" }
         // 一次性提醒（没勾任何星期）：显示日期，而不是星期
         if reminder.weekdays.isEmpty {
             guard let d = reminder.oneShotDay else { return "未设置提醒日" }
@@ -273,19 +267,33 @@ struct ReminderEditSheet: View {
                     .foregroundStyle(.secondary)
             }
 
+            // 快捷定到「现在 + N」（2026-09-28 用户要求：30分钟 / 1小时 / 2小时 / 4小时后；
+            // 要定具体时刻仍用上面的时间框）
+            HStack(spacing: 6) {
+                Text("快捷")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(Self.quickOffsets, id: \.label) { item in
+                    Button(item.label) { setRelative(item.seconds) }
+                        .buttonStyle(.borderless)
+                        .font(.system(size: 11))
+                }
+                Spacer()
+            }
+
             // 星期循环（显示顺序：周一…周六、周日；取值仍是 1=周日…7=周六）
             HStack(spacing: 6) {
                 Text("一周哪些天重复")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("每天") { mutate { r in r.weekdays = ReminderStore.weekdayEveryDay; r.syncOneShot() } }
+                Button("每天") { mutate { r in r.weekdays = ReminderStore.weekdayEveryDay; r.longCycle = nil; r.syncOneShot() } }
                     .buttonStyle(.borderless)
                     .font(.system(size: 11))
                     .help("勾选周一到周日全部七天")
-                Button("周一至周五") { mutate { r in r.weekdays = ReminderStore.weekdayWorkdays; r.syncOneShot() } }
+                Button("周一至周五") { mutate { r in r.weekdays = ReminderStore.weekdayWorkdays; r.longCycle = nil; r.syncOneShot() } }
                     .buttonStyle(.borderless)
                     .font(.system(size: 11))
-                Button("周一至周六") { mutate { r in r.weekdays = ReminderStore.weekdayMonToSat; r.syncOneShot() } }
+                Button("周一至周六") { mutate { r in r.weekdays = ReminderStore.weekdayMonToSat; r.longCycle = nil; r.syncOneShot() } }
                     .buttonStyle(.borderless)
                     .font(.system(size: 11))
                 Spacer()
@@ -297,7 +305,8 @@ struct ReminderEditSheet: View {
                         mutate { r in
                             if r.weekdays.contains(w) { r.weekdays.remove(w) }
                             else { r.weekdays.insert(w) }
-                            // 勾选变了 → 同步「一次性提醒」的日期（一个都没勾就记成今天）
+                            // 勾星期 = 放弃长周期循环（三者互斥）；一个都没勾就记成今天（一次性）
+                            r.longCycle = nil
                             r.syncOneShot()
                         }
                     }
@@ -305,10 +314,40 @@ struct ReminderEditSheet: View {
                 Spacer(minLength: 0)
             }
 
-            // 未勾任何星期 → 一次性提醒（2026-09-17 用户要求：默认为当天设定的时间提醒，而不是不提醒）
-            if draft.weekdays.isEmpty {
+            // 长周期循环（2026-09-28 用户要求：每月 / 每半年 / 每年；与按星期、一次性三者互斥，
+            // 循环月/日以「锚点日期」为准 —— 默认今天，可先用下面时间框调整）
+            HStack(spacing: 6) {
+                Text("长周期循环")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(Reminder.LongCycle.allCases, id: \.self) { c in
+                    Button(c.label) { setCycle(c) }
+                        .buttonStyle(.borderless)
+                        .font(.system(size: 11))
+                        .foregroundStyle(draft.longCycle == c ? Color.accentColor : Color.secondary)
+                }
+                if draft.longCycle != nil {
+                    Button("取消循环") { mutate { r in r.longCycle = nil; r.syncOneShot() } }
+                        .buttonStyle(.borderless)
+                        .font(.system(size: 11))
+                        .help("回到「一次性提醒」（日期记成今天）")
+                }
+                Spacer()
+            }
+
+            // 长周期循环说明
+            if let cycle = draft.longCycle {
+                Text("\(draft.longCycleText)：每到循环日 \(String(format: "%02d:%02d", draft.hour, draft.minute)) 提醒（锚点 "
+                     + "\(ReminderRow.shortDay(draft.oneShotDay ?? Reminder.dayString(Date())))）；要改回按星期或一次性，直接勾星期或点「取消循环」。")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // 未勾任何星期、也没设长周期 → 一次性提醒（2026-09-17 用户要求：默认为当天设定的时间提醒，而不是不提醒）
+            if draft.isOneShot {
                 Text("未勾选星期 = 一次性提醒：只在 \(ReminderRow.shortDay(draft.oneShotDay ?? Reminder.dayString(Date()))) "
-                     + "\(String(format: "%02d:%02d", draft.hour, draft.minute)) 提醒一次（不每周重复）；要每周重复请勾选上面的星期。")
+                     + "\(String(format: "%02d:%02d", draft.hour, draft.minute)) 提醒一次（不每周重复）；要每周重复请勾选上面的星期，要每月/每半年/每年请点上面的长周期。")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
@@ -334,6 +373,41 @@ struct ReminderEditSheet: View {
         }
         .padding(16)
         .frame(width: 460)
+    }
+
+    /// 设为长周期循环（每月 / 每半年 / 每年）：与按星期互斥；
+    /// 循环月/日以 oneShotDay 为锚点（没设过就默认今天）。
+    private func setCycle(_ c: Reminder.LongCycle) {
+        mutate { r in
+            r.longCycle = c
+            r.weekdays = []
+            if r.oneShotDay == nil { r.oneShotDay = Reminder.dayString(Date()) }
+            r.firedOn = nil
+            r.completedOn = nil
+        }
+    }
+
+    /// 编辑弹窗里的快捷时段（2026-09-28 用户要求：默认 30 分钟后，可一键改 1 / 2 / 4 小时后）
+    private static let quickOffsets: [(label: String, seconds: TimeInterval)] = [
+        ("30分钟后", 30 * 60),
+        ("1小时后", 60 * 60),
+        ("2小时后", 2 * 60 * 60),
+        ("4小时后", 4 * 60 * 60),
+    ]
+
+    /// 快捷定为「现在 + seconds」：一次性提醒跨午夜时把提醒日推到明天（与「添加提醒」按钮同一规则）
+    private func setRelative(_ seconds: TimeInterval) {
+        let target = Date().addingTimeInterval(seconds)
+        let cal = Calendar.current
+        mutate { r in
+            r.hour = cal.component(.hour, from: target)
+            r.minute = cal.component(.minute, from: target)
+            if r.weekdays.isEmpty {
+                r.oneShotDay = Reminder.dayString(target)
+                r.firedOn = nil
+                r.completedOn = nil          // 重新武装 → 允许按新时间再提醒一次
+            }
+        }
     }
 
     private var timeBinding: Binding<Date> {

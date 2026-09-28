@@ -125,7 +125,7 @@ struct ChongqingCalendarView: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// 表头：周次 / 一 二 …日 / 备注（钉在表体顶部，见 body 里的 pinnedViews）
+    /// 表头：周次 / 一 二 …日 / 本周重要事项（钉在表体顶部，见 body 里的 pinnedViews）
     private var weekHeaderRow: some View {
         HStack(spacing: 2) {
             Text("周次")
@@ -138,7 +138,7 @@ struct ChongqingCalendarView: View {
                     .frame(width: Self.dayWidth)
                     .foregroundStyle(semester1Color)
             }
-            Text("备注")
+            Text("本周重要事项")
                 .font(.system(size: 11, weight: .bold))
                 .frame(width: Self.remarkWidth, alignment: .leading)
                 .foregroundStyle(semester1Color)
@@ -184,7 +184,7 @@ struct ChongqingCalendarView: View {
                 RoundedRectangle(cornerRadius: 4)
                     .fill(calendarCellGray.opacity(isCurrentWeek ? 0 : 0.4))
             )
-            .help("点击可编辑备注")
+            .help("点击可编辑本周重要事项")
         }
         .padding(.horizontal, 2)
         .background(RoundedRectangle(cornerRadius: 6)

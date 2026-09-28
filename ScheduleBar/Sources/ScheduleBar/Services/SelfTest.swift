@@ -732,7 +732,51 @@ enum SelfTest {
         let tKey = Reminder.dayString(cal.date(byAdding: .day, value: 1, to: noon) ?? noon)
         let todayWeekday = cal.component(.weekday, from: noon)
 
+        // 长周期循环用例的锚点（用今天的月/日构造，保证任何一天跑都稳定）
+        let tY = cal.component(.year, from: noon)
+        let tM = cal.component(.month, from: noon)
+        let tD = cal.component(.day, from: noon)
+        let otherD = tD == 1 ? 2 : 1                        // 与今天不同的「日」
+        let halfAgoM = ((tM - 1 + 6) % 12) + 1              // 半年前的月份（每半年的另一个触发月）
+        let otherM = (tM % 12) + 1                          // 与今天不同的月份（且 +6 也不等于今天月）
+
         let dueCases: [(name: String, r: Reminder, shouldFire: Bool)] = [
+            ("每月·锚点「日」= 今天 → 弹",
+                    Reminder(title: "P1", hour: 11, minute: 59, weekdays: [], url: "",
+                             longCycle: .monthly, oneShotDay: "2020-01-\(String(format: "%02d", tD))"),
+                    true),
+            ("每月·锚点「日」≠ 今天 → 不弹",
+                    Reminder(title: "P2", hour: 11, minute: 59, weekdays: [], url: "",
+                             longCycle: .monthly, oneShotDay: "2020-01-\(String(format: "%02d", otherD))"),
+                    false),
+            ("每半年·今天=锚点+6 个月的同「日」 → 弹",
+                    Reminder(title: "P3", hour: 11, minute: 59, weekdays: [], url: "",
+                             longCycle: .halfYearly,
+                             oneShotDay: "2020-\(String(format: "%02d", halfAgoM))-\(String(format: "%02d", tD))"),
+                    true),
+            ("每半年·月份不命中 → 不弹",
+                    Reminder(title: "P4", hour: 11, minute: 59, weekdays: [], url: "",
+                             longCycle: .halfYearly,
+                             oneShotDay: "2020-\(String(format: "%02d", otherM))-\(String(format: "%02d", tD))"),
+                    false),
+            ("每年·月日命中 → 弹",
+                    Reminder(title: "P5", hour: 11, minute: 59, weekdays: [], url: "",
+                             longCycle: .yearly,
+                             oneShotDay: "\(tY - 1)-\(String(format: "%02d", tM))-\(String(format: "%02d", tD))"),
+                    true),
+            ("每年·月份不命中 → 不弹",
+                    Reminder(title: "P6", hour: 11, minute: 59, weekdays: [], url: "",
+                             longCycle: .yearly,
+                             oneShotDay: "\(tY)-\(String(format: "%02d", otherM))-\(String(format: "%02d", tD))"),
+                    false),
+            ("每月·命中但已过 5 分钟 → 不弹（3 分钟窗口，与每周循环同）",
+                    Reminder(title: "P7", hour: 11, minute: 55, weekdays: [], url: "",
+                             longCycle: .monthly, oneShotDay: "2020-01-\(String(format: "%02d", tD))"),
+                    false),
+            ("每月·没设锚点 → 不弹",
+                    Reminder(title: "P8", hour: 11, minute: 59, weekdays: [], url: "",
+                             longCycle: .monthly),
+                    false),
             ("一次性·当天·刚过点 1 分钟 → 弹",
                     Reminder(title: "A", hour: 11, minute: 59, weekdays: [], url: "", oneShotDay: todayKey),
                     true),
@@ -841,6 +885,32 @@ enum SelfTest {
             Reminder(title: "O", hour: 8, minute: 0, weekdays: [], url: ""))
         if !(k1 && k2 && k3) { oneShotBad.append("keepsEventInCalendar 判定错") }
         print("  日历保留：已完成保留 \(k1 ? "✓" : "✗")；已过期保留 \(k2 ? "✓" : "✗")；无日期清除 \(k3 ? "✓" : "✗")")
+
+        // 长周期循环（2026-09-28 用户要求：每月/每半年/每年）语义：
+        // 不算「一次性」→ 不进入「已完成」语义（没有 completedOn 概念，月月都弹）
+        let cyc = Reminder(title: "c1", hour: 8, minute: 0, weekdays: [], url: "",
+                           longCycle: .monthly, oneShotDay: "2020-01-15", completedOn: todayKey)
+        let lc1 = !cyc.isOneShot && !cyc.isCompleted
+        if !lc1 { oneShotBad.append("长周期被误判一次性/可完成") }
+        // syncOneShot / rearmOneShot 不得改写长周期锚点（锚点的月/日定义循环日期）
+        var cyc2 = Reminder(title: "c2", hour: 8, minute: 0, weekdays: [], url: "",
+                            longCycle: .yearly, oneShotDay: "2020-06-15")
+        cyc2.syncOneShot(now: noon)
+        cyc2.rearmOneShot(now: noon)
+        let lc2 = cyc2.oneShotDay == "2020-06-15" && cyc2.longCycle == .yearly
+        if !lc2 { oneShotBad.append("syncOneShot/rearmOneShot 改写了长周期锚点") }
+        print("  长周期：不算一次性、无完成概念 \(lc1 ? "✓" : "✗")；sync/rearm 不动锚点 \(lc2 ? "✓" : "✗")")
+
+        // 系统日历重复规则：每月带「日」、每半年带相隔 6 个月的两个月份、每年带锚点月
+        let ruleM = CalendarSyncService.longCycleRule(.monthly, anchor: "2026-03-28")
+        let ruleH = CalendarSyncService.longCycleRule(.halfYearly, anchor: "2026-03-28")
+        let ruleY = CalendarSyncService.longCycleRule(.yearly, anchor: "2026-03-28")
+        let lc3 = ruleM?.frequency == .monthly && ruleM?.daysOfTheMonth?.contains(28) == true
+        let lc4 = ruleH?.frequency == .yearly && ruleH?.monthsOfTheYear?.count == 2
+                  && ruleH?.monthsOfTheYear?.contains(3) == true && ruleH?.monthsOfTheYear?.contains(9) == true
+        let lc5 = ruleY?.frequency == .yearly && ruleY?.monthsOfTheYear?.contains(3) == true
+        if !(lc3 && lc4 && lc5) { oneShotBad.append("longCycleRule 规则错误") }
+        print("  日历规则：每月带日 \(lc3 ? "✓" : "✗")；每半年双月 \(lc4 ? "✓" : "✗")；每年带月 \(lc5 ? "✓" : "✗")")
 
         // 旧版 reminders.json（无 oneShotDay 字段）必须还能解码
         let legacyJSON = #"[{"id":"00000000-0000-0000-0000-0000000000AA","title":"旧数据","hour":17,"minute":43,"weekdays":[],"url":""}]"#

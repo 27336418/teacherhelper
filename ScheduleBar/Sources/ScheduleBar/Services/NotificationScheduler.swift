@@ -41,6 +41,39 @@ final class NotificationScheduler: NSObject, UNUserNotificationCenterDelegate {
         content.body = r.title
         content.sound = .default
 
+        // 长周期循环（每月 / 每半年 / 每年，2026-09-28）：weekdays 必为空，
+        // 要排在「空星期 = 一次性」分支**前面**判。循环月/日取 oneShotDay 锚点。
+        if let cycle = r.longCycle {
+            guard let anchor = r.oneShotDay else { return }
+            let parts = anchor.split(separator: "-").compactMap { Int($0) }
+            guard parts.count == 3 else { return }
+            let aMonth = parts[1], aDay = parts[2]
+
+            func addTrigger(month: Int?, day: Int, suffix: String) {
+                var comps = DateComponents()
+                comps.month = month            // nil = 每月
+                comps.day = day
+                comps.hour = r.hour
+                comps.minute = r.minute
+                let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
+                let request = UNNotificationRequest(identifier: "\(r.id.uuidString)-\(suffix)",
+                                                    content: content, trigger: trigger)
+                UNUserNotificationCenter.current().add(request)
+            }
+
+            switch cycle {
+            case .monthly:
+                addTrigger(month: nil, day: aDay, suffix: "monthly")
+            case .halfYearly:
+                let m2 = ((aMonth - 1 + 6) % 12) + 1
+                addTrigger(month: aMonth, day: aDay, suffix: "hy1")
+                addTrigger(month: m2, day: aDay, suffix: "hy2")
+            case .yearly:
+                addTrigger(month: aMonth, day: aDay, suffix: "yearly")
+            }
+            return
+        }
+
         // 未勾任何星期 → **一次性**提醒：只给「当天」排一条不重复的系统通知。
         // （2026-09-17 之前这里直接什么都不排，等于系统通知永远不会来；用户要求改成「当天该时刻提醒一次」）
         if r.weekdays.isEmpty {
