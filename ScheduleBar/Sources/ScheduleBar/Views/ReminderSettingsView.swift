@@ -32,17 +32,17 @@ struct ReminderSettingsView: View {
                     }
 
                     // 添加
-                    // 2026-09-28 用户要求三条默认值：
-                    //   ① 不默认勾选周一～周五 —— 一个都不勾 = 一次性提醒，只在今天该时刻提醒一次；
-                    //   ② 默认时间 = 点「添加」这一刻的当前时间；
+                    // 2026-09-28 用户要求的默认值：
+                    //   ① 不默认勾选周一～周五 —— 一个都不勾 = 一次性提醒，只在该日该时刻提醒一次；
+                    //   ② 默认时间 = 点「添加」这一刻**往后 30 分钟**（跨午夜则自动定到明天）；
                     //   ③ 默认自动保存 —— add() 触发 didSet → ReminderStore.scheduleSave() 立即落盘。
                     Button {
-                        let now = Date()
+                        let target = Date().addingTimeInterval(30 * 60)
                         var new = Reminder(title: "新提醒",
-                                           hour: Calendar.current.component(.hour, from: now),
-                                           minute: Calendar.current.component(.minute, from: now),
+                                           hour: Calendar.current.component(.hour, from: target),
+                                           minute: Calendar.current.component(.minute, from: target),
                                            weekdays: [], url: "")
-                        new.syncOneShot()   // 一次性提醒：记下「今天」为提醒日
+                        new.oneShotDay = Reminder.dayString(target)   // 一次性提醒：记 30 分钟后那天（跨午夜=明天）
                         reminderStore.add(new)
                         editing = new
                     } label: {
