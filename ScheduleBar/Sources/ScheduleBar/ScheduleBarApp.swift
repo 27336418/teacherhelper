@@ -86,6 +86,13 @@ struct ScheduleBarApp {
             SelfTest.runSaveCheck()
             return
         }
+        // 板块页面渲染自检（离屏渲染每个板块页 → 断言「真的画出内容」＋「恰好一个可见」）：--selftest-render
+        // 给 2026-09-28 的宿主容器改造（NSHostingView + isHidden）兜底：性能日志只能证明「切页发生了」，
+        // 证明不了「页面还画得出来」。详见 Services/PanelRenderCheck.swift。
+        if args.contains("--selftest-render") {
+            PanelRenderCheck.run()
+            return
+        }
         // 保存按钮两种状态离屏渲染（临时取证）：--render-save-button <out.png>
         if let i = args.firstIndex(of: "--render-save-button"), i + 1 < args.count {
             if #available(macOS 14.0, *) {
@@ -147,6 +154,15 @@ struct ScheduleBarApp {
         if let i = args.firstIndex(of: "--tab"), i + 1 < args.count {
             AppDelegate.initialTabName = args[i + 1]
             SaveHub.log("启动参数：--tab = \(args[i + 1])（将停在对应板块）")
+        }
+
+        // 切页性能跑批：`--perf-tabs`（配合 `SCHEDULEBAR_TRACE_PERF=1` 或偏好 `tracePerf`）。
+        // 面板打开后自动把所有板块轮播两遍（第一遍＝首次建页，第二遍＝热切换），
+        // 每切一次往日志写一行「主线程耗时 Nms」，跑完打汇总表。见 Services/PerfTrace.swift。
+        // ⚠️ 还认偏好域 `perfTabs`：`open` 起不了带参数的进程（本机 `open --args` 传不进去）。
+        if args.contains("--perf-tabs") || UserDefaults.standard.bool(forKey: "perfTabs") {
+            AppDelegate.perfTabs = true
+            SaveHub.log("启动参数：--perf-tabs（面板打开后自动轮播所有板块，测量切页耗时）")
         }
 
         let app = NSApplication.shared
@@ -262,6 +278,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// 命令行 --tab <板块名> 指定启动后停在哪个板块（如「教师课表」）。
     /// 用途：截图取证时不必靠「合成点击侧栏坐标」——坐标在这台机器上会偏（popover 每次重定位）。
     static var initialTabName: String?
+
+    /// `--perf-tabs`：面板打开后自动轮播所有板块（切页性能取证，见 PerfTrace）
+    static var perfTabs = false
 
     /// 退出前兜底：把还没保存的改动写盘（忘了点「保存」也绝不丢数据）
     func applicationWillTerminate(_ notification: Notification) {

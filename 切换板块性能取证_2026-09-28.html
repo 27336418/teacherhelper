@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>教师助手 · 切换板块性能取证与修复（2026-09-28）</title>
+<style>
+  :root{--bg:#f7f8fa;--card:#fff;--ink:#1d2129;--sub:#4e5969;--line:#e5e6eb;--ok:#0f7b3f;--bad:#c0392b;--warn:#b8860b;--accent:#1664ff}
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 56px;background:var(--bg);color:var(--ink);
+       font:15px/1.7 -apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 6px}
+  .sub{color:var(--sub);font-size:13px;margin-bottom:24px}
+  h2{font-size:17px;margin:30px 0 10px;padding-left:10px;border-left:4px solid var(--accent)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--sub);font-weight:600;background:#fafbfc}
+  tr:last-child td{border-bottom:none}
+  td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  code{background:#f0f1f3;padding:1px 5px;border-radius:4px;font-size:13px}
+  .ok{color:var(--ok);font-weight:600}
+  .bad{color:var(--bad);font-weight:600}
+  .warn{color:var(--warn);font-weight:600}
+  .big{font-size:19px;font-weight:700}
+  ul{margin:8px 0 0;padding-left:20px}
+  li{margin:5px 0}
+  .note{font-size:13px;color:var(--sub)}
+  .hl{background:#eef7f0;border:1px solid #bfe3c9;border-radius:12px;padding:16px 20px;margin:14px 0}
+  .fig{margin:14px 0 0}
+  .fig img{width:100%;border:1px solid var(--line);border-radius:10px;display:block}
+  .fig figcaption{font-size:12.5px;color:var(--sub);margin-top:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>切换板块（切页）性能：取证 → 修复 → 验证</h1>
+<div class="sub">教师助手 · 2026-09-28 · release 构建 · 11 个板块轮播两遍（21 次切换），量的是「主线程恢复空闲所需时间」（含 body 求值 + 布局 + CoreAnimation 提交）</div>
+
+<div class="hl">
+  <div class="big">结论：已按方案 1 完成结构性重构，轻量页热切换从 91~201ms 降到 17~53ms（约 3~4 倍）。</div>
+  <div class="note" style="margin-top:6px">
+    做法：<b>每个访问过的板块一个 <code>NSHostingView</code> 容器，非当前页 <code>isHidden = true</code></b>，
+    让 AppKit 整棵子树跳过布局与绘制、CoreAnimation 把它从渲染树里剪掉。<br>
+    覆盖面：11 个板块页面逐一<b>离屏渲染取证</b>确认真能画出内容（不是只证明「切页发生了」）；
+    全套自检 12 组 ✗=0。<b>改动尚未打包发布，线上仍是 2.5.7。</b>
+  </div>
+</div>
+
+<h2>一、改了什么</h2>
+<div class="card">
+  <table>
+    <tr><th>维度</th><th>旧做法</th><th>新做法</th></tr>
+    <tr><td>承载方式</td><td>一个 SwiftUI <code>ZStack</code> 装所有访问过的页</td><td>每页一个 <code>NSHostingView</code>（AppKit 宿主）</td></tr>
+    <tr><td>隐藏方式</td><td><code>.opacity(0)</code> —— 只是不绘制像素，图层仍挂在窗口图层树上</td><td><code>isHidden = true</code> —— 布局、绘制、合成三层全部跳过</td></tr>
+    <tr><td>选中页顺序</td><td>必须把选中页挪到 ZStack 末尾抢拖拽落点</td><td>顺序不再有意义（隐藏视图不是落点），该 hack 已撤除</td></tr>
+    <tr><td>切页入口</td><td>四处入口各写一遍</td><td>统一 <code>select(_:)</code>：登记「已访问」+ 切页一次做完</td></tr>
+  </table>
+  <p class="note" style="margin-bottom:0">
+    ⚠️ 关键约束：<code>NSHostingView</code> 是<b>独立的一棵 SwiftUI 树，不继承外层环境</b> ——
+    12 个 <code>@EnvironmentObject</code> 必须在宿主里逐个显式再注入，且与根注入列表保持一致。
+    这是本次改造唯一的真实风险点，也是下面第 4 节要专门取证的原因。
+  </p>
+</div>
+
+<h2>二、实测：同一份二进制交替 A/B</h2>
+<div class="card">
+  <table>
+    <tr><th>指标</th><th class="n">新（NSHostingView + isHidden）</th><th class="n">旧（ZStack + opacity）</th></tr>
+    <tr><td>21 次切换总耗时（两轮）</td><td class="n ok">4463 / 5263 ms</td><td class="n bad">5910 / 6629 ms</td></tr>
+    <tr><td><b>轻量页热切换</b>（最常发生）</td><td class="n ok"><b>17 ~ 53 ms</b></td><td class="n bad">91 ~ 201 ms</td></tr>
+    <tr><td>重页热切换</td><td class="n ok">195 ~ 317 ms</td><td class="n bad">371 ~ 434 ms</td></tr>
+  </table>
+  <p class="note" style="margin-top:10px;margin-bottom:6px">另一次完整跑批的<b>逐页热切换</b>对照（<code>再切</code>＝第二次进入，缓存命中）：</p>
+  <table>
+    <tr><th>板块</th><th class="n">旧 ZStack</th><th class="n">新宿主容器</th><th class="n">倍数</th></tr>
+    <tr><td>日程提醒</td><td class="n">201 ms</td><td class="n ok">12 ms</td><td class="n">17×</td></tr>
+    <tr><td>学生座位</td><td class="n">568 ms</td><td class="n ok">22 ms</td><td class="n">26×</td></tr>
+    <tr><td>教师工位</td><td class="n">129 ms</td><td class="n ok">24 ms</td><td class="n">5×</td></tr>
+    <tr><td>学生信息</td><td class="n">131 ms</td><td class="n ok">33 ms</td><td class="n">4×</td></tr>
+    <tr><td>教室布局</td><td class="n">408 ms</td><td class="n ok">191 ms</td><td class="n">2×</td></tr>
+    <tr><td>年级师资</td><td class="n">391 ms</td><td class="n ok">201 ms</td><td class="n">2×</td></tr>
+    <tr><td>校历日历</td><td class="n">373 ms</td><td class="n ok">206 ms</td><td class="n">2×</td></tr>
+    <tr><td colspan="3" class="note">总计：旧 5906ms / 22 次 → 新 4187ms / 21 次；平均 268ms → 199ms</td></tr>
+  </table>
+  <p class="note" style="margin-bottom:0">
+    「首次进入」新做法略贵（要多建一层 hosting view，实测 169~549ms，旧做法 200~430ms 量级），
+    但**总量更低**，而且用户真正感知的是「反复切来切去」的热切换 —— 那部分快了 3~4 倍。
+  </p>
+</div>
+
+<h2>三、耗时到底花在哪（定位过程）</h2>
+<div class="card">
+  <p style="margin-top:0">把 11 个板块内容全换成占位色块再跑同一套跑批：</p>
+  <table>
+    <tr><th>配置</th><th>21 次切换总耗时</th><th>说明</th></tr>
+    <tr><td>全部真页（基线）</td><td>4469 ~ 4680 ms（6 次）</td><td>同配置跑 6 次，散落在这个区间</td></tr>
+    <tr><td><b>全部占位色块</b></td><td class="ok"><b>789 ms</b></td><td>只剩面板框架本身</td></tr>
+    <tr><td>只留 1 个真页</td><td>1046 ~ 1247 ms</td><td>其余 10 页占位</td></tr>
+    <tr><td>4 个重页占位</td><td>3419 ms</td><td>还剩 7 个真页</td></tr>
+  </table>
+  <p style="margin-top:12px;margin-bottom:0">
+    <b>真机制：单次切页耗时 ≈ 固定底（约 20ms）+「窗口图层树里活着的页面内容量」。</b>
+    <code>.opacity(0)</code> 的隐藏页既不重算 body、也不按全尺寸布局，但它们的图层仍然活在窗口里，
+    CoreAnimation 每次提交照样遍历 —— 所以访问过的板块越多、每页越复杂，每次切页的固定开销越大。
+    这才是「越用越慢」的真原因。
+  </p>
+</div>
+
+<h2>四、「页面还画不画得出来」——离屏渲染自证</h2>
+<div class="card">
+  <p style="margin-top:0">
+    性能数字只能证明「切页发生了」，证明不了「新的宿主容器真的把 SwiftUI 内容画出来了」。
+    而本机三条视觉取证路都不通（截图抓不到 popover 所在 Space、<code>osascript set frontmost</code> 报 -10004 权限违例、
+    <code>Quartz</code> 不可用），于是改成<b>进程内 <code>cacheDisplay</code> 离屏渲染</b>：
+    把每个页面画进位图，统计像素多样性 —— 不依赖窗口可见、不依赖录屏权限、不受 Space 影响。
+  </p>
+  <p>
+    新增常驻自检 <code>--selftest-render</code>（<code>Services/PanelRenderCheck.swift</code>），逐个渲染 11 个板块页并断言两件事：
+  </p>
+  <ul>
+    <li><b>真的画出内容</b>：唯一色 ≥ 20 且「墨点」（与主色不同的采样点数）≥ 200；</li>
+    <li><b>恰好只有当前页可见</b>：其余 10 页必须都是 <code>isHidden = true</code>（否则性能收益不成立）。</li>
+  </ul>
+  <table style="margin-top:12px">
+    <tr><th>板块</th><th class="n">唯一色</th><th class="n">主色占比</th><th class="n">墨点</th><th class="n">判定</th></tr>
+    <tr><td>本人课表</td><td class="n">570</td><td class="n">65.6%</td><td class="n">94 427</td><td class="n ok">✓</td></tr>
+    <tr><td>班级课表</td><td class="n">2186</td><td class="n">59.7%</td><td class="n">110 582</td><td class="n ok">✓</td></tr>
+    <tr><td>他人课表</td><td class="n">632</td><td class="n">89.8%</td><td class="n">27 949</td><td class="n ok">✓</td></tr>
+    <tr><td>延时监考</td><td class="n">1629</td><td class="n">48.8%</td><td class="n">140 440</td><td class="n ok">✓</td></tr>
+    <tr><td>教师工位</td><td class="n">628</td><td class="n">83.3%</td><td class="n">45 842</td><td class="n ok">✓</td></tr>
+    <tr><td>教室布局</td><td class="n">529</td><td class="n">91.4%</td><td class="n">23 565</td><td class="n ok">✓</td></tr>
+    <tr><td>年级师资</td><td class="n">740</td><td class="n">47.7%</td><td class="n">143 394</td><td class="n ok">✓</td></tr>
+    <tr><td>学生信息</td><td class="n">855</td><td class="n">82.2%</td><td class="n">48 846</td><td class="n ok">✓</td></tr>
+    <tr><td>学生座位</td><td class="n">2060</td><td class="n">72.4%</td><td class="n">75 545</td><td class="n ok">✓</td></tr>
+    <tr><td>校历日历</td><td class="n">2101</td><td class="n">43.5%</td><td class="n">155 016</td><td class="n ok">✓</td></tr>
+    <tr><td>日程提醒</td><td class="n">167</td><td class="n">99.8%</td><td class="n">568</td><td class="n ok">✓</td></tr>
+  </table>
+  <p class="note" style="margin-top:10px">
+    ⚠️ 判据踩过一个坑：一开始用「主色占比 ≤ 99.5%」当标准，结果<b>日程提醒被误判成空白</b> ——
+    那其实是完全正常的页面（标题＋同步开关＋两条提醒＋添加按钮），
+    只是内容只占上半屏，大半个面板都是背景白，所以主色占比高达 99.8%，但「墨点」仍有 568 个。
+    换成「墨点数」才是对的度量。11 张原图已存到 <code>面板渲染自证_2026-09-28/</code>，随时可复核。
+  </p>
+  <figure class="fig">
+    <img src="面板渲染自证_2026-09-28/板块-学生信息.png" alt="学生信息页离屏渲染结果">
+    <figcaption>学生信息：工具栏、搜索框、49 人表格、冻结姓名列、身份证号高亮全部正常</figcaption>
+  </figure>
+  <figure class="fig">
+    <img src="面板渲染自证_2026-09-28/板块-校历日历.png" alt="校历日历页离屏渲染结果">
+    <figcaption>校历日历：22 周整表、冻结表头、当前周黄色高亮、各色标记全部正常</figcaption>
+  </figure>
+  <figure class="fig">
+    <img src="面板渲染自证_2026-09-28/板块-日程提醒.png" alt="日程提醒页离屏渲染结果">
+    <figcaption>日程提醒：就是这一页曾被误判为「空白」—— 内容只占上半屏，属于正常</figcaption>
+  </figure>
+</div>
+
+<h2>五、六个已证伪的猜想（别再重复排查）</h2>
+<div class="card">
+  <table>
+    <tr><th>猜想</th><th>实验</th><th>结果</th></tr>
+    <tr><td>隐藏页也在<b>布局</b></td><td>隐藏页的尺寸提议缩成 1×1</td><td class="bad">4649ms（原 4632）— 没变</td></tr>
+    <tr><td>隐藏页的 <b>body 被重算</b></td><td>套 EquatableView + 埋计数器</td><td class="bad">4359ms；每页 body 整场只跑 1 次 — 没变</td></tr>
+    <tr><td>ForEach <b>数据顺序</b>每次变化导致重建</td><td>去掉「选中项挪到末尾」</td><td class="bad">4592ms — 没变</td></tr>
+    <tr><td>每格 <code>.help</code> 的工具提示层</td><td>摘掉 63 个</td><td class="bad">1042ms（原 1046）— 没变</td></tr>
+    <tr><td>满窗<b>毛玻璃</b>整窗重模糊</td><td>换 .behindWindow / 不透明纯色</td><td class="bad">交替 A/B 后全部落回噪声 — 没变</td></tr>
+    <tr><td>「只留当前页 + 上一页」能省开销</td><td>两页滑动窗口</td><td class="bad">更慢：6281ms vs 4582ms（每页都是缓存未命中）</td></tr>
+  </table>
+</div>
+
+<h2>六、⚠️ 一个必须记住的坑：机器漂移</h2>
+<div class="card">
+  <p style="margin-top:0">同一份二进制、同一套跑批，<b>同一配置两次能差 900ms</b>（实测 3870 vs 4760ms），整段时期还能整体偏移约 10%。</p>
+  <p style="margin-bottom:0">本轮有三次「单次测得 -10% ~ -21%」的改动（毛玻璃、behindWindow、不透明底色），
+  <b>交替 A/B 复测后全部落回噪声</b>，于是全部回退、一行都没出货。
+  这次结论之所以可信，是因为它同时满足两条：交替 A/B 一致、且逐页显示<b>单调的同向改善</b>。以后判定只认这两条。</p>
+</div>
+
+<h2>七、留在代码里的东西 / 自检</h2>
+<div class="card">
+  <ul>
+    <li><code>Views/PanelHost.swift</code>：<code>PanelHostContainer</code>（宿主容器）＋ <code>PanelHost</code>（桥，含 12 个环境对象再注入）
+        ＋ <code>SchedulePanelPages</code>（板块→页面唯一定义处），顶部写全了实测表与已证伪猜想。</li>
+    <li>新增两件常驻取证工具，默认全关，下次直接复用：<code>--selftest-render</code>（离屏渲染自证，<code>Services/PanelRenderCheck.swift</code>）、
+        <code>--perf-tabs</code>（切页计时跑批，<code>Services/PerfTrace.swift</code>）。</li>
+    <li>统一入口 <code>select(_:)</code>：导航项 / 右键隐藏兜底 / hover 切页 / <code>--tab</code> / 跑批都不再各写一遍。</li>
+    <li><b>全套自检 12 组 ✗=0</b>（原 11 组 + 新增渲染组）；实验用的偏好开关 <code>perfTabs</code> / <code>tracePerf</code> 已从偏好域删除。</li>
+    <li>线上版本仍为 <b>2.5.7</b>，本次改动尚未打包发布。</li>
+  </ul>
+</div>
+
+<h2>八、下一步（等你拍板）</h2>
+<div class="card">
+  <table>
+    <tr><th>选项</th><th>说明</th></tr>
+    <tr><td><b>发版 2.5.8</b></td><td>打包 DMG（本地全自动，不推送），你实机感受一下切页速度；确认后再决定是否推送</td></tr>
+    <tr><td><b>继续压重页</b></td><td>教室布局 / 年级师资 / 校历日历 仍要 191~206ms，值得再挖；但改动落在最显眼的页面上，需要你过目观感</td></tr>
+    <tr><td><b>就此打住</b></td><td>改动留在本地，等下次一起发</td></tr>
+  </table>
+</div>
+
+</div>
+</body>
+</html>

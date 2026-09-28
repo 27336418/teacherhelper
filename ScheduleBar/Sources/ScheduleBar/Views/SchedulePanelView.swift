@@ -68,7 +68,22 @@ struct SchedulePanelView: View {
     @State private var showWeekSetup = false
     @State private var showDockIcon = DockPrefs.show     // Dock 图标开关
     @State private var draggedTab: PanelTab? = nil      // 正在拖拽的导航项
-    @State private var visitedTabs: Set<PanelTab> = [.personal]  // 已访问过的页面（缓存常驻，切回零重建）
+
+    // ⚠️ 2026-09-28 实测定案（`--perf-tabs` release 跑批，见 Services/PerfTrace.swift）：
+    //    **不要**改成「只留当前页 + 上一页」的滑动窗口 —— 那样每次切页都要「建新页 + 拆旧页」，
+    //    反而全面变慢（同一台机器、同一套跑批）：
+    //      · 累积常驻（本实现）：轻量页热切 17~53ms；
+    //      · 只留两页         ：轻量页 200~378ms（典型「延时监考」132ms → 378ms，每页都是缓存未命中）。
+    //    所以页面**只增不减**：切回已访问过的页时，宿主视图与它的 SwiftUI 树原样还在，
+    //    只把 `PanelHostContainer` 里对应 `NSHostingView` 的 `isHidden` 翻回来（不再走 opacity）。
+    //    ⚠️ 提醒：本机这套跑批的**机器漂移很大**（同一配置两次能差 900ms，实测 3870 vs 4760），
+    //       判定只看「交替 A/B」或「随变量单调变化」的趋势，别拿单次绝对值下结论。
+    @State private var visitedTabs: Set<PanelTab> = [.personal]
+
+    // 切页性能跑批（`--perf-tabs` + `SCHEDULEBAR_TRACE_PERF=1`，见 Services/PerfTrace.swift）
+    @State private var perfQueue: [PanelTab] = []
+    @State private var perfStep = 0
+    @State private var perfTimer: Timer? = nil
 
     // 导航顺序 / 隐藏（持久化 nav_prefs.json）
     @ObservedObject private var navPrefs = NavPrefsStore.shared
@@ -169,11 +184,10 @@ struct SchedulePanelView: View {
                     + " 内容区=\(Int(w - navColumnWidth - 1))")
             }
         }
-        // 每次切页登记缓存，之后切回不再重建（消除卡顿）
+        // 切页副作用：离开「教室布局」就取消选中（否则回到本页会看到上次的蓝框，
+        // 而且 Delete 键监听器虽然一直在，也该在没有选中时保持沉默）。
+        // 「已访问过的页面登记」由 `select(_:)` 统一负责，这里不再补登记（补登记会多一轮重绘）。
         .onChange(of: selectedTab) { t in
-            visitedTabs.insert(t)
-            // 离开「教室布局」就取消选中：否则回到本页会看到上次的蓝框，
-            // 而且 Delete 键监听器虽然一直在，也该在没有选中时保持沉默。
             if t != .classroom { ClassroomStore.shared.clearSelection() }
         }
         .onChange(of: showDockIcon) { on in
@@ -182,8 +196,7 @@ struct SchedulePanelView: View {
         .onAppear {
             // --tab <板块名>：截图取证时直接停在目标板块（不必点侧栏，坐标不稳）
             if let name = AppDelegate.initialTabName, let t = PanelTab(rawValue: name) {
-                selectedTab = t
-                visitedTabs.insert(t)
+                select(t)
             }
             // 首帧补一次窗口宽度同步。--tab 指定的板块是在这里就位的，
             // 那一帧 panelWidth 已经是最终值、**没有「变化」过**，光靠 onChange 会漏掉，
@@ -192,6 +205,41 @@ struct SchedulePanelView: View {
             DispatchQueue.main.async {
                 AppDelegate.applyPanelWidth(w)
                 traceWidth("首帧")
+            }
+            startPerfCycleIfNeeded()
+        }
+    }
+
+    // MARK: - 切页性能跑批（`--perf-tabs`）
+    // 面板打开后自动轮播所有板块两遍：第一遍＝首次建页（冷），第二遍＝已建过再切（热）。
+    // 每切一次 `PerfTrace.mark` 一次，日志里会落一行「主线程耗时 Nms」；跑完打汇总表。
+    private func startPerfCycleIfNeeded() {
+        guard AppDelegate.perfTabs, PerfTrace.enabled, perfTimer == nil else { return }
+        let tabs = navPrefs.visibleTabs.isEmpty ? PanelTab.allCases : navPrefs.visibleTabs
+        perfQueue = tabs + tabs                          // 两遍：冷 + 热
+        perfStep = 0
+        let interval = 1.6
+        // ⚠️ 必须等 App 稳定下来再开始：启动初期主线程在装载数据 / 同步日历 / 建 store，
+        //    这时候测出来的「切页耗时」全是别人的活（实测会被抬到 2~3 倍）。
+        // ⚠️ 间隔也要够长：间隔短于真实耗时的话 Timer 会挤在一起连续触发，
+        //    几笔测量互相重叠，数字直接失真（曾量出 3473ms 这种离谱值）。
+        SaveHub.log("性能跑批：\(Int(8))s 后开始，共 \(perfQueue.count) 次切换，每次间隔 \(interval)s")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+            perfTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+                guard perfStep < perfQueue.count else {
+                    perfTimer?.invalidate()
+                    perfTimer = nil
+                    PerfTrace.shared.dumpSummary(title: "全部板块（含冷/热两遍）")
+                    SaveHub.log("性能跑批结束")
+                    return
+                }
+                let t = perfQueue[perfStep]
+                let phase = perfStep < perfQueue.count / 2 ? "首次" : "再切"
+                perfStep += 1
+                guard t != selectedTab else { return }     // 值没变不会重绘，跳过以免污染数据
+                SaveHub.log("性能跑批 → 准备切到 \(t.rawValue)")   // 崩在哪一页就看它后面有没有「耗时」行
+                PerfTrace.shared.mark("\(phase) \(t.rawValue)")
+                select(t)
             }
         }
     }
@@ -334,7 +382,7 @@ struct SchedulePanelView: View {
     private func navItem(_ tab: PanelTab) -> some View {
         let isSelected = selectedTab == tab
         return Button {
-            selectedTab = tab
+            select(tab)
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: tab.icon)
@@ -367,12 +415,12 @@ struct SchedulePanelView: View {
         .onHover { inside in
             guard inside, draggedTab == nil else { return }
             guard NSEvent.pressedMouseButtons == 0 else { return }
-            if selectedTab != tab { selectedTab = tab }
+            if selectedTab != tab { select(tab) }
         }
         .contextMenu {
             Button {
                 navPrefs.hide(tab)
-                if selectedTab == tab { selectedTab = navPrefs.visibleTabs.first ?? tab }
+                if selectedTab == tab { select(navPrefs.visibleTabs.first ?? tab) }
             } label: {
                 Label("隐藏此板块", systemImage: "eye.slash")
             }
@@ -392,7 +440,7 @@ struct SchedulePanelView: View {
             ForEach(hidden, id: \.self) { tab in
                 Button {
                     navPrefs.show(tab)
-                    selectedTab = tab
+                    select(tab)
                 } label: {
                     Label(tab.rawValue, systemImage: tab.icon)
                 }
@@ -403,23 +451,30 @@ struct SchedulePanelView: View {
     }
 
     // MARK: 右侧内容区
-    // 已访问的页面缓存常驻（ZStack 叠放），切换只改透明度，避免反复重建大表格导致卡顿。
+    // 已访问过的板块页面**只增不减**（缓存常驻），切回时零重建。
     //
-    // ⚠️ 2026-09-12 关键修复：**当前选中页必须是 ZStack 里最后一个（最上层）**。
-    //   `.allowsHitTesting(false)` 只挡得住 SwiftUI 自己的手势（所以隐藏页上的 .onDrag 确实起不来），
-    //   但挡不住 AppKit 的拖拽落点注册：隐藏页上 `.onDrop` 仍是有效的落点，谁在最上层谁接走松手。
-    //   原来的顺序是 PanelTab.allCases（个人→班级→…→提醒），于是：
-    //     · 在「个人课表」拖格子，松手被上层的「班级课表」接走 → 提交给了 csc，实际什么都没换；
-    //     · 一旦访问过「提醒设置」（排在最后 = 永远在最上层），它的空白区就把后面的松手全吃掉
-    //       → 「工位拖不动」。
-    //   把选中页挪到末尾即可：可见页永远优先命中，隐藏页只在可见页没有落点的空白处兜底，
-    //   而兜底那一次也会被各落点代理按「非本模块」拒掉（见 DragSwapSupport.swift）。
+    // ⚠️ 2026-09-28 实测定案（`--perf-tabs` release 跑批，见 Services/PerfTrace.swift）：
+    //    **不要**改成「只留当前页 + 上一页」的滑动窗口 —— 那样每次切页都要「建新页 + 拆旧页」，
+    //    反而全面变慢（同一台机器、同一套跑批）：
+    //      · 累积常驻（本实现）：轻量页热切 17~53ms；
+    //      · 只留两页         ：轻量页热切 200~378ms（典型「延时监考」132ms → 378ms）。
+    //    ⚠️ 本机这套跑批的**机器漂移很大**（同一配置两次能差 900ms），判定只看交替 A/B 或单调趋势。
+    //
+    // 2026-09-28 重构后顺序**不再有意义**：页面由 `PanelHost` 每页一个 NSHostingView 承载，
+    // 非当前页 `isHidden = true` —— 隐藏视图既不是拖拽落点、也不参与合成，
+    // 所以 2026-09-12 那条「必须把选中页挪到 ZStack 末尾来抢拖拽落点」的 hack 可以撤掉了。
+    // ⚠️ 别只看性能数字：这块改的是**结构**，「页面还画不画得出来」由 `--selftest-render` 兜底
+    //    （离屏渲染 11 个板块页并断言画出了内容，见 Services/PanelRenderCheck.swift）。
     private var cachedTabs: [PanelTab] {
-        var list = PanelTab.allCases.filter { visitedTabs.contains($0) }
-        if let i = list.firstIndex(of: selectedTab) {
-            list.append(list.remove(at: i))
-        }
-        return list
+        PanelTab.allCases.filter { visitedTabs.contains($0) }
+    }
+
+    /// 统一的切页入口：登记「已访问」+ 切换当前页，**同一次状态变更里**一起做完。
+    /// ⚠️ 别只在 `onChange(of: selectedTab)` 里补登记 —— 那会多触发一轮重绘。
+    private func select(_ t: PanelTab) {
+        guard t != selectedTab else { return }
+        visitedTabs.insert(t)
+        selectedTab = t
     }
 
     @ViewBuilder
@@ -443,54 +498,20 @@ struct SchedulePanelView: View {
             // 绝不会出现「内容比窗口宽、右边被裁掉」——用户 2026-09-23 反馈的
             // 「右上角显示不全」就是右上角工具栏被排到超出窗口的位置后被裁。
             // 面板宽度本身仍由 `panelWidth` → `AppDelegate.applyPanelWidth` 驱动窗口。
-            ZStack {
-                ForEach(cachedTabs, id: \.self) { tab in
-                    tabView(tab)
-                        .opacity(tab == selectedTab ? 1 : 0)
-                        .allowsHitTesting(tab == selectedTab)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            //
+            // ⚠️ 2026-09-28 性能重构：页面改由 `PanelHost`（每页一个 NSHostingView，
+            //    非当前页 `isHidden = true`）承载，不再用「ZStack + `.opacity(0)`」——
+            //    `.opacity(0)` 只是不画像素，图层还挂在窗口上，CA 提交照样遍历。
+            //    同一份二进制交替 A/B（`--perf-tabs`，11 板块 ×2 遍）：
+            //      热切换：新 17~53ms / 旧 91~201ms（约 3~4 倍）；总耗时 4463 / 5263ms vs 5910 / 6629ms。
+            //    完整结论与「已证伪清单」见 `Views/PanelHost.swift` 顶部。
+            PanelHost(tabs: cachedTabs, selected: selectedTab)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    // 单页视图（首次访问后常驻缓存）
-    @ViewBuilder
-    private func tabView(_ tab: PanelTab) -> some View {
-        switch tab {
-        // ⚠️ 2026-09-26：这三个页面**不再套外层 ScrollView**。
-        //    它们内部自己已经是「工具栏冻结 + ScrollView 滚内容」（§39g），
-        //    外面再套一层的话，内层 ScrollView 拿到的是「高度未定」的提议 → 直接撑成内容高度、
-        //    自己永远不滚，真正滚动的是外层 → 刚冻结的工具栏又跟着滚走了。
-        //    外层顺带提供的 16pt 内边距改由这里的 `.padding(16)` 顶替（观感不变）。
-        case .personal:
-            PersonalScheduleView()
-                .padding(16)
-        case .class7:
-            ClassScheduleView()
-                .padding(16)
-        case .teacher:
-            TeacherScheduleView()
-        case .extend:
-            ExtendScheduleView()
-                .padding(16)
-        case .calendar:
-            ChongqingCalendarView()
-        case .reminder:
-            ReminderSettingsView()
-        case .office:
-            OfficeLayoutView()
-        case .classroom:
-            ClassroomMapView()
-        case .staff:
-            StaffView()
-        case .student:
-            StudentInfoView()
-        case .seating:
-            SeatingView()
-        }
-    }
+    // 页面视图本体在 `PanelHost.swift` 的 `SchedulePanelPages.content(_:)`（性能重构后搬过去，
+    // 那里是「板块 → 页面」的唯一定义处，别在这里再分叉一份）。
 
     // 格式器只创建一次（原先每次渲染都新建，白耗 CPU）
     private static let weekdayFormatter: DateFormatter = {
