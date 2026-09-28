@@ -388,7 +388,6 @@ struct ClassScheduleView: View {
             Spacer()
             WeekVisibilityMenu()
             UndoButton()
-            SaveButton()
             // 与个人课表风格一致：右上角「导入」下拉 + 「下载」
             Menu {
                 Button("导入课表文件（自动识别：单班 / 全校定稿）") { coordinator.importClassFile() }

@@ -16,7 +16,7 @@ final class CalendarRemarkStore: ObservableObject {
 
     func set(_ value: String, forWeek n: Int) {
         overrides["week-\(n)"] = value
-        scheduleSave()   // 用户编辑 → 只标脏（落盘交给 SaveHub）
+        scheduleSave()   // 用户编辑 → 立即落盘
     }
 
     // MARK: 按天备注（右键日历某天 → 备注；键 = "day-yyyy-MM-dd"；自动同步到系统日历）
@@ -30,7 +30,7 @@ final class CalendarRemarkStore: ObservableObject {
         let oldEventID = overrides[ekKey]
         let t = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if t.isEmpty { overrides.removeValue(forKey: key) } else { overrides[key] = t }
-        scheduleSave()   // 用户编辑 → 只标脏（落盘交给 SaveHub）
+        scheduleSave()   // 用户编辑 → 立即落盘
 
         // 自动同步到系统日历（全天事件）；拿到事件标识后记录，下次改备注更新同一条事件
         CalendarSyncService.shared.syncDayRemark(t, day: d, eventID: oldEventID) { [weak self] newID in
@@ -104,10 +104,9 @@ final class CalendarRemarkStore: ObservableObject {
         overrides = migrated
     }
 
-    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
-    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
+    /// 用户编辑 → **立即落盘**（2026-09-28 用户要求「自动保存所有板块」）：改一下就写盘，不走 SaveHub 标脏。
     func scheduleSave() {
-        SaveHub.shared.markDirty("校历备注")
+        save()
     }
 
     func save() {

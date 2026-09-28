@@ -217,7 +217,6 @@ struct OfficeToolbar: View {
                 EditableCardTitle(icon: "person.3.fill", key: "office")
                 Spacer(minLength: 8)
                 UndoButton()
-                SaveButton()
                 Picker("", selection: $store.studentView) {
                     Text("内部视角").tag(false)
                     Text("外部视角").tag(true)

@@ -139,11 +139,10 @@ final class StudentStore: ObservableObject {
     ///    （2026-09-18 实测）。init 末尾把它置回 false。
     private var isInitializing = true
 
-    /// 用户编辑 → 只标脏；真正的落盘由 SaveHub 统一负责
-    /// （点「保存」/ ⌘S / 停手 8 秒 / 收起面板 / 退出前）。
+    /// 用户编辑 → **立即落盘**（2026-09-28 用户要求「自动保存所有板块」）：改一下就写盘，不走 SaveHub 标脏。
     func scheduleSave() {
         guard !isInitializing else { return }   // 装载期不算用户编辑
-        SaveHub.shared.markDirty("学生信息")
+        save()
     }
 
     func save() {

@@ -67,7 +67,6 @@ struct ReminderSettingsView: View {
                 .font(.headline)
             Spacer()
             UndoButton()
-            SaveButton()
         }
     }
 
@@ -137,8 +136,10 @@ struct ReminderRow: View {
                         // 一天都没勾 = **一次性提醒**（只在该天提醒一次），不再是「不会提醒」
                         // 2026-09-17 用户要求：未勾星期默认为当天设定的时间提醒
                         // 2026-09-28：「已完成」的整条不再显示（上面 ForEach 已过滤）；
-                        //    弹过窗但没点「马上处理」的还留在列表里，标「已弹窗·待处理」。
-                        if reminder.firedOn == Reminder.dayString(Date()) {
+                        //    今天已过点但没点「马上处理」的标「已弹窗 · 待处理」。
+                        //    ⚠️ 不读 firedOn：它已退役（弹窗窗口是内存状态，标记落盘曾造成
+                        //    「显示已弹窗但找不到窗口」死锁）；「过没过点」由时间直接算（Self.isPastDue）。
+                        if reminder.oneShotDay == Reminder.dayString(Date()), Self.isPastDue(reminder) {
                             Text("已弹窗 · 待处理")
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(.orange)
@@ -195,6 +196,13 @@ struct ReminderRow: View {
         // 按「周一…周六、周日」显示（只是显示顺序，取值仍是 1=周日…7=周六）
         let ordered = ReminderStore.weekdayDisplayOrder.filter { reminder.weekdays.contains($0) }
         return ordered.map { ReminderStore.weekdayLabel($0) }.joined(separator: " ")
+    }
+
+    /// 今天的一次性提醒是否已经过了该弹窗的时刻（hour:minute ≤ 现在）
+    static func isPastDue(_ r: Reminder) -> Bool {
+        let cal = Calendar.current
+        guard let target = cal.date(bySettingHour: r.hour, minute: r.minute, second: 0, of: Date()) else { return false }
+        return Date() >= target
     }
 
     /// "2026-09-17" → "9月17日"（不是今年则带上年份）

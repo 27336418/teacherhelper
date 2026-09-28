@@ -761,10 +761,14 @@ enum SelfTest {
                     Reminder(title: "I", hour: 11, minute: 59,
                              weekdays: [todayWeekday == 1 ? 2 : 1], url: ""),
                     false),
-            ("一次性·当天·已经弹过（firedOn=今天） → 不弹（重启不重复）",
+            ("一次性·当天·已完成（completedOn=今天） → 不弹",
                     Reminder(title: "J", hour: 11, minute: 59, weekdays: [], url: "",
-                             oneShotDay: todayKey, firedOn: todayKey),
+                             oneShotDay: todayKey, completedOn: todayKey),
                     false),
+            ("一次性·当天·弹过但没点完成（firedOn=今天, completedOn=nil） → 弹（重启后窗口丢失能补弹，2026-09-28 死锁修复）",
+                    Reminder(title: "J2", hour: 11, minute: 59, weekdays: [], url: "",
+                             oneShotDay: todayKey, firedOn: todayKey),
+                    true),
         ]
         for c in dueCases {
             let v = ReminderFirer.dueCheck(c.r, now: noon, calendar: cal)
@@ -1362,16 +1366,17 @@ enum SelfTest {
             .appendingPathComponent("ScheduleBar", isDirectory: true)
     }
 
-    // MARK: - 统一保存中心自检（全程在临时目录，绝不触碰真实数据）
+    // MARK: - 统一保存自检（全程在临时目录，绝不触碰真实数据）
     //
     // 用法：教师助手.app/Contents/MacOS/ScheduleBar --selftest-save
     //
-    // 覆盖「编辑只标脏 → 点保存/⌘S → 落盘」这条链：
-    //   ① 只标脏时**不写盘**（用户要能看见「有未保存的改动」这个状态）
-    //   ② saveNow / saveIfNeeded 才真正落盘，且落盘后脏状态清空
-    //   ③ 无改动时 saveIfNeeded 不产生无谓 IO
-    //   ④ 每个可编辑板块都能把自己标脏（名字与数量必须与 SaveHub.writeAll 的覆盖面一致）
-    //   ⑤ 最后把替身换回真实实现，确认 json **真的**写出了文件
+    // 2026-09-28 用户要求「自动保存所有板块」：保存模型从「标脏 → 点保存 / 停手 8 秒兜底」
+    // 改为「编辑即落盘」（与教室布局 2026-09-23 起、日程提醒 2026-09-28 上午起的惯例统一）。
+    // 本自检覆盖：
+    //   ① 15 个板块逐一调 scheduleSave() → 都不标脏（dirtyAreas 恒空）
+    //   ② 每个板块调完 scheduleSave()，对应 json **真的**在临时目录写出文件
+    //      （板块数 / 文件名清单必须与 SaveHub.writeAll 的覆盖面一致，漏一个就有板块改了不落盘）
+    //   ③ SaveHub 保留的语义：无脏时 saveIfNeeded 不动作（关面板/退出走的兜底恒为 no-op）
     //
     // ⚠️ 自检必须把数据目录重定向走（SCHEDULEBAR_DATA_DIR）：任何 store 的 init 里
     //    都可能有历史迁移，读到真实目录就会写用户的真实数据。
@@ -1401,135 +1406,64 @@ enum SelfTest {
             hub.useDefaultWriter()
         }
 
-        print("保存中心自检 —— 兜底延时 \(Int(SaveHub.fallbackDelay)) 秒，数据目录=\(tmp)")
+        print("保存自检（全板块「编辑即落盘」模型），数据目录=\(tmp)")
 
         // ① 初始干净
         check("初始状态无未保存改动", !hub.hasUnsaved, "unsavedCount=\(hub.unsavedCount)")
 
-        // ② 编辑 → 只标脏，不写盘
-        ScheduleStore.shared.scheduleSave()
-        check("编辑本人课表后：标记为有未保存改动", hub.hasUnsaved)
-        check("板块名正确（按钮提示文案用的就是它）", hub.dirtyAreas.contains("本人课表"),
-              "dirtyAreas=\(hub.dirtyAreas.sorted().joined(separator: "、"))")
-        check("只标脏、未落盘（没点保存前不写文件）", writes == 0, "writes=\(writes)")
-
-        // ③ 同一板块连续编辑只算一处
-        let n1 = hub.unsavedCount
-        ScheduleStore.shared.scheduleSave()
-        check("同一板块连续编辑不新增待保存项", hub.unsavedCount == n1, "unsavedCount=\(hub.unsavedCount)")
-
-        // ④ 多个板块累积
-        StaffStore.shared.scheduleSave()
-        check("第二个板块也标脏 → 共 2 处", hub.unsavedCount == 2, "unsavedList=\(hub.unsavedList)")
-        check("多板块时仍未落盘", writes == 0, "writes=\(writes)")
-
-        // ⑤ saveNow：落盘一次 + 清空脏状态
-        let before = hub.saveNow(reason: "自检")
-        check("saveNow 报告「落盘前有 2 处未保存」", before == 2, "返回=\(before)")
-        check("saveNow 触发了一次落盘动作", writes == 1, "writes=\(writes)")
-        check("落盘后脏状态清空（按钮转「已保存」）", !hub.hasUnsaved, "unsavedCount=\(hub.unsavedCount)")
-        check("落盘后记录保存时间", hub.lastSavedAt != nil)
-        check("落盘后显示「已保存」瞬时标记", hub.justSaved)
-
-        // ⑥ 无改动时 saveIfNeeded 不做无谓 IO
-        hub.saveIfNeeded(reason: "自检·无改动")
-        check("无改动时 saveIfNeeded 不写盘", writes == 1, "writes=\(writes)")
-
-        // ⑦ 有改动时 saveIfNeeded 会兜底落盘（关面板 / 关窗口 / 退出走的就是这条）
-        CalendarRemarkStore.shared.scheduleSave()
-        check("标记一处新的未保存改动", hub.hasUnsaved)
-        hub.saveIfNeeded(reason: "自检·兜底")
-        check("有改动时 saveIfNeeded 兜底落盘", writes == 2, "writes=\(writes)")
-        check("兜底落盘后脏状态清空", !hub.hasUnsaved)
-
-        // ⑧ 每个走 SaveHub 的板块都能把自己标脏（名字必须与 writeAll 的覆盖面一致）
-        // ⚠️ 「教室布局」「日程提醒」不在此列：用户分别于 2026-09-23 / 2026-09-28 要求
-        //    它们的编辑**即时落盘**，scheduleSave() 直接 save()，不经过 markDirty（见下面的单独检查）。
-        let areas: [(String, () -> Void)] = [
-            ("本人课表", { ScheduleStore.shared.scheduleSave() }),
-            ("班级课表", { ClassScheduleStore.shared.scheduleSave() }),
-            ("他人课表", { TeacherScheduleStore.shared.scheduleSave() }),
-            ("学生座位", { SeatingStore.shared.scheduleSave() }),
-            ("年级师资", { StaffStore.shared.scheduleSave() }),
-            ("学生信息", { StudentStore.shared.scheduleSave() }),
-            ("教师工位", { OfficeLayoutStore.shared.scheduleSave() }),
-            ("延时监考", { ExtendScheduleStore.shared.scheduleSave() }),
-            ("校历备注", { CalendarRemarkStore.shared.scheduleSave() }),
-            ("校历配色", { CalendarDayColorStore.shared.scheduleSave() }),
-            ("导航排序", { NavPrefsStore.shared.scheduleSave() }),
-            ("当前周", { WeekStore.shared.scheduleSave() }),
-            ("板块标题", { CardTitleStore.shared.scheduleSave() }),
-        ]
-        // 必须与 SaveHub.writeAll 覆盖的 store 数量一致（漏一个就会有板块改了不落盘）
-        // = 上面 13 个走「标脏」的 + 2 个「即时落盘」的（教室布局、日程提醒）
-        let expectedAreaCount = 15
-        var missing: [String] = []
-        for (name, mark) in areas {
-            hub.clearDirty()
-            mark()
-            if !hub.dirtyAreas.contains(name) { missing.append(name) }
-        }
-        check("每个走统一保存的板块都能把自己标脏", missing.isEmpty,
-              missing.isEmpty ? "共 \(areas.count) 个" : "缺失=\(missing.joined(separator: "、"))")
-        check("标脏板块（13）+ 即时落盘板块（教室布局、日程提醒）与 writeAll 覆盖面一致",
-              areas.count + 2 == expectedAreaCount, "\(areas.count) + 2 / 期望 \(expectedAreaCount)")
-
-        // 「教室布局」即时落盘：改一下就写文件，不进「未保存」列表
-        hub.clearDirty()
-        ClassroomStore.shared.scheduleSave()
-        check("教室布局改为即时落盘（不标脏、不进未保存列表）",
-              !hub.dirtyAreas.contains("教室布局"))
-
-        // 「日程提醒」即时落盘（2026-09-28 用户要求「默认自动保存」）：同样不进「未保存」列表。
-        // ⚠️ 这里直接调 save() 链是安全的：ReminderStore.save() 在无 App bundle 的 CLI 里
-        //    只落盘、跳过 UNUserNotificationCenter（见 ReminderStore.save 的 guard）。
-        hub.clearDirty()
-        ReminderStore.shared.scheduleSave()
-        check("日程提醒改为即时落盘（不标脏、不进未保存列表）",
-              !hub.dirtyAreas.contains("日程提醒"))
-
-        // ⑨ 单板块清除不影响其他
-        hub.clearDirty()
-        ScheduleStore.shared.scheduleSave()
-        StaffStore.shared.scheduleSave()
-        hub.clearDirty("本人课表")
-        check("clearDirty(板块) 只清一个", hub.dirtyAreas.contains("年级师资") && !hub.dirtyAreas.contains("本人课表"),
-              "unsavedList=\(hub.unsavedList)")
-
-        // ⑩ 兜底延时必须是「有意义的一段时间」，不能被误改成 0（那样每个按键都写盘）
-        check("兜底自动保存延时在 3~30 秒之间", (3...30).contains(SaveHub.fallbackDelay),
-              "\(Int(SaveHub.fallbackDelay)) 秒")
-
-        // ⑪ 端到端：换成「真的写文件」的落盘实现，确认 json 确实落到了磁盘
-        //    （2026-09-28 起 ReminderStore.save() 自带「无 App bundle 则跳过通知/日历副作用」
-        //     的防护，writeAll 在 CLI 下已不再会崩；这里仍沿用 stub 写指定三份，保持用例聚焦。）
-        hub.useStubWriter {
-            ScheduleStore.shared.save()
-            StaffStore.shared.save()
-            SeatingStore.shared.save()
-        }
-        hub.clearDirty()
-        ScheduleStore.shared.scheduleSave()
-        StaffStore.shared.scheduleSave()
-        SeatingStore.shared.scheduleSave()
-        let n = hub.saveNow(reason: "自检·端到端")
-        check("端到端 saveNow 报告 3 处", n == 3, "返回=\(n)")
+        // ② 15 个板块：scheduleSave() 立即写自己的 json、且不进「未保存」列表
+        //    （板块数 / 文件名必须与 SaveHub.writeAll 覆盖的 store 一一对应）
         let fm = FileManager.default
-        var produced: [String] = []
-        for f in ["personal.json", "staff.json", "seating.json"] {
-            let path = tmp + "/" + f
-            if let attrs = try? fm.attributesOfItem(atPath: path),
-               let size = attrs[.size] as? Int, size > 2 {
-                produced.append("\(f)(\(size)B)")
-            }
+        let areas: [(name: String, file: String, mark: () -> Void)] = [
+            ("本人课表",  "personal.json",            { ScheduleStore.shared.scheduleSave() }),
+            ("班级课表",  "classes.json",             { ClassScheduleStore.shared.scheduleSave() }),
+            ("他人课表",  "teacher_schedules.json",   { TeacherScheduleStore.shared.scheduleSave() }),
+            ("学生座位",  "seating.json",             { SeatingStore.shared.scheduleSave() }),
+            ("年级师资",  "staff.json",               { StaffStore.shared.scheduleSave() }),
+            ("学生信息",  "students.json",            { StudentStore.shared.scheduleSave() }),
+            ("教师工位",  "offices.json",             { OfficeLayoutStore.shared.scheduleSave() }),
+            ("教室布局",  "classrooms.json",          { ClassroomStore.shared.scheduleSave() }),
+            ("延时监考",  "extend.json",              { ExtendScheduleStore.shared.scheduleSave() }),
+            ("日程提醒",  "reminders.json",           { ReminderStore.shared.scheduleSave() }),
+            ("校历备注",  "calendar_remarks.json",    { CalendarRemarkStore.shared.scheduleSave() }),
+            ("校历配色",  "calendar_day_colors.json", { CalendarDayColorStore.shared.scheduleSave() }),
+            ("导航排序",  "nav_prefs.json",           { NavPrefsStore.shared.scheduleSave() }),
+            ("当前周",    "week.json",                { WeekStore.shared.scheduleSave() }),
+            ("板块标题",  "titles.json",              { CardTitleStore.shared.scheduleSave() }),
+        ]
+        check("板块清单与 writeAll 覆盖面一致（15 个）", areas.count == 15, "实际 \(areas.count)")
+
+        var dirtyLeak: [String] = []
+        var notWritten: [String] = []
+        for area in areas {
+            hub.clearDirty()
+            // 先删掉旧文件，才能证明接下来这次 scheduleSave() 真的写了盘
+            try? fm.removeItem(atPath: tmp + "/" + area.file)
+            area.mark()
+            if hub.dirtyAreas.contains(area.name) { dirtyLeak.append(area.name) }
+            if !fm.fileExists(atPath: tmp + "/" + area.file) { notWritten.append(area.name) }
         }
-        check("真实落盘：三个 json 都写出了非空文件", produced.count == 3,
-              produced.joined(separator: " "))
+        check("15 个板块全部即时落盘（不标脏、不进未保存列表）", dirtyLeak.isEmpty,
+              dirtyLeak.isEmpty ? "" : "漏=\(dirtyLeak.joined(separator: "、"))")
+        check("15 个板块调完 scheduleSave 都写出了 json 文件", notWritten.isEmpty,
+              notWritten.isEmpty ? "" : "未写=\(notWritten.joined(separator: "、"))")
+        check("走完一轮仍无任何未保存改动", !hub.hasUnsaved)
+
+        // ③ SaveHub 保留语义：无脏时 saveIfNeeded 不动作（关面板 / 关窗口 / 退出走的兜底恒为 no-op）
+        hub.saveIfNeeded(reason: "自检·无改动")
+        check("无改动时 saveIfNeeded 不写盘", writes == 0, "writes=\(writes)")
+
+        // saveNow 仍可主动写一轮（返回 0 = 没有任何板块处于「未保存」）
+        let n = hub.saveNow(reason: "自检·主动")
+        check("saveNow 主动落盘一轮", writes == 1, "writes=\(writes)")
+        check("saveNow 报告 0 处未保存（编辑早已即时落盘）", n == 0, "返回=\(n)")
+        check("落盘后记录保存时间", hub.lastSavedAt != nil)
+
         check("AppPaths 重定向生效（写的是临时目录，不是真实数据目录）",
               AppPaths.dataDir.path == tmp, AppPaths.dataDir.path)
 
         hub.clearDirty()
-        print("保存中心自检：\(pass) 项通过，\(fail) 项失败 \(fail == 0 ? "✓" : "✗")")
+        print("保存自检：\(pass) 项通过，\(fail) 项失败 \(fail == 0 ? "✓" : "✗")")
         if fail > 0 { exit(1) }
     }
 
@@ -1683,11 +1617,14 @@ enum SelfTest {
               && reloaded.lessonCount == store.lessonCount,
               "\(reloaded.teacherCount) 位 / \(reloaded.lessonCount) 节")
 
-        // 9) 该板块也要能被 SaveHub 标脏（保存按钮才会亮）
+        // 9) 该板块「编辑即落盘」（2026-09-28 全板块自动保存）：不标脏、直接写出 json
         SaveHub.shared.clearDirty()
+        try? FileManager.default.removeItem(at: TeacherScheduleStore.fileURL())
         store.scheduleSave()
-        check("编辑后 SaveHub 标脏「他人课表」",
-              SaveHub.shared.dirtyAreas.contains("他人课表"))
+        check("编辑后不标脏（即时落盘，不进未保存列表）",
+              !SaveHub.shared.dirtyAreas.contains("他人课表"))
+        check("编辑后 teacher_schedules.json 已写出",
+              FileManager.default.fileExists(atPath: TeacherScheduleStore.fileURL().path))
         SaveHub.shared.clearDirty()
         UndoService.shared.clear()
 

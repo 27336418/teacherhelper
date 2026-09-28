@@ -16,9 +16,11 @@ struct Reminder: Identifiable, Codable, Equatable {
     /// ⚠️ 2026-09-17 用户反馈：老版本「空星期 = 永远不会提醒」是错的（界面还挂着「未勾选任何星期，不会提醒」
     ///    的橙色警告），用户要求改成「默认为当天设定的时间」，也就是按当天这个点提醒一次。
     var oneShotDay: String? = nil
-    /// 一次性提醒**已经弹过**的那一天（"yyyy-MM-dd"）。只对一次性提醒有意义：
-    /// 用来保证「中断/重启 App 后当天不会再重复弹一遍」（弹过就落盘，重启也记得）。
-    /// ⚠️ 这只是「弹过」，不等于「已完成」——用户可能点了「等会处理」还挂着。完成与否看 `completedOn`。
+    /// 一次性提醒**已经弹过**的那一天（"yyyy-MM-dd"）。
+    /// ⚠️ 2026-09-28 起**退役为历史字段**（只用于兼容老数据解码，逻辑不再读写）：
+    ///    原用途是「弹过就落盘，重启不再弹」，但弹窗窗口是纯内存状态 —— App 重启窗口丢失
+    ///    后 firedOn 还拦着 → 用户看到「已弹窗·待处理」却永远找不到窗口（死锁，当日实测）。
+    ///    「不再弹」改由 `completedOn` 表达；「同一进程内不重复弹」由 ReminderFirer.lastFired 保证。
     var firedOn: String? = nil
     /// 一次性提醒**已完成**的那一天（"yyyy-MM-dd"）。
     /// 2026-09-28 用户明确：在弹窗上点「马上处理」（或「打开链接」）才算处理完成 ——
@@ -153,14 +155,6 @@ final class ReminderStore: ObservableObject {
         }
     }
 
-    /// 一次性提醒弹过之后记一笔（写盘）→ 当天重启 App 不会再弹一遍
-    func markOneShotFired(_ id: UUID, day: String) {
-        guard let i = reminders.firstIndex(where: { $0.id == id }),
-              reminders[i].weekdays.isEmpty,
-              reminders[i].firedOn != day else { return }
-        reminders[i].firedOn = day
-    }
-
     /// 一次性提醒「处理完成」（2026-09-28 用户要求）：在弹窗点「马上处理 / 打开链接」时调用。
     /// 赋值触发 didSet → scheduleSave() 立即落盘 + 自动同步系统日历：
     /// 列表里归入「已完成」不再显示，日历事件保留（keepsEventInCalendar）。
@@ -204,9 +198,8 @@ final class ReminderStore: ObservableObject {
     private var isInitializing = true
 
     /// 用户编辑 → **立即落盘**（用户 2026-09-28 要求「默认自动保存」）。
-    /// ⚠️ 与「教室布局」同一惯例（2026-09-23 起）：改一下就写盘，不走 SaveHub 标脏，
-    ///    不等「停手 8 秒」的兜底，直接关掉 App 也不丢改动。
-    ///    因此这里**不调 `markDirty`** —— 保存按钮不该为它亮起「有未保存的改动」。
+    /// 与「教室布局」同一惯例（2026-09-23 起）：改一下就写盘，不走 SaveHub 标脏，
+    /// 直接关掉 App 也不丢改动；2026-09-28 晚起全部板块都改成了这个惯例。
     func scheduleSave() {
         guard !isInitializing else { return }   // 装载期不算用户编辑
         save()

@@ -93,15 +93,6 @@ struct ScheduleBarApp {
             PanelRenderCheck.run()
             return
         }
-        // 保存按钮两种状态离屏渲染（临时取证）：--render-save-button <out.png>
-        if let i = args.firstIndex(of: "--render-save-button"), i + 1 < args.count {
-            if #available(macOS 14.0, *) {
-                MainActor.assumeIsolated { CellPreview.renderSaveButton(to: args[i + 1]) }
-            } else {
-                print("✗ --render-save-button 需要 macOS 14+")
-            }
-            return
-        }
         // 课表单元格「同内容高亮」离屏渲染取证（不依赖屏幕是否解锁）：--render-cells <out.png>
         // 纯视觉改动必须靠它验证 —— 逻辑自检看不出一圈「本色描边」等于没画。
         if let i = args.firstIndex(of: "--render-cells"), i + 1 < args.count {
@@ -282,7 +273,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// `--perf-tabs`：面板打开后自动轮播所有板块（切页性能取证，见 PerfTrace）
     static var perfTabs = false
 
-    /// 退出前兜底：把还没保存的改动写盘（忘了点「保存」也绝不丢数据）
+    /// 退出前兜底：全部板块自 2026-09-28 起已是「改一下立即落盘」，这里恒为 no-op，
+    /// 仅作安全网保留（万一未来有新代码路径标脏）。
     func applicationWillTerminate(_ notification: Notification) {
         SaveHub.shared.saveIfNeeded(reason: "退出应用")
     }
@@ -341,13 +333,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                                   keyEquivalent: "z")
         undoItem.target = self
         editMenu.addItem(undoItem)
-        editMenu.addItem(NSMenuItem.separator())
-        // 保存：把各板块的改动立刻写入磁盘（不点也不会丢 —— 停手 8 秒 / 收起面板 / 退出前自动保存）
-        let saveItem = NSMenuItem(title: "保存改动",
-                                  action: #selector(saveAllNow),
-                                  keyEquivalent: "s")
-        saveItem.target = self
-        editMenu.addItem(saveItem)
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
         NSApp.mainMenu = mainMenu
@@ -518,10 +503,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     // ⌘S：立刻把全部板块的未保存改动写入磁盘
-    @objc private func saveAllNow() {
-        SaveHub.shared.saveNow(reason: "菜单 ⌘S")
-    }
-
     // ⌘Z：回退最近一次删除 / 清空 / 隐藏等重要操作
     @objc private func undoLastAction() {
         UndoService.shared.undo()

@@ -7,7 +7,9 @@ import SwiftUI
 // 1) 菜单栏应用会被 App Nap 挂起计时器 → 用 beginActivity(.userInitiated) 阻止；
 // 2) Timer 默认只在 runloop default 模式跑，弹窗/菜单打开时会停 → 改用 DispatchSourceTimer（主队列不受模式影响）；
 // 3) 系统睡眠错过整点 → 唤醒后补检：3 分钟内的错过的提醒仍会弹出；
-// 4) 每条提醒每天同一时刻只弹一次（一次性提醒靠 firedOn 落盘防重启重弹）；
+// 4) 每条提醒每天同一时刻只弹一次（同一进程内靠内存 lastFired 判重；一次性提醒
+//    「不再弹」看 completedOn —— 点过「马上处理」才算完，没点完成的重启后会补弹，
+//    避免窗口随进程丢失后永远找不到入口，2026-09-28 用户实测死锁后改定）；
 // 5) 弹窗提供「马上处理 / 等会处理」：点「等会处理」可在弹窗内选择稍后间隔
 //    （默认 30 分钟，可选 10 分钟 / 1 小时 / 2 小时 / 明天），到点再弹，循环直到「马上处理」。
 //    点「马上处理 / 打开链接」= 处理完成：一次性提醒记 completedOn → 列表归入「已完成」
@@ -87,8 +89,11 @@ final class ReminderFirer {
             let key = "\(dayKey) \(String(format: "%02d:%02d", r.hour, r.minute))"
             guard lastFired[r.id] != key else { continue }
             lastFired[r.id] = key
-            // 一次性提醒：把「今天已弹」落到 reminders.json，重启 App 不会又弹一遍
-            if r.isOneShot { ReminderStore.shared.markOneShotFired(r.id, day: dayKey) }
+            // ⚠️ 2026-09-28 起**不再**在弹窗瞬间落盘 firedOn：窗口是纯内存状态，
+            //    App 一重启窗口就丢，但 firedOn 还在 → dueCheck 永远不再弹 →
+            //    用户看到「已弹窗·待处理」却找不到窗口（死锁，用户当日实测）。
+            //    「不再弹」改由 completedOn（点过「马上处理」）表达，见 dueCheck。
+            //    同一进程内的「同一时刻只弹一次」由上面的 lastFired（内存）保证。
             if verdict.lateMinutes >= 1 {
                 SeatingStore.seatLog("提醒：「\(r.title)」\(verdict.reason)")
             }
@@ -113,8 +118,10 @@ final class ReminderFirer {
             guard day == today else {
                 return (false, 0, day < today ? "一次性提醒已到期（原定 \(day)）" : "还没到提醒日（\(day)）")
             }
-            // 弹过就落盘了 → 同一天重启 App 不再重复弹
-            if r.firedOn == today { return (false, 0, "今天已提醒过") }
+            // ⚠️ 2026-09-28 起看 completedOn（点过「马上处理」），不看 firedOn：
+            //    弹窗窗口是纯内存状态，App 重启窗口就丢；若用户还没点完成，
+            //    重启后必须能再补弹，否则「已弹窗·待处理」却永远找不到窗口（死锁）。
+            if r.completedOn == today { return (false, 0, "今天已完成") }
         } else {
             let weekday = cal.component(.weekday, from: now)
             guard r.fires(on: weekday) else { return (false, 0, "今天不在勾选的星期里") }

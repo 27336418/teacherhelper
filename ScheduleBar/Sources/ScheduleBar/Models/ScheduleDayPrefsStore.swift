@@ -10,7 +10,7 @@ import SwiftUI
 // 隐藏周六不会丢数据，重新打开开关立刻又能看到原内容。
 //
 // 偏好存 `UserDefaults`（与 OfficeLayoutStore 的「内部/外部视角」「显示左右门」同一套路）：
-// 这是纯显示偏好，**不进 SaveHub、不进 writeAll、不占 --selftest-save 的 expectedAreaCount**。
+// 这是纯显示偏好，**不进 SaveHub、不进 writeAll、不占 --selftest-save 的 15 板块清单**。
 // ⚠️ 别把它做成 json store —— 那会连带改 4 处覆盖面统计，收益为零。
 // ⚠️ 也**不要**用 UserDefaults 当「一次性迁移」开关（见 AppPaths 顶部说明）。
 

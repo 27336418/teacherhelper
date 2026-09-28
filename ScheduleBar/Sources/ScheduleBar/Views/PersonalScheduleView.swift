@@ -130,7 +130,6 @@ struct PersonalScheduleView: View {
             Spacer()
             WeekVisibilityMenu()
             UndoButton()
-            SaveButton()
             // 与班级课表风格一致：右上角「导入」下拉 + 「下载」
             Menu {
                 Button("本人课表") { coordinator.importPersonalFile() }

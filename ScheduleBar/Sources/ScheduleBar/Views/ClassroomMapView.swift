@@ -51,7 +51,6 @@ struct ClassroomMapView: View {
             EditableCardTitle(icon: "square.grid.3x3", key: "classroom")
             Spacer()
             UndoButton()
-            SaveButton()
             // 与其它模块一致的「导入（含下载模板）+ 下载」
             Menu {
                 Button("教室分布") { coordinator.importClassroom() }

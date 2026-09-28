@@ -80,7 +80,6 @@ struct ExtendScheduleView: View {
             EditableCardTitle(icon: "clock.fill", key: "extend")
             Spacer()
             UndoButton()
-            SaveButton()
             Menu {
                 Button("延时&监考") { coordinator.importExtendFile() }
                 Divider()

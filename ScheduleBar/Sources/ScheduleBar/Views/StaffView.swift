@@ -99,7 +99,6 @@ struct StaffView: View {
                     highlightBadge
                     Spacer()
                     UndoButton()
-                    SaveButton()
                     Menu {
                         Button("年级师资安排") { coordinator.importStaffFile() }
                         Divider()

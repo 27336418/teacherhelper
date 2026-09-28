@@ -82,7 +82,6 @@ struct TeacherScheduleView: View {
                 Spacer(minLength: 8)
                 WeekVisibilityMenu()
                 UndoButton()
-                SaveButton()
                 Button {
                     store.addTeacher()
                     selectedID = store.teachers.last?.id

@@ -54,7 +54,6 @@ struct ChongqingCalendarView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 UndoButton()
-                SaveButton()
             }
 
             // ⚠️ 标题行（含撤销/保存按钮）必须留在滚动区**外面** —— 放进横向滚动区的话，
