@@ -93,8 +93,9 @@ struct PersonalScheduleView: View {
                             }
                             .padding(.vertical, 2)
 
-                            ForEach(group.periods, id: \.self) { p in
-                                periodRow(p)
+                            ForEach((0..<group.periods.count).map { PeriodRowID(group: gIdx, row: $0) },
+                                    id: \.self) { key in
+                                periodRow(group.periods[key.row])
                             }
                         }
 

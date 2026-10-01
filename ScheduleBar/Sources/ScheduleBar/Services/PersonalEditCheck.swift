@@ -264,29 +264,77 @@ enum PersonalEditCheck {
         container.sync(tabs: [.personal], selected: .personal, makeContent: makeContent)
         container.layoutSubtreeIfNeeded()
 
-        func shot(_ name: String) {
+        func shot(_ name: String) -> String {
             let stats = container.renderStats(for: .personal, pngDirectory: outDir)
             print("  \(name): \(stats.described)")
             let src = (outDir as NSString).appendingPathComponent("板块-\(PanelTab.personal.rawValue).png")
             let dst = (outDir as NSString).appendingPathComponent("\(name).png")
             try? FileManager.default.removeItem(atPath: dst)
             try? FileManager.default.moveItem(atPath: src, toPath: dst)
+            return dst
         }
 
         let store = ScheduleStore.shared
         printRows(store, "初始")
-        shot("00-初始")
+        let p0 = shot("00-初始")
 
         store.addPeriod(in: 1)      // 下午
         printRows(store, "在下午新增后")
-        shot("01-下午新增")
+        let p1 = shot("01-下午新增")
 
         store.removePeriod("第10节")
-        let d = store.orderedPeriods
         store.addPeriod(in: 0)      // 上午
         printRows(store, "在上午新增后")
-        shot("02-上午新增")
-        print("（节次序列回到 \(d.joined(separator: ",")) 后再在上午新增；渲染只在副本上进行）")
+        let p2 = shot("02-上午新增")
+
+        // MARK: 渲染层回归断言（2026-10-01）
+        //
+        // 新增出来的两节都是**空行**，一个彩色像素都不该产生 → 三张图的「表体彩色行带数」
+        // 必须**完全相等**。这正是「新空白行里冒出相邻行的课（用户截图里的两个 8）」的判据：
+        // 一旦新行画上了别人的课，就会多出一条色带（基线实测 12 / 12 / **13**，修复后 12 / 12 / 12）。
+        //
+        // ⚠️ 为什么不能在数据层断言：数据层本来就是对的（`store.cell("第6节", 周三) == ""`，
+        //    逐格比对也一致），错的只有渲染层的行身份 —— 见 `PersonalScheduleView` 里的说明。
+        //    所以这条断言必须落在**像素**上。
+        print("\n--- 渲染层断言：新增的是空行 → 表体彩色行带数必须不变 ---")
+        let b0 = bodyColorBands(p0), b1 = bodyColorBands(p1), b2 = bodyColorBands(p2)
+        check("三张渲染图都能读出像素", b0 != nil && b1 != nil && b2 != nil)
+        if let b0, let b1, let b2 {
+            check("下午新增空行 → 行带数不变", b1 == b0, "初始 \(b0) / 新增后 \(b1)")
+            check("上午新增空行 → 行带数不变（这条就是「两个 8」的判据）",
+                  b2 == b0, "初始 \(b0) / 新增后 \(b2)")
+        }
+        print("（节次都只新增了空白节次；渲染只在副本上进行）")
         print("（真实 personal.json 未被修改）")
+        print("\n---")
+        print(fail == 0 ? "渲染核对全部通过 ✓（\(pass) 项）" : "存在失败项 ✗（通过 \(pass) / 失败 \(fail)）")
+        if fail > 0 { exit(1) }
+    }
+
+    /// 渲染图「表体彩色行带」数 = 饱和色（橙/蓝/紫/青的课程块）像素的连续行段数，
+    /// 约等于「有课的节次行数」。空节次不产生任何彩色像素。
+    /// 跳过顶部工具栏（「撤销」按钮是橙色的，会被误计成一条行带）。
+    private static func bodyColorBands(_ pngPath: String) -> Int? {
+        guard let img = NSImage(contentsOfFile: pngPath),
+              let tiff = img.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        let w = rep.pixelsWide, h = rep.pixelsHigh
+        var bands = 0
+        var inBand = false
+        for y in (h / 12)..<h {
+            var colored = false
+            var x = 12
+            while x < w - 12 {
+                if let c = rep.colorAt(x: x, y: y) {
+                    let mx = max(c.redComponent, max(c.greenComponent, c.blueComponent))
+                    let mn = min(c.redComponent, min(c.greenComponent, c.blueComponent))
+                    if mx - mn > 0.16 { colored = true; break }   // 饱和色 → 课程块
+                }
+                x += 2
+            }
+            if colored && !inBand { bands += 1; inBand = true }
+            else if !colored { inBand = false }
+        }
+        return bands
     }
 }

@@ -7,6 +7,23 @@ struct ScheduleCellID: Hashable {
     let day: Int
 }
 
+// MARK: - 课表「行」唯一标识（分组下标 + 行下标）—— 个人课表与班级课表共用
+//
+// ⚠️ 行身份必须是**位置**，**不能**用节次名字（`id: \.self` / `id: \.element`）：
+//    两张课表的「新增节次 / 删除节次」都会把整表编号重排（第n节 → 第n+1节，`renumberPeriods` /
+//    `ClassLayout.canonicalize`）。名字一变，以名字为身份的每一行都被判定成「换了一行」，
+//    而 `LazyVStack` 会把整棵子树**摊平成一个位置数组** —— 身份大面积变动时「位置 ↔ 内容」会错位。
+//    用户 2026-10-01 报的「新增的空白节次里冒出了下一行的课（两个 8）」就是它：
+//    数据层逐格核对无误，纯渲染层错位。
+//
+// ⚠️ 身份必须**全局唯一**，所以带上分组下标 `group`：只写行下标的话，相邻分组的行下标会重号
+//    （上午 0…5 / 下午 0…3），摊平成同一个懒加载列表后互相顶掉，**整组的行会直接不渲染**
+//    （2026-10-01 实测：改成纯行下标后，下午 / 晚自习的行全没了）。
+struct PeriodRowID: Hashable {
+    let group: Int
+    let row: Int
+}
+
 // MARK: - 课表单元格（个人 & 班级共用）
 // 单击 → 选中，并把全表「同内容」的格子一起高亮（个人课表按班级判同、班级课表按科目判同），
 //        其余格子退回默认灰（照搬「年级师资安排」的观感）
@@ -319,7 +336,9 @@ struct ClassScheduleView: View {
                             }
                             .padding(.vertical, 2)
 
-                            ForEach(Array(group.periods.enumerated()), id: \.element) { _, p in
+                            ForEach((0..<group.periods.count).map { PeriodRowID(group: gIdx, row: $0) },
+                                    id: \.self) { key in
+                                let p = group.periods[key.row]
                                 HStack(spacing: spacing) {
                                     Text(p).font(.caption)
                                         .frame(width: labelWidth, alignment: .trailing)
