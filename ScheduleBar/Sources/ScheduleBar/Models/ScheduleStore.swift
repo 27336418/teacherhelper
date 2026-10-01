@@ -102,14 +102,30 @@ final class ScheduleStore: ObservableObject {
         return nil
     }
 
-    /// 诊断输出：自检时只走 stdout；**真实运行**时同时写进用户的运行日志
-    /// `~/Library/Logs/教师助手.log` —— GUI 进程的 stdout 是无处可去的，不写文件就等于没输出。
+    /// 诊断输出（两种运行模式都留痕，都能核对）：
+    /// · 总是打 stdout —— 终端里跑自检时当场可见；
+    /// · **自检 / 取证运行**（`SCHEDULEBAR_DATA_DIR` 已重定向）→ 写进那个临时目录的
+    ///   `个人课表诊断.log`。这样自检也有留痕可查，又**绝不污染用户的运行日志**
+    ///   （否则以后翻日志取证时，会看到一堆「用户没做过的操作」）；
+    /// · **真实运行**（没重定向）→ 追加进 `~/Library/Logs/教师助手.log`。
     ///
-    /// ⚠️ 判据用 `SCHEDULEBAR_DATA_DIR`（自检/取证都会把它重定向）：自检产生的痕迹
-    ///    绝不能混进用户的运行日志，否则以后翻日志取证时会看到「用户没做过的新增节次」。
+    /// ⚠️ GUI 进程的 stdout 是无处可去的：不写文件 = 用户报问题时我们手上什么都没有。
     private func diagLog(_ line: String) {
         print("[ScheduleBar] \(line)")
-        if getenv("SCHEDULEBAR_DATA_DIR") == nil { DragSessionGuard.log(line) }
+        let stamp = { () -> String in
+            let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"; return f.string(from: Date())
+        }()
+        guard let c = getenv("SCHEDULEBAR_DATA_DIR"), let dir = String(validatingUTF8: c), !dir.isEmpty else {
+            DragSessionGuard.log(line)      // 真实运行 → 用户日志
+            return
+        }
+        let path = (dir as NSString).appendingPathComponent("个人课表诊断.log")
+        guard let data = "[\(stamp)] \(line)\n".data(using: .utf8) else { return }
+        if let h = FileHandle(forWritingAtPath: path) {
+            h.seekToEndOfFile(); h.write(data); try? h.close()
+        } else {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
     }
 
     /// 网格行数必须与节次总数一一对应。**写操作前先自愈**。
