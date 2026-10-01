@@ -36,6 +36,16 @@ struct ScheduleBarApp {
             SelfTest.runPeriodCheck()
             return
         }
+        // 个人课表「新增节次 / 编辑 / 对换」复现自检（临时数据目录）：--selftest-personal-edit
+        if args.contains("--selftest-personal-edit") {
+            PersonalEditCheck.run()
+            return
+        }
+        // 「我的课表」页面离屏渲染（真实数据副本）：--render-personal <输出目录>
+        if let i = args.firstIndex(of: "--render-personal"), i + 1 < args.count {
+            PersonalEditCheck.render(outDir: args[i + 1])
+            return
+        }
         // 下载模板结构自检（只读）：--selftest-templates
         if args.contains("--selftest-templates") {
             SelfTest.runTemplateCheck()

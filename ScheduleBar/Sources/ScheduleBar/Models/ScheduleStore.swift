@@ -102,13 +102,34 @@ final class ScheduleStore: ObservableObject {
         return nil
     }
 
+    /// 网格行数必须与节次总数一一对应。**写操作前先自愈**。
+    ///
+    /// 为什么必须有这一步：`grid` 是「按行下标」存内容的，一旦行数比节次数少，
+    /// 靠后的节次（例如「第9节」）算出来的行号就越界 —— `setCell` / `swapCellTo` 的
+    /// guard 会**静默返回**，用户看到的就是「双击编辑第9节、把它拖到别处都不生效」；
+    /// 而重新打开 App 时 `init` 里的 `normalizeGrid` 会把网格补齐，于是又「好了」。
+    /// 这正是「必须退出再打开才行」这一类现象的来源，所以在写路径上直接把它抹掉。
+    /// - Returns: 是否真的修正过（修正过会打一行日志，便于取证）
+    @discardableResult
+    func ensureGridShape() -> Bool {
+        let want = orderedPeriods.count
+        guard grid.count != want else { return false }
+        let had = grid.count
+        grid = ScheduleStore.normalizeGrid(grid, periods: orderedPeriods)
+        print("[ScheduleBar] 个人课表网格行数自愈：\(had) → \(grid.count)（节次数 \(want)）")
+        return true
+    }
+
     func cell(_ period: String, _ day: Int) -> String {
         guard let r = flatIndex(of: period), r < grid.count, day < grid[r].count else { return "" }
         return grid[r][day]
     }
 
     func setCell(_ period: String, _ day: Int, _ value: String) {
-        guard let r = flatIndex(of: period), r < grid.count, day < grid[r].count else { return }
+        guard let r = flatIndex(of: period) else { return }
+        ensureGridShape()   // 行数不一致 → 先补齐，别让这次编辑静默丢失
+        guard r < grid.count, day < grid[r].count else { return }
+        guard grid[r][day] != value else { return }   // 值没变就不写盘（编辑态 onAppear 会回灌一次原值）
         grid[r][day] = value
         scheduleSave()
     }
@@ -128,8 +149,9 @@ final class ScheduleStore: ObservableObject {
     /// 把拖动来源格与目标格的课表内容对换
     func swapCellTo(_ period: String, _ day: Int) {
         guard let src = cellDragSource,
-              let sr = flatIndex(of: src.period), let dr = flatIndex(of: period),
-              sr < grid.count, dr < grid.count,
+              let sr = flatIndex(of: src.period), let dr = flatIndex(of: period) else { return }
+        ensureGridShape()   // 同上：行数不一致会让对换静默失败
+        guard sr < grid.count, dr < grid.count,
               grid[sr].indices.contains(src.day), grid[dr].indices.contains(day),
               !(sr == dr && src.day == day) else { return }
         let tmp = grid[sr][src.day]
@@ -163,9 +185,21 @@ final class ScheduleStore: ObservableObject {
     }
 
     // MARK: 节次增删（在某个时段内）
+
+    /// 新增一节**空白**节次（严格按 Excel「插入行」的语义，2026-10-01 用户指定）：
+    ///
+    /// 1. 新节次追加到**该组末尾**，它的那一行内容全空（不会借用、不会覆盖任何已有课程）；
+    /// 2. 该行插在表格的正确位置（= 该组最后一行之后），**后面的节次整体下移一行**，
+    ///    它们的内容跟着自己那一行一起下移（不重排、不丢失 —— 就像 Excel 里插入一行）；
+    /// 3. 只把「第N节 / 晚N」的**编号**按显示顺序重排（第n节 → 第n+1节），
+    ///    自定义名称（早自习 / 晚自习…）原样保留。
+    ///
+    /// ⚠️ 一次算完再整体赋值：中间态（新节次与后面组同号）绝不落盘、也绝不进渲染。
     func addPeriod(in groupIndex: Int) {
         guard groups.indices.contains(groupIndex) else { return }
-        // 根据组名选择新节次标签模板：「上午/下午」用「第N节」，「晚自习」用「晚N」
+        ensureGridShape()
+
+        // 新节次的标签：按**该组自己的**最大编号 +1（「上午/下午」用「第N节」，「晚自习」用「晚N」）
         let isEvening = groups[groupIndex].title.contains("晚")
         let label: String
         if isEvening {
@@ -175,22 +209,51 @@ final class ScheduleStore: ObservableObject {
             let nums = groups[groupIndex].periods.compactMap { Self.numberedPart($0) }
             label = "第\((nums.max() ?? 0) + 1)节"
         }
-        // 末尾追加新节次
-        groups[groupIndex].periods.append(label)
-        // 在 grid 末尾（若该组内没有其它已存在的 grid 行则整体尾部插入，否则按 flat 位置插）
-        let flat = groups[0..<groupIndex].reduce(0) { $0 + $1.periods.count } + (groups[groupIndex].periods.count - 1)
-        let row = Array(repeating: "", count: Self.days.count)
-        if flat <= grid.count { grid.insert(row, at: flat) } else { grid.append(row) }
-        // 重新编号：保证所有「第N节」/「晚N」节次按显示顺序连续
-        renumberPeriods()
+
+        var gs = groups
+        var gd = grid
+        // 插入位置 = 该组最后一个节次之后（= 新标签在展开后的下标）
+        let insertAt = groups[0..<groupIndex].reduce(0) { $0 + $1.periods.count }
+            + gs[groupIndex].periods.count
+        gs[groupIndex].periods.append(label)
+        let blankRow = Array(repeating: "", count: Self.days.count)
+        if insertAt <= gd.count { gd.insert(blankRow, at: insertAt) } else { gd.append(blankRow) }
+
+        groups = gs          // 先落「改后」的整体状态
+        grid = gd
+        renumberPeriods()    // 再统一重排编号（第n节 → 第n+1节）
+
+        // 自证 + 兜底：新节次必须是空的一行，行数与节次数仍一一对应。
+        // （不用 assert：release 下断言会被编译掉，这里要的是真保证。）
+        if let r = flatIndex(of: label), r < grid.count, !grid[r].allSatisfy({ $0.isEmpty }) {
+            print("[ScheduleBar] ⚠️ 新增节次「\(label)」意外的非空行，已清空")
+            grid[r] = Array(repeating: "", count: Self.days.count)
+        }
+        _ = ensureGridShape()
+        if grid.count != orderedPeriods.count {
+            print("[ScheduleBar] ⚠️ 新增节次后行数 \(grid.count) ≠ 节次数 \(orderedPeriods.count)")
+        }
     }
 
+    /// 删除节次（连同它那一行的内容），随后统一重编号
+    /// ⚠️ 只删**第一个**同名节次：同名节次出现在多个分组时，逐个分组都删会把节次数
+    ///    比网格行数多删掉，导致后面的节次整体错位、靠后的格子再也写不进去。
     func removePeriod(_ label: String) {
-        guard orderedPeriods.count > 1 else { return }
+        guard orderedPeriods.count > 1, let flat = flatIndex(of: label) else { return }
         let snapGroups = groups, snapGrid = grid
-        let flat = flatIndex(of: label)
-        for i in groups.indices { groups[i].periods.removeAll { $0 == label } }
-        if let f = flat, f < grid.count { grid.remove(at: f) }
+        var gs = groups
+        var removed = false
+        for i in gs.indices where !removed {
+            if let k = gs[i].periods.firstIndex(of: label) {
+                gs[i].periods.remove(at: k)
+                removed = true
+            }
+        }
+        guard removed else { return }
+        var gd = grid
+        if flat < gd.count { gd.remove(at: flat) }
+        groups = gs
+        grid = gd
         // 删除后重新编号，让后续节次顺序保持连续
         renumberPeriods()
         UndoService.shared.register("删除节次「\(label)」") { [weak self] in
@@ -203,21 +266,26 @@ final class ScheduleStore: ObservableObject {
 
     /// 重新编号所有「第N节」/「晚N」节次：按显示顺序重新填充连续编号；
     /// 自定义名称（如「早自习」「晚自习」「课间」等）保持原样不动。
+    ///
+    /// ⚠️ 先在局部副本上算完再**一次性赋值**：`groups` 是 `@Published` + `didSet` 落盘，
+    ///    逐格赋值会让一次「新增节次」触发 N 次写盘（既慢，也让「文件 mtime 批次」取证失真）。
     func renumberPeriods() {
+        var gs = groups
         var dayCounter = 0
         var eveCounter = 0
-        for i in groups.indices {
-            for j in groups[i].periods.indices {
-                let p = groups[i].periods[j]
+        for i in gs.indices {
+            for j in gs[i].periods.indices {
+                let p = gs[i].periods[j]
                 if Self.numberedPart(p) != nil {
                     dayCounter += 1
-                    groups[i].periods[j] = "第\(dayCounter)节"
+                    gs[i].periods[j] = "第\(dayCounter)节"
                 } else if Self.eveningNumber(p) != nil {
                     eveCounter += 1
-                    groups[i].periods[j] = "晚\(eveCounter)"
+                    gs[i].periods[j] = "晚\(eveCounter)"
                 }
             }
         }
+        if gs != groups { groups = gs }   // 没变就不写盘
     }
 
     /// "第3节"/"第10节" → 3/10；不匹配返回 nil

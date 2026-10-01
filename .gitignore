@@ -35,6 +35,12 @@ output/
 AppIcon/备份-*/
 AppIcon/*对比*.png
 
+# Windows 版构建产物与分发目录（体积大：两个 exe 约 16MB + Go 构建输出 22MB）
+#   ⚠️ 绝不能入库：仓库一旦超过 jsDelivr 的 50MB 上限，**新发布的 DMG 会被 403 拒发**，
+#   应用内「检查更新」会失效。源码（*.go / go.mod / web / assets）照常入库，只挡产物。
+TeacherHelperWin/dist/
+Windows版/
+
 # 界面预览图（本机素材，不进仓库）
 预览图/
 

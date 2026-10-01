@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>教师助手</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="app">
+  <nav id="nav">
+    <div class="brand"><span class="dot">课</span><span id="brandText">教师助手</span></div>
+    <div id="navList"></div>
+    <div class="grow"></div>
+    <div class="nav-foot">
+      <div class="nav-item" onclick="openDataDir()"><span class="ico">📁</span>数据文件夹</div>
+      <div class="nav-item" onclick="openHelp()"><span class="ico">❔</span>使用说明</div>
+    </div>
+  </nav>
+  <main id="main">
+    <div class="head">
+      <h1 id="pageTitle">我的课表</h1>
+      <div class="spacer"></div>
+      <div id="headActions"></div>
+    </div>
+    <div class="hint" id="pageHint"></div>
+    <div class="content" id="content"></div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -52,7 +52,7 @@ struct ScheduleCell: View {
                     .onChange(of: editingText) { newValue in onUpdate(newValue) }
                     .onAppear {
                         editingText = text
-                        DispatchQueue.main.async { focused = true }
+                        requestFocus()
                     }
                     .onChange(of: focused) { isFocused in
                         if !isFocused { onEndEditing() }
@@ -135,6 +135,27 @@ struct ScheduleCell: View {
 
     private func isEmpty(_ s: String) -> Bool {
         s.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// 进入编辑态时把焦点**确实**落到输入框上。
+    ///
+    /// 2026-10-01 用户报「双击编辑第9节存不上、必须退出再打开」：菜单栏 App 是
+    /// `.accessory` + NSPopover，面板窗口一旦不是 key，`@FocusState` 置 true 也不会真的
+    /// 成为第一响应者 —— 输入框看着在那儿，敲字却没有任何反应（不触发 onChange → 不落盘）。
+    /// 所以这里先补「App 激活 + 窗口 key」，再补一次焦点（幂等）。
+    ///
+    /// ⚠️ 补偿那一次只等 0.1 秒、且要求这一刻仍在编辑态：再往后用户可能已经点到别的格子，
+    ///    那时抢回焦点会打断他的输入。也**不在 body 之外读 `@FocusState`**（只写不读）。
+    private func requestFocus() {
+        DispatchQueue.main.async {
+            DragSessionGuard.ensureInteractive(nil, reason: "单元格编辑")
+            focused = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard isEditing else { return }
+            DragSessionGuard.ensureInteractive(nil, reason: "单元格编辑补焦点")
+            focused = true
+        }
     }
 }
 
@@ -349,7 +370,9 @@ struct ClassScheduleView: View {
                                         .onDrop(of: [.text], delegate: ScheduleCellSwapDelegate(
                                             table: DragPayload.classCell,
                                             onPerform: { classStore.swapCellTo(p, d) },
-                                            onFinish: { classStore.finishCellDrag() }
+                                            onFinish: { classStore.finishCellDrag() },
+                                            // 兜底：DragContext 被兜底轮询误清时，靠 store 记住的来源再认一次
+                                            ownsFallback: { classStore.cellDragSource != nil && DragContext.recentlyActiveDrag }
                                         ))
                                         .help("单击：高亮全表同科目，其余格子变灰；再点一次取消。双击编辑；拖动可与其它格子对换")
                                     }

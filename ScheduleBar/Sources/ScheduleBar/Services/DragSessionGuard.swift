@@ -70,15 +70,31 @@ enum DragSessionGuard {
     }
 
     /// 松手之后如果 DragContext 里还留着「正在拖动」，说明这一次松手**没有落到任何落点**
-    /// （丢在空白处、或丢在了缓存页的死角）。此时立刻把状态复位：
+    /// （丢在空白处、或丢在了缓存页的死角）。此时把状态复位：
     /// 否则残留的来源会让下一轮对换换错对象，甚至看起来完全拖不动。
-    /// 判据用 `NSEvent.pressedMouseButtons == 0`，所以正在按着鼠标拖动时绝不会误清。
+    ///
+    /// ⚠️ 2026-10-01 修正（用户报「对调第 9 节没反应，必须退出重开」）：
+    ///   原判据只有 `NSEvent.pressedMouseButtons == 0`。可是**松手到落点投递之间**，
+    ///   鼠标按钮已经是抬起状态、而 `DragContext` 还没被落点消费掉 —— 0.5s 的兜底轮询
+    ///   只要踩进这个空隙就会把来源清掉，紧接着落点被拒：
+    ///   日志里那一组「拖拽开始 → 拖动状态已复位（松手未落地）→ 落点拒绝：当前拖动=无」
+    ///   就是这么来的。所以现在要求「**静默 ≥1s 且连续两次轮询都如此**」才复位：
+    ///   · 正在拖（按钮按着 / 落点还在询问）→ 活动时间一直被刷新，永远不会被清；
+    ///   · 真的丢在空白处 → 约 1.5~2.5s 后照旧被清掉（只是晚一点，用户无感）。
+    private static var idleConfirmations = 0
+
     private static func recoverStuckDrag() {
-        guard DragContext.isDragging else { return }
-        guard NSEvent.pressedMouseButtons == 0 else { return }
+        guard DragContext.isDragging else { idleConfirmations = 0; return }
+        guard NSEvent.pressedMouseButtons == 0 else { idleConfirmations = 0; return }
+        let idle = DragContext.activityAge
+        guard idle >= 1.0 else { idleConfirmations = 0; return }
+        idleConfirmations += 1
+        guard idleConfirmations >= 2 else { return }
+        idleConfirmations = 0
         DragContext.cancel()
         let had = resetDragState(reason: "松手未落地")
-        log("拖拽未落地：已复位拖动状态\(had ? "（此前有一次未完成的拖动）" : "")")
+        log("拖拽未落地：已复位拖动状态（静默 \(String(format: "%.1f", idle))s"
+            + "\(had ? "，此前有一次未完成的拖动" : "")）")
     }
 
     /// 有一次拖动因为「切走 App」被打断（没有走完成功落点）。

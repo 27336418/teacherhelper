@@ -219,7 +219,9 @@ struct PersonalScheduleView: View {
         .onDrop(of: [.text], delegate: ScheduleCellSwapDelegate(
             table: DragPayload.personalCell,
             onPerform: { store.swapCellTo(period, day) },
-            onFinish: { store.finishCellDrag() }
+            onFinish: { store.finishCellDrag() },
+            // 兜底：DragContext 被兜底轮询误清时，靠 store 里记着的来源再认一次（见 DragSwapSupport）
+            ownsFallback: { store.cellDragSource != nil && DragContext.recentlyActiveDrag }
         ))
         .help("单击：高亮全表同班级，其余格子变灰；再点一次取消。双击编辑；拖动可与其它格子对换")
     }

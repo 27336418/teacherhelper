@@ -109,15 +109,42 @@ enum DragContext {
     /// 当前拖拽的载荷字符串（学生座位要用它解析来源）
     private(set) static var payload: String?
 
+    /// 最近一次「拖拽有活动」的时刻：拿起、以及**每一个落点的询问**（validateDrop /
+    /// dropEntered / dropUpdated）都算。DragSessionGuard 用它判断「这次拖动是不是真的结束了」。
+    ///
+    /// ⚠️ 2026-10-01 实测教训（用户报「对调第9节没反应，必须退出再打开」）：
+    ///    日志里是「拖拽开始 → 拖动状态已复位（松手未落地）→ 落点拒绝：当前拖动=无」。
+    ///    原因是兜底轮询只看 `NSEvent.pressedMouseButtons == 0` —— 而**松手到落点投递之间**
+    ///    按钮已经是抬起状态、来源却还没被消费，这一瞬间被误判成「丢在空白处没落地」，
+    ///    来源被清掉之后落点自然就被拒了。所以现在必须「静默足够久 + 连续两次」才复位。
+    private(set) static var lastActivity = Date.distantPast
+
+    /// 距最近一次拖拽活动过去了多久（秒）
+    static var activityAge: TimeInterval { Date().timeIntervalSince(lastActivity) }
+
+    /// 「刚刚还有一次拖拽在活动」——用于落点的兜底归属判据（`ownsFallback`）。
+    /// 取 5 秒是因为：拿起（`.onDrag`）到松手投递之间通常不到 1 秒，5 秒足够宽松，
+    /// 又能把「上一次拖动留下的残留来源」排除掉（那种情况下年龄是几分钟）。
+    static var recentlyActiveDrag: Bool { activityAge < 5 }
+
     /// 拿起（在 `.onDrag` 里同步调用）
     static func begin(module: String, payload: String) {
         self.module = module
         self.payload = payload
+        lastActivity = Date()
         DragSessionGuard.log("拖拽开始：模块=\(module) 载荷=\(payload)")
     }
 
-    /// 落点是否属于本模块
-    static func belongs(to m: String) -> Bool { module == m }
+    /// 落点还在询问 → 这次拖拽仍然活着（刷新活动时间）
+    static func noteActivity() { lastActivity = Date() }
+
+    /// 落点是否属于本模块。
+    /// 顺带刷新活动时间：这是**所有模块**的落点代理（validateDrop / dropEntered / dropUpdated）
+    /// 唯一共同经过的地方，放这里就够，不必逐个代理去加。
+    static func belongs(to m: String) -> Bool {
+        if module != nil { noteActivity() }
+        return module == m
+    }
 
     /// 是否正有一次已拿起、尚未落地的拖动
     static var isDragging: Bool { module != nil }
@@ -152,9 +179,14 @@ struct ScheduleCellSwapDelegate: DropDelegate {
     let onFinish: () -> Void
     /// 拖动经过时的视觉反馈（默认不做任何事，学生座位用高亮，课表用系统拖影）
     var onEnter: () -> Void = {}
+    /// 兜底归属判据：`DragContext` 万一被清掉（兜底轮询 / 鼠标按下监视），
+    /// 用 **store 里记着的「拖动来源」** 再判一次 —— 拿起时 store 一定登记过，所以它比
+    /// DragContext 更可靠。这是「对调没反应」的第二道保险。
+    /// 只在**刚刚**有过拖拽活动时才认（避免残留来源把外部拖进来的东西当成自己的）。
+    var ownsFallback: () -> Bool = { false }
 
     /// 本落点是否该管家下的这次拖拽（不是本模块 → 一概不理，光标也显示为「不可放」）
-    private var isOurs: Bool { DragContext.belongs(to: table) }
+    private var isOurs: Bool { DragContext.belongs(to: table) || ownsFallback() }
 
     func validateDrop(info: DropInfo) -> Bool { isOurs }
 
@@ -176,8 +208,16 @@ struct ScheduleCellSwapDelegate: DropDelegate {
     ///   缓存页（ZStack 里 opacity=0 的已访问页面）的 `.onDrop` 依然会被 AppKit 当成
     ///   拖拽落点，落点落错页时如果顺手 `DragContext.finish`，同一次拖拽的来源就没了——
     ///   表现就是「拖了没换」＋「下一拖也随之失效」。（座位表代理一直是这么写的，所以最稳）
+    ///
+    /// ⚠️ 但**返回值必须是 true**（接受、什么都不改）：拖拽会话此时已经结束，接受能让
+    ///   AppKit / SwiftUI 干净收尾。返回 false 会让 SwiftUI 认为落点无效、拖拽会话状态残留
+    ///   —— 之后这个格子连点击/双击编辑都可能失灵（2026-10-01 用户报的「双击编辑第9节
+    ///   也存不上，必须退出重开」）。改数据与否与「接不接受这次落点」是两件事，别混在一起。
     func performDrop(info: DropInfo) -> Bool {
-        guard DragContext.belongs(to: table) else { DragContext.reject(table); return false }
+        guard isOurs else {
+            DragContext.reject(table)
+            return true
+        }
         onPerform()
         onFinish()
         DragContext.finish(reason: table)
