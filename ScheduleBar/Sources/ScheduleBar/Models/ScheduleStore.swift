@@ -102,6 +102,16 @@ final class ScheduleStore: ObservableObject {
         return nil
     }
 
+    /// 诊断输出：自检时只走 stdout；**真实运行**时同时写进用户的运行日志
+    /// `~/Library/Logs/教师助手.log` —— GUI 进程的 stdout 是无处可去的，不写文件就等于没输出。
+    ///
+    /// ⚠️ 判据用 `SCHEDULEBAR_DATA_DIR`（自检/取证都会把它重定向）：自检产生的痕迹
+    ///    绝不能混进用户的运行日志，否则以后翻日志取证时会看到「用户没做过的新增节次」。
+    private func diagLog(_ line: String) {
+        print("[ScheduleBar] \(line)")
+        if getenv("SCHEDULEBAR_DATA_DIR") == nil { DragSessionGuard.log(line) }
+    }
+
     /// 网格行数必须与节次总数一一对应。**写操作前先自愈**。
     ///
     /// 为什么必须有这一步：`grid` 是「按行下标」存内容的，一旦行数比节次数少，
@@ -116,7 +126,7 @@ final class ScheduleStore: ObservableObject {
         guard grid.count != want else { return false }
         let had = grid.count
         grid = ScheduleStore.normalizeGrid(grid, periods: orderedPeriods)
-        print("[ScheduleBar] 个人课表网格行数自愈：\(had) → \(grid.count)（节次数 \(want)）")
+        diagLog("个人课表网格行数自愈：\(had) → \(grid.count)（节次数 \(want)）")
         return true
     }
 
@@ -195,9 +205,14 @@ final class ScheduleStore: ObservableObject {
     ///    自定义名称（早自习 / 晚自习…）原样保留。
     ///
     /// ⚠️ 一次算完再整体赋值：中间态（新节次与后面组同号）绝不落盘、也绝不进渲染。
-    func addPeriod(in groupIndex: Int) {
-        guard groups.indices.contains(groupIndex) else { return }
+    ///
+    /// - Returns: 新节次的标签（分组下标非法时 nil）。供自检断言、以及「高亮刚加的这一行」用。
+    @discardableResult
+    func addPeriod(in groupIndex: Int) -> String? {
+        guard groups.indices.contains(groupIndex) else { return nil }
         ensureGridShape()
+        // 校验用快照：必须取在**自愈之后、任何改动之前**，否则比的是两个不同的基准。
+        let gridBefore = grid
 
         // 新节次的标签：按**该组自己的**最大编号 +1（「上午/下午」用「第N节」，「晚自习」用「晚N」）
         let isEvening = groups[groupIndex].title.contains("晚")
@@ -226,13 +241,44 @@ final class ScheduleStore: ObservableObject {
         // 自证 + 兜底：新节次必须是空的一行，行数与节次数仍一一对应。
         // （不用 assert：release 下断言会被编译掉，这里要的是真保证。）
         if let r = flatIndex(of: label), r < grid.count, !grid[r].allSatisfy({ $0.isEmpty }) {
-            print("[ScheduleBar] ⚠️ 新增节次「\(label)」意外的非空行，已清空")
+            diagLog("⚠️ 新增节次「\(label)」意外的非空行，已清空")
             grid[r] = Array(repeating: "", count: Self.days.count)
         }
         _ = ensureGridShape()
         if grid.count != orderedPeriods.count {
-            print("[ScheduleBar] ⚠️ 新增节次后行数 \(grid.count) ≠ 节次数 \(orderedPeriods.count)")
+            diagLog("⚠️ 新增节次后行数 \(grid.count) ≠ 节次数 \(orderedPeriods.count)")
         }
+
+        // MARK: 运行时硬校验（用户 2026-10-01 明确定的规则，每次新增都真跑一遍并留日志）
+        //
+        // 规则原话：「上午插入节，不能影响到下午的课的安排……参考 excel 的插入行功能，
+        //           不能改变其他的内容和位置」「下午编号改变，但是只变化编号，不改变课程内容；
+        //           比如第6节8班变成第7节8班」。
+        // 翻成人话就是两条不变式：
+        //   ① 插入点**以上**的行，逐格一模一样；
+        //   ② 插入点**以下**的行整体下移一行之后（原来的第 i 行 → 现在的第 i+1 行），逐格一模一样。
+        // 只要这两条成立，就说明「动的只有插入的那一行 + 节次的名字」，其它课一格没碰。
+        // ⚠️ 用 print 而不是 assert：release 构建会把 assert 整个编译掉，而这个保证在任何
+        //    构建下都必须真的被执行、并能在日志里被核对（用户长期约定：取证看运行日志）。
+        let gridAfter = grid
+        var intact = true
+        for i in 0..<insertAt where i < gridBefore.count && i < gridAfter.count {
+            if gridBefore[i] != gridAfter[i] { intact = false; break }
+        }
+        if intact {
+            for i in insertAt..<gridBefore.count where i + 1 < gridAfter.count {
+                if gridBefore[i] != gridAfter[i + 1] { intact = false; break }
+            }
+        }
+        let movedRows = max(0, gridBefore.count - insertAt)
+        if intact {
+            diagLog("新增节次：组「\(groups[groupIndex].title)」→「\(label)」，插在第 \(insertAt + 1) 行；"
+                + "其余 \(movedRows) 行整体下移一行、内容逐格未变 ✓")
+        } else {
+            diagLog("⚠️ 新增节次「\(label)」后，其他节次的课程内容发生了变化（本应只变编号）——"
+                + "请把这份日志发出来定位")
+        }
+        return label
     }
 
     /// 删除节次（连同它那一行的内容），随后统一重编号

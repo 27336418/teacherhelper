@@ -150,6 +150,33 @@ enum PersonalEditCheck {
         check("删除后行数 = 节次数", store.grid.count == store.orderedPeriods.count,
               "\(store.grid.count)/\(store.orderedPeriods.count)")
 
+        // ---------------------------------------------------------------- 8) 同一组连续新增两次
+        // 这是「两位数编号 + 二次插入位置」最容易翻车的地方：第一次新增会造出「第10节」，
+        // 第二次新增必须仍能正确取到该组最大编号、并插到**最新的**组末尾（不然会插错位置、
+        // 把内容挪走）。用户长期口径是「只变编号、内容一格不变」，所以这里逐格比对。
+        print("\n--- 8) 在「上午」连续新增两次：编号、插入位置、内容都必须继续正确 ---")
+        store = freshStore(fill: true)
+        let before8 = snapshotRows(store)
+        let n8 = store.orderedPeriods.count
+        let l1 = store.addPeriod(in: 0)
+        let l2 = store.addPeriod(in: 0)
+        printRows(store, "两次新增后")
+        check("第一次新增的节次名是「第6节」", l1 == "第6节", l1 ?? "nil")
+        check("第二次新增的节次名是「第7节」", l2 == "第7节", l2 ?? "nil")
+        check("节次数 +2", store.orderedPeriods.count == n8 + 2, "\(store.orderedPeriods.count)")
+        check("网格行数 = 节次数", store.grid.count == store.orderedPeriods.count,
+              "\(store.grid.count)/\(store.orderedPeriods.count)")
+        check("两次新增出来的两行（第6、7行）都是空的",
+              store.grid[6].allSatisfy { $0.isEmpty } && store.grid[7].allSatisfy { $0.isEmpty })
+        check("编号继续顺延：原第6~9节 → 第8~11节",
+              Array(store.orderedPeriods[8...11]) == ["第8节", "第9节", "第10节", "第11节"],
+              store.orderedPeriods[8...11].joined(separator: ","))
+        check("已有课程整体下移两行、逐格未变", Array(before8[6...]) == Array(store.grid[8...]))
+        check("插入点之前的内容原地不动", Array(before8[0..<6]) == Array(store.grid[0..<6]))
+        check("旧内容一条不丢", cellSet(store.grid) == cellSet(before8))
+        check("自定义名原样保留（早自习 / 晚自习）",
+              store.orderedPeriods.first == "早自习" && store.orderedPeriods.last == "晚自习")
+
         print("\n---")
         print(fail == 0 ? "全部通过 ✓（\(pass) 项）" : "存在失败项 ✗（通过 \(pass) / 失败 \(fail)）")
         if fail > 0 { exit(1) }
