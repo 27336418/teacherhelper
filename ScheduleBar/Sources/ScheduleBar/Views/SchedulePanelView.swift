@@ -268,9 +268,17 @@ struct SchedulePanelView: View {
             .padding(.bottom, 6)
 
             HStack(spacing: 6) {
+                // ⚠️ 周次胶囊**必须完整显示**，不能被右边的日期挤掉（2026-11-02 用户报「第 10 周显示不全」）。
+                //    实测（12pt semibold / 11pt regular）：内容区可用 = 170 − 22×2 = **126pt**；
+                //    「第 10 周」胶囊 60.1 + 间距 6 + 「周一 11月2日」65.3 = **131.4pt** → 超 5.4pt。
+                //    原先胶囊既没有 lineLimit 也没有 fixedSize，是整行里最"软"的那个 → 被压成「第 10…」。
+                //    现在把胶囊锁死为理想宽度（fixedSize + layoutPriority），缺口交给日期缩放吸收。
                 Text("第 \(weekStore.currentWeek) 周")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(Capsule().fill(Color.accentColor))
@@ -278,12 +286,14 @@ struct SchedulePanelView: View {
                     .onTapGesture { showWeekSetup = true }
                     .help("点击设置第1周开始日期")
                     .popover(isPresented: $showWeekSetup, arrowEdge: .bottom) { WeekSetupView() }
-                // 日期必须一行显示完整：lineLimit(1) + 轻微缩放，空间再紧也不折行
+                // 日期必须一行显示完整：lineLimit(1) + 缩放，空间再紧也不折行。
+                // 0.8 → 0.7 是给两位/三位数周次留余量：第10周日期只需缩到 92%，
+                // 第100周（胶囊 68.1pt）也只需缩到 79.5%，都在 0.7 允许范围内。
                 Text("\(weekdayString()) \(dateString())")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(0.7)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 22)
