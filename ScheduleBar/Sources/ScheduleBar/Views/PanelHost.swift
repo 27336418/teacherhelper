@@ -46,6 +46,15 @@ import AppKit
 // `NSHostingView` 是独立的一棵 SwiftUI 树，**不会继承**外层 SwiftUI 的环境。
 // 这里列的类型必须与 `ScheduleBarApp.swift` 根注入保持一致（共 12 个），少一个就会在页面
 // body 里 `@EnvironmentObject` 取值时崩。
+extension Notification.Name {
+    /// 某个板块页从「隐藏」变为「可见」（由 `PanelHostContainer.sync` 发出）。
+    /// `userInfo["tab"]` = 该板块的 `PanelTab.rawValue`。
+    ///
+    /// 用途：页面被复用、切回来时不会重新 `onAppear`，但有些逻辑需要「每次进入都重来一遍」
+    /// （例：延时板块每次进入都要重新算当前周并滚到那一行）。
+    static let panelDidBecomeVisible = Notification.Name("ScheduleBar.panelDidBecomeVisible")
+}
+
 final class PanelHostContainer: NSView {
     private var hosts: [PanelTab: NSHostingView<AnyView>] = [:]
 
@@ -58,12 +67,26 @@ final class PanelHostContainer: NSView {
             host.autoresizingMask = []
             if #available(macOS 13.0, *) { host.sizingOptions = [] }   // 尺寸由这里的 frame 决定，别让它按内容自撑
             host.frame = bounds
+            // ⚠️ 先置为隐藏，让下面那段「变可见」的统一逻辑也覆盖**首次创建**这一情况。
+            //    否则新建出来的 host 默认 `isHidden == false`，`isHidden != shouldHide` 不成立，
+            //    首次进入页面就不会发 `panelDidBecomeVisible`。
+            host.isHidden = true
             addSubview(host)
             hosts[tab] = host
         }
         for (tab, host) in hosts {
             let shouldHide = (tab != selected)
-            if host.isHidden != shouldHide { host.isHidden = shouldHide }
+            if host.isHidden != shouldHide {
+                host.isHidden = shouldHide
+                // 页面从隐藏变可见 → 广播。
+                // ⚠️ 页面里想「每次进入都重新定位」的逻辑必须订阅它，**不能只靠 `.onAppear`**：
+                //    本容器复用页面，`.onAppear` 一辈子只在首次创建时触发一次。
+                if !shouldHide {
+                    NotificationCenter.default.post(name: .panelDidBecomeVisible,
+                                                    object: nil,
+                                                    userInfo: ["tab": tab.rawValue])
+                }
+            }
         }
         needsLayout = true
     }

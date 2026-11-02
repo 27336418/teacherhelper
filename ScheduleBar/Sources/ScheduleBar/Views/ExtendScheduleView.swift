@@ -1,4 +1,12 @@
 import SwiftUI
+import Combine
+
+/// 行锚点 id：延时列与监考块共用，供 `ScrollViewReader.scrollTo` 定位「当前周」那一行。
+/// 用「块 id + 行下标」而不是「周次」—— 同一块里可能有多行是同一周（数据允许重复），
+/// 且周次是用户可编辑文本，随时会变。
+private func extRowAnchor(_ blockID: UUID, _ row: Int) -> String {
+    "ext-row-\(blockID.uuidString)-\(row)"
+}
 
 // MARK: - 延时 & 监考 卡片（延时三天并列，监考块式可编辑）
 // 标题支持改名：单击=展开/收起，双击=修改名称，右键=重命名菜单。
@@ -9,6 +17,19 @@ struct ExtendScheduleView: View {
     @EnvironmentObject var weekStore: WeekStore
     @EnvironmentObject var coordinator: AppCoordinator
     @State private var collapsed: Set<UUID> = []
+
+    // MARK: 当前周（2026-11-02 用户报「延时没有自动跳转到当前周并高亮」）
+    //
+    // 两个独立的毛病，一起修：
+    //   ① **不自动跳转** —— 这里原本根本没有 ScrollViewReader，从来没滚过。
+    //   ② **高亮滞后** —— 高亮条件是 `周次 == weekStore.currentWeek`，而 `currentWeek`
+    //      是从 `Date()` 现算的计算属性，**不发布任何变化**。以前只有别的状态变了
+    //      （比如点一下页面）才会重绘一遍、顺带重算出正确值。所以跨天后、或者面板
+    //      复用旧页面时，高亮会停在旧的周次上。
+    // 现在：观察 `TodayClock`（跨天/唤醒/激活都会发 @Published），并把周次落进 @State，
+    //      每次页面变可见都重新取一次 + 滚过去。
+    @ObservedObject private var clock = TodayClock.shared
+    @State private var currentWeek: Int = WeekStore.shared.currentWeek
 
     // 面板 880 - 导航 170 - 分隔线 - 外层 padding 16×2 - 卡片 padding 8×2 ≈ 661
     private let cardWidth: CGFloat = 661
@@ -22,6 +43,36 @@ struct ExtendScheduleView: View {
         }
     }
 
+    /// 重新取一次「当前是第几周」，并把那一行滚到视野中间。
+    private func refreshWeekAndScroll(_ proxy: ScrollViewProxy) {
+        let w = weekStore.currentWeek
+        if w != currentWeek { currentWeek = w }     // 触发子视图重算 isCurrent（高亮）
+        guard let anchor = rowAnchor(forWeek: w) else {
+            SaveHub.log("[延时] 进入板块：当前周 \(w)，没有该周的行可跳转")
+            return
+        }
+        SaveHub.log("[延时] 进入板块：当前周 \(w)，滚到行锚点 \(anchor)")
+        // 第一枪：页面已经布局过（跨天刷新、从别的板块切回来）→ 立刻生效
+        proxy.scrollTo(anchor, anchor: .center)
+        // 第二枪：刚从 `isHidden = true` 变可见时页面还没布局、行锚点可能尚未注册 → 等一帧再来一次。
+        // ⚠️ 实测：离屏容器（无窗口）里两枪都不产生滚动，真实窗口里两枪都生效 ——
+        //    所以 `--selftest-render` 拍不出这个效果，别拿它当「没修好」的证据。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            proxy.scrollTo(anchor, anchor: .center)
+        }
+    }
+
+    /// 找「第一处周次 == w」的行锚点（延时列与监考块按数据顺序找）。
+    private func rowAnchor(forWeek w: Int) -> String? {
+        for b in extStore.blocks {
+            for r in b.rows.indices {
+                let raw = b.rows[r].first?.trimmingCharacters(in: .whitespaces) ?? ""
+                if Int(raw) == w { return extRowAnchor(b.id, r) }
+            }
+        }
+        return nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             toolbarRow
@@ -29,42 +80,54 @@ struct ExtendScheduleView: View {
             // ⚠️ 2026-09-26 用户要求「滚动时冻结这些内容」：
             //    标题行（延时/周日/监考 + 撤销·保存·导入·下载 + 操作提示）留在滚动区**外面**，
             //    只有下面的「延时」多天列与「监考」块滚动。
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    // ---- 延时：多天并列，列头置顶冻结，标题可折叠/改名 ----
-                    let delayIdx = extStore.blocks.indices.filter { extStore.blocks[$0].kind == "delay" }
-                    if !delayIdx.isEmpty {
-                        let colWidth = (cardWidth - CGFloat(delayIdx.count - 1) * 6) / CGFloat(delayIdx.count)
-                        HStack(alignment: .top, spacing: 6) {
-                            ForEach(delayIdx.indices, id: \.self) { j in
-                                let i = delayIdx[j]
-                                DelayColumnView(block: $extStore.blocks[i],
-                                                colWidth: colWidth,
-                                                trashWidth: trashWidth - 6,
-                                                accent: extendDelayPalette[j % extendDelayPalette.count],
-                                                currentWeek: weekStore.currentWeek,
-                                                isCollapsed: collapsed.contains(extStore.blocks[i].id),
-                                                save: { extStore.scheduleSave() },
-                                                onToggle: { toggleBlock(extStore.blocks[i].id) })
-                                    .frame(width: colWidth, alignment: .top)   // 固定等宽列+顶对齐，保证各标题齐平
+            // ScrollViewReader：用于「进入本板块就滚到当前周那一行」（2026-11-02 用户要求）。
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        // ---- 延时：多天并列，列头置顶冻结，标题可折叠/改名 ----
+                        let delayIdx = extStore.blocks.indices.filter { extStore.blocks[$0].kind == "delay" }
+                        if !delayIdx.isEmpty {
+                            let colWidth = (cardWidth - CGFloat(delayIdx.count - 1) * 6) / CGFloat(delayIdx.count)
+                            HStack(alignment: .top, spacing: 6) {
+                                ForEach(delayIdx.indices, id: \.self) { j in
+                                    let i = delayIdx[j]
+                                    DelayColumnView(block: $extStore.blocks[i],
+                                                    colWidth: colWidth,
+                                                    trashWidth: trashWidth - 6,
+                                                    accent: extendDelayPalette[j % extendDelayPalette.count],
+                                                    currentWeek: currentWeek,
+                                                    isCollapsed: collapsed.contains(extStore.blocks[i].id),
+                                                    save: { extStore.scheduleSave() },
+                                                    onToggle: { toggleBlock(extStore.blocks[i].id) })
+                                        .frame(width: colWidth, alignment: .top)   // 固定等宽列+顶对齐，保证各标题齐平
+                                }
                             }
                         }
-                    }
 
-                    // ---- 监考：块式（可折叠、可改名、可增删行）----
-                    let examIdx = extStore.blocks.indices.filter { extStore.blocks[$0].kind == "exam" }
-                    ForEach(examIdx, id: \.self) { i in
-                        ExtendBlockView(
-                            block: $extStore.blocks[i],
-                            cardWidth: cardWidth,
-                            trashWidth: trashWidth,
-                            accent: extendExamAccent,
-                            currentWeek: weekStore.currentWeek,
-                            isCollapsed: collapsed.contains(extStore.blocks[i].id),
-                            save: { extStore.scheduleSave() },
-                            onToggle: { toggleBlock(extStore.blocks[i].id) }
-                        )
+                        // ---- 监考：块式（可折叠、可改名、可增删行）----
+                        let examIdx = extStore.blocks.indices.filter { extStore.blocks[$0].kind == "exam" }
+                        ForEach(examIdx, id: \.self) { i in
+                            ExtendBlockView(
+                                block: $extStore.blocks[i],
+                                cardWidth: cardWidth,
+                                trashWidth: trashWidth,
+                                accent: extendExamAccent,
+                                currentWeek: currentWeek,
+                                isCollapsed: collapsed.contains(extStore.blocks[i].id),
+                                save: { extStore.scheduleSave() },
+                                onToggle: { toggleBlock(extStore.blocks[i].id) }
+                            )
+                        }
                     }
+                }
+                // 首次创建时也要定位一次
+                .onAppear { refreshWeekAndScroll(proxy) }
+                // 跨天 / 睡眠唤醒 / App 激活：重新取周次（TodayClock 只在日期真变了时才发布）
+                .onChange(of: clock.today) { _ in refreshWeekAndScroll(proxy) }
+                // 切回本板块：页面是复用的，onAppear 不会再触发，只能靠这个通知
+                .onReceive(NotificationCenter.default.publisher(for: .panelDidBecomeVisible)) { note in
+                    guard (note.userInfo?["tab"] as? String) == PanelTab.extend.rawValue else { return }
+                    refreshWeekAndScroll(proxy)
                 }
             }
         }
@@ -277,6 +340,7 @@ struct DelayColumnView: View {
                             .fill(isCurrent ? weekRowYellow.opacity(0.85)
                                             : Color.clear)
                     )
+                    .id(extRowAnchor(block.id, r))      // 行锚点：供「滚到当前周」定位
                 }
 
                 // 添加行
@@ -382,6 +446,7 @@ struct ExtendBlockView: View {
                             .fill(isCurrent ? weekRowYellow.opacity(0.85)
                                             : Color.clear)
                     )
+                    .id(extRowAnchor(block.id, r))      // 行锚点：供「滚到当前周」定位
                 }
 
                 // 添加行
