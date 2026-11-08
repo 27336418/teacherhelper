@@ -7,6 +7,10 @@ struct ChongqingCalendarView: View {
     // 注意：必须观察 Store，否则右键换色后视图不会刷新（此前换色“未生效”的根因）
     @ObservedObject private var remarkStore = CalendarRemarkStore.shared
     @ObservedObject private var dayColorStore = CalendarDayColorStore.shared
+    // 「今天」必须跟着系统日期走（2026-11-08 用户报：日历还把 11月4日 当成今天）。
+    // ⚠️ 原来直接在行里写 `Date()` —— 那只是「上一次重绘时的时刻」。页面被 PanelHost 复用，
+    //    跨天不会重绘，绿色「今天」方框就一直停在旧日期上。改为观察 `TodayClock`。
+    @ObservedObject private var clock = TodayClock.shared
 
     // 列宽 / 行高：static 单一来源，供 SchedulePanelView 计算本页理想宽度
     static let labelWidth: CGFloat = 64
@@ -149,10 +153,10 @@ struct ChongqingCalendarView: View {
     // 单周行
     private func weekRow(_ n: Int) -> some View {
         let cal = Calendar.current
-        let anchor = weekStore.firstWeekMonday ?? weekStore.alignedMonday(of: Date())
+        let anchor = weekStore.firstWeekMonday ?? weekStore.alignedMonday(of: clock.today)
         let monday = ChongqingCalendar.monday(week: n, firstWeekMonday: anchor)
         let weekDays: [Date] = (0..<7).compactMap { cal.date(byAdding: .day, value: $0, to: monday) }
-        let today = cal.startOfDay(for: Date())
+        let today = clock.today
         let isCurrentWeek = today >= cal.startOfDay(for: monday)
             && today < cal.startOfDay(for: cal.date(byAdding: .day, value: 7, to: monday)!)
 

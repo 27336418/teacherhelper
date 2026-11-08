@@ -88,7 +88,12 @@ struct SchedulePanelView: View {
     // 导航顺序 / 隐藏（持久化 nav_prefs.json）
     @ObservedObject private var navPrefs = NavPrefsStore.shared
 
-    private let now = Date()
+    // 「今天是几号」必须跟着系统日期走（2026-11-08 用户报：面板还显示 11月4日）。
+    // ⚠️ 原来这里是 `private let now = Date()` —— 只在视图**被重新创建**时取一次值。
+    //    面板只要没有别的状态变化，SwiftUI 就不会重跑 body，日期就一直停在旧的那一天。
+    //    现在观察 `TodayClock`：跨天定时器 / 睡眠唤醒 / App 激活 / 打开面板都会刷新它。
+    @ObservedObject private var clock = TodayClock.shared
+    private var now: Date { clock.today }
 
     // MARK: 面板宽度（左侧固定，右侧按内容自动扩宽）
     // 用户 2026-09-23 反馈：「教室布局」加了很多教室后，整页被撑得比面板还宽 →
