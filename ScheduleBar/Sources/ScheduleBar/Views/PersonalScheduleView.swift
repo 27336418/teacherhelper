@@ -23,6 +23,9 @@ struct PersonalScheduleView: View {
     // 只改名字，不动课程内容 —— 存储侧见 `ScheduleStore.renamePeriod(in:at:to:)`。
     @State private var renamingRow: PeriodRowID? = nil
     @State private var renameDraft: String = ""
+    @State private var renameGroup: Int = 0
+    @State private var renameRowIndex: Int = 0
+    @State private var renameKeyMonitor: Any? = nil
     @FocusState private var renameFocused: Bool
 
     // 与班级课表严格一致：节次标签 52 + n×(列宽 + 间距 8)（n = 可见列数，周六/周日按开关增减）
@@ -169,6 +172,8 @@ struct PersonalScheduleView: View {
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.3)))
+        // 切走板块时把按键监听摘掉，避免它留在别的页面上抢回车
+        .onDisappear { removeRenameKeyMonitor() }
     }
 
     // MARK: - 顶部工具栏（冻结在滚动区外）
@@ -262,22 +267,59 @@ struct PersonalScheduleView: View {
 
     private func beginRename(_ p: String, group: Int, row: Int) {
         renameDraft = p
+        renameGroup = group
+        renameRowIndex = row
         renamingRow = PeriodRowID(group: group, row: row)
         // 先让 TextField 出现在视图里，下一帧再要焦点（同帧设置焦点拿不到）
         DispatchQueue.main.async { renameFocused = true }
+        installRenameKeyMonitor()
+    }
+
+    /// 回车 / Esc 用**应用级按键监听**兜底。
+    /// ⚠️ 面板是非激活浮窗，`@FocusState` 不一定跟着 AppKit 的第一响应者走：
+    ///    实测「双击能进编辑、也能粘贴文字，但 Return 不触发 onSubmit」。
+    ///    监听 keyDown 直接把这两个键截下来，不依赖 SwiftUI 的焦点状态。
+    private func installRenameKeyMonitor() {
+        removeRenameKeyMonitor()
+        renameKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            switch event.keyCode {
+            case 36, 76:                       // Return / 小键盘 Enter
+                commitRename(group: renameGroup, row: renameRowIndex)
+                return nil
+            case 53:                           // Esc
+                cancelRename()
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func removeRenameKeyMonitor() {
+        if let m = renameKeyMonitor {
+            NSEvent.removeMonitor(m)
+            renameKeyMonitor = nil
+        }
+    }
+
+    /// 正在改名时点了别的格子 → 先把名字提交掉，再继续原来的点击
+    private func commitRenamingIfNeeded() {
+        guard renamingRow != nil else { return }
+        commitRename(group: renameGroup, row: renameRowIndex)
     }
 
     private func cancelRename() {
+        removeRenameKeyMonitor()
         renamingRow = nil
         renameFocused = false
     }
 
     private func commitRename(group: Int, row: Int) {
-        let ok = store.renamePeriod(in: group, at: row, to: renameDraft)
-        // 改不成（空名 / 重名）就留在编辑状态，让人接着改，不要悄悄把名字丢掉
-        if ok || renameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            cancelRename()
-        }
+        removeRenameKeyMonitor()
+        // 无论成没成，都收起输入框 —— 否则失焦时留下了「看着在编辑、其实没焦点」的死状态。
+        _ = store.renamePeriod(in: group, at: row, to: renameDraft)
+        renamingRow = nil
+        renameFocused = false
     }
 
     // MARK: 单个单元格：不同班级 → 不同颜色
@@ -295,6 +337,7 @@ struct PersonalScheduleView: View {
             isEditing: editing == id,
             isDimmed: selectedKey != nil,
             onSelect: {
+                commitRenamingIfNeeded()
                 editing = nil
                 if selected == id { selected = nil } else { selected = id }
             },
