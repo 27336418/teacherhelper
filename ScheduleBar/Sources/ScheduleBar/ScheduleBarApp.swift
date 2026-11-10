@@ -41,6 +41,11 @@ struct ScheduleBarApp {
             PersonalEditCheck.run()
             return
         }
+        // 「早自习」默认行 / 老数据迁移 / 节次重命名 自检（临时数据目录）：--selftest-early
+        if args.contains("--selftest-early") {
+            EarlyStudyCheck.run()
+            return
+        }
         // 「我的课表」页面离屏渲染（真实数据副本）：--render-personal <输出目录>
         if let i = args.firstIndex(of: "--render-personal"), i + 1 < args.count {
             PersonalEditCheck.render(outDir: args[i + 1])

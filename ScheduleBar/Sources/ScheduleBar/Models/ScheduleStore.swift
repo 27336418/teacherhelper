@@ -27,9 +27,13 @@ final class ScheduleStore: ObservableObject {
     //    整行右移或在末尾补空都会让用户的周日数据落到周六列上。
     static let days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
-    /// 默认布局：上午 5 节 + 下午 4 节 + 晚自习 4 节
+    /// 默认布局：上午 早自习 + 5 节 → 下午 4 节 → 晚自习 4 节
+    ///
+    /// ⚠️「早自习」必须留在默认布局里（2.5.24 起）：它只是**一行名字特殊的普通节次**，
+    ///    淡绿底色靠名字识别（见 `PersonalScheduleView.nonClassPeriods`）。
+    ///    默认布局里没有它，别人装完就永远看不到这一行 —— 2026-11-10 用户报的正是这个。
     static let defaultGroups: [PersonalGroup] = [
-        PersonalGroup(title: "上午", periods: ["第1节", "第2节", "第3节", "第4节", "第5节"]),
+        PersonalGroup(title: "上午", periods: ["早自习", "第1节", "第2节", "第3节", "第4节", "第5节"]),
         PersonalGroup(title: "下午", periods: ["第6节", "第7节", "第8节", "第9节"]),
         PersonalGroup(title: "晚自习", periods: ["晚1", "晚2", "晚3", "晚4"]),
     ]
@@ -52,17 +56,24 @@ final class ScheduleStore: ObservableObject {
         let data = ScheduleStore.load()
         // 兜底：没有本地数据、或本地数据节次为空（旧版清空过）→ 用默认布局，
         // 保证个人课表任何情况下都「有节次的空表」，可以直接双击填写。
-        let gs: [PersonalGroup]
+        var gs: [PersonalGroup]
         if let g = data?.groups, !g.isEmpty, !g.allSatisfy({ $0.periods.isEmpty }) {
             gs = g
         } else {
             gs = ScheduleStore.defaultGroups
         }
+        var gd = ScheduleStore.normalizeGrid(data?.grid ?? [], periods: gs.flatMap { $0.periods })
+        // 一次性迁移（2.5.24）：老数据里没有「早自习」→ 在最前面补一行**空白**。
+        let migrated = ScheduleStore.addEarlyStudyRowIfNeeded(&gs, grid: &gd)
+
         self.groups = gs
-        self.grid = ScheduleStore.normalizeGrid(data?.grid ?? [], periods: gs.flatMap { $0.periods })
+        self.grid = gd
         // 修正历史错位：保证「第N节」/「晚N」按显示顺序连续编号
         renumberPeriods()
         isInitializing = false   // 装载结束，之后的改动才算用户编辑
+        // ⚠️ 迁移补的那一行必须立刻落盘：装载期的赋值被 `isInitializing` 闸门挡掉了，
+        //    不在这里补一次 save，下次启动标记已存在 → 行不会再加 → 用户眼里「补了又没了」。
+        if migrated { save() }
     }
 
     static func emptyGrid(periods: [String]) -> [[String]] {
@@ -326,6 +337,43 @@ final class ScheduleStore: ObservableObject {
         }
     }
 
+    /// 重命名某一节（2.5.24 用户要求 A+B 的 B）—— 只换**名字**，那一行的课程一格都不动。
+    ///
+    /// 有了它，「早自习」「午自习」「早读」这类非上课时段谁都能自己造：
+    /// 双击节次名改名即可，改完立刻按新名字判定要不要那条淡绿底色。
+    ///
+    /// ⚠️ 重名一律拒绝：单元格是按「节次名」定位的（`flatIndex(of:)` 取第一个同名），
+    ///    一旦出现两个同名节次，后面那个就读不到自己的数据、写进去也会串行。
+    /// - Returns: 是否真的改成了（空名 / 重名 / 与原值相同都返回 false）。
+    @discardableResult
+    func renamePeriod(in groupIndex: Int, at row: Int, to newName: String) -> Bool {
+        guard groups.indices.contains(groupIndex),
+              groups[groupIndex].periods.indices.contains(row) else { return false }
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return false }
+        let old = groups[groupIndex].periods[row]
+        guard name != old else { return false }
+        guard !orderedPeriods.contains(name) else {
+            diagLog("重命名被拒：「\(name)」已经是另一节的名称（同名节次会让数据串行）")
+            return false
+        }
+        ensureGridShape()
+        var gs = groups
+        gs[groupIndex].periods[row] = name
+        groups = gs                      // didSet → 立即落盘
+        UndoService.shared.register("重命名节次「\(old)」→「\(name)」") { [weak self] in
+            guard let self else { return }
+            var back = self.groups
+            guard back.indices.contains(groupIndex),
+                  back[groupIndex].periods.indices.contains(row) else { return }
+            back[groupIndex].periods[row] = old
+            self.groups = back
+            self.scheduleSave()
+        }
+        diagLog("重命名节次：组「\(groups[groupIndex].title)」第 \(row + 1) 行「\(old)」→「\(name)」，课程内容未动")
+        return true
+    }
+
     /// 重新编号所有「第N节」/「晚N」节次：按显示顺序重新填充连续编号；
     /// 自定义名称（如「早自习」「晚自习」「课间」等）保持原样不动。
     ///
@@ -400,6 +448,59 @@ final class ScheduleStore: ObservableObject {
         } catch {
             print("[ScheduleBar] 保存失败: \(error)")
         }
+    }
+
+    // MARK: 一次性迁移（2.5.24：给老数据补「早自习」行）
+    //
+    // 用户 2026-11-10 问：「别人使用的时候为什么没有早自习？」
+    // 原因：早自习不是内置行，只是名字叫「早自习」的普通节次；淡绿底色按名字识别。
+    //      老版本默认布局里有它，2.x 改成分组布局后默认值从「第1节」开始 → 新装的人看不到。
+    //
+    // 这里做两件事：
+    //   ① 默认布局自带早自习（见 defaultGroups）；
+    //   ② 老数据（已经存过 personal.json 的人）首次运行新版本时，在最前面补一行**空白**。
+    //
+    // ⚠️ 只补一次，且**删了不复活**：动手前先看标记文件，无论这次有没有真的补，都写标记。
+    //    否则用户右键删掉这一行，下次启动又冒出来。
+    // ⚠️ 标记用文件、不用 UserDefaults：裸二进制与 App 的偏好域不同，UserDefaults 开关会重跑。
+    private static let migrationsFile = "migrations.json"
+    private static let earlyStudyKey = "earlyStudyRow"
+
+    static func hasMigrated(_ key: String) -> Bool {
+        guard let raw = try? Data(contentsOf: AppPaths.file(migrationsFile)),
+              let obj = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any] else { return false }
+        return obj[key] != nil
+    }
+
+    static func markMigrated(_ key: String, value: String) {
+        var obj: [String: Any] = [:]
+        if let raw = try? Data(contentsOf: AppPaths.file(migrationsFile)),
+           let old = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any] {
+            obj = old
+        }
+        obj[key] = value
+        guard let out = try? JSONSerialization.data(withJSONObject: obj,
+                                                    options: [.sortedKeys, .prettyPrinted]) else { return }
+        try? FileManager.default.createDirectory(at: AppPaths.dataDir, withIntermediateDirectories: true)
+        try? out.write(to: AppPaths.file(migrationsFile), options: .atomic)
+    }
+
+    /// 老数据补「早自习」行。直接改 `groups` / `grid`，返回**这次有没有真的补**。
+    private static func addEarlyStudyRowIfNeeded(_ groups: inout [PersonalGroup],
+                                                grid: inout [[String]]) -> Bool {
+        // 已经做过就彻底不管 —— 包括「用户后来自己删掉了」这种情况。
+        guard !hasMigrated(earlyStudyKey) else { return false }
+        defer { markMigrated(earlyStudyKey, value: AppVersion.short) }
+
+        let alreadyHas = groups.contains { $0.periods.contains("早自习") }
+        guard !alreadyHas, !groups.isEmpty else { return false }
+
+        groups[0].periods.insert("早自习", at: 0)
+        // ⚠️ 补的是**空白行**插在最前，不是把已有内容整体下移：
+        //    行序 ↔ 节次名是一一对应的，插空行后原来的「第1节」仍带着自己的课。
+        grid.insert(Array(repeating: "", count: days.count), at: 0)
+        DragSessionGuard.log("迁移：老数据缺「早自习」，已在最前面补一行空白（只做这一次；删掉后不再补）")
+        return true
     }
 
     // MARK: 加载与迁移

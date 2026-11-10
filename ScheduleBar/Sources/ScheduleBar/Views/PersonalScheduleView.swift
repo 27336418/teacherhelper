@@ -19,6 +19,12 @@ struct PersonalScheduleView: View {
     @State private var selected: ScheduleCellID? = nil
     @State private var editing: ScheduleCellID? = nil
 
+    // 节次重命名（2.5.24）：双击节次名进入编辑，回车提交、Esc 取消。
+    // 只改名字，不动课程内容 —— 存储侧见 `ScheduleStore.renamePeriod(in:at:to:)`。
+    @State private var renamingRow: PeriodRowID? = nil
+    @State private var renameDraft: String = ""
+    @FocusState private var renameFocused: Bool
+
     // 与班级课表严格一致：节次标签 52 + n×(列宽 + 间距 8)（n = 可见列数，周六/周日按开关增减）
     //
     // ⚠️ 列宽**不是常量**：2026-09-26 用户要求「显示周六时自动缩小列宽，保证整体没有向右扩展宽度」。
@@ -123,7 +129,7 @@ struct PersonalScheduleView: View {
                             ForEach((0..<group.periods.count).map { PeriodRowID(group: gIdx, row: $0) },
                                     id: \.self) { key in
                                 let label = group.periods[key.row]
-                                periodRow(label)
+                                periodRow(label, group: gIdx, row: key.row)
                                     // 非上课时段（早自习）：淡底色带 + 与下一节拉开距离（见上方常量说明）。
                                     // ⚠️ 底色只加**上下**内边距，不加左右 —— 加左右会把这一行的格子整体推右，
                                     //    和表头 / 其它行的列就对不齐了。
@@ -204,12 +210,44 @@ struct PersonalScheduleView: View {
     }
 
     // MARK: 一行节次
-    private func periodRow(_ p: String) -> some View {
+    private func periodRow(_ p: String, group: Int, row: Int) -> some View {
         HStack(spacing: spacing) {
+            periodLabel(p, group: group, row: row)
+
+            ForEach(visibleDays, id: \.self) { d in
+                cellView(period: p, day: d)
+            }
+        }
+    }
+
+    /// 节次名（双击改名 / 右键改名、删除）
+    @ViewBuilder
+    private func periodLabel(_ p: String, group: Int, row: Int) -> some View {
+        let key = PeriodRowID(group: group, row: row)
+        if renamingRow == key {
+            TextField("节次名", text: $renameDraft)
+                .textFieldStyle(.plain)
+                .font(.caption)
+                .multilineTextAlignment(.trailing)
+                .frame(width: labelWidth)
+                .focused($renameFocused)
+                .onSubmit { commitRename(group: group, row: row) }
+                .onExitCommand { cancelRename() }
+                // 点到别处就当提交，避免留下一个「看着在编辑、其实早没焦点」的错觉
+                .onChange(of: renameFocused) { focused in
+                    if !focused { commitRename(group: group, row: row) }
+                }
+        } else {
             Text(p).font(.caption)
                 .frame(width: labelWidth, alignment: .trailing)
                 .contentShape(Rectangle())
+                .onTapGesture(count: 2) { beginRename(p, group: group, row: row) }
                 .contextMenu {
+                    Button {
+                        beginRename(p, group: group, row: row)
+                    } label: {
+                        Label("重命名此节次", systemImage: "pencil")
+                    }
                     Button(role: .destructive) {
                         store.removePeriod(p)
                         selected = nil
@@ -218,11 +256,27 @@ struct PersonalScheduleView: View {
                         Label("删除此节次", systemImage: "minus.circle")
                     }
                 }
-                .help("右键可删除此节次")
+                .help("双击可重命名；右键可重命名或删除")
+        }
+    }
 
-            ForEach(visibleDays, id: \.self) { d in
-                cellView(period: p, day: d)
-            }
+    private func beginRename(_ p: String, group: Int, row: Int) {
+        renameDraft = p
+        renamingRow = PeriodRowID(group: group, row: row)
+        // 先让 TextField 出现在视图里，下一帧再要焦点（同帧设置焦点拿不到）
+        DispatchQueue.main.async { renameFocused = true }
+    }
+
+    private func cancelRename() {
+        renamingRow = nil
+        renameFocused = false
+    }
+
+    private func commitRename(group: Int, row: Int) {
+        let ok = store.renamePeriod(in: group, at: row, to: renameDraft)
+        // 改不成（空名 / 重名）就留在编辑状态，让人接着改，不要悄悄把名字丢掉
+        if ok || renameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            cancelRename()
         }
     }
 

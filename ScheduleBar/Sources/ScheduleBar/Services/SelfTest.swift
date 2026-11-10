@@ -527,7 +527,9 @@ enum SelfTest {
         let dGroups = DefaultData.personalGroups
         let dPeriods = dGroups.flatMap { $0.periods }
         let dGridEmpty = DefaultData.personalGrid.allSatisfy { $0.allSatisfy { $0.isEmpty } }
-        let dOk = !dGroups.isEmpty && dPeriods.count == 13 && DefaultData.personalGrid.count == 13 && dGridEmpty
+        // 不写死节次数（2.5.24 加了「早自习」这一行）：以默认布局为准，另要求第一行就是早自习
+        let dOk = !dGroups.isEmpty && dPeriods.first == "早自习"
+            && DefaultData.personalGrid.count == dPeriods.count && dGridEmpty
         print("--- 新机器默认个人课表 ---")
         print("  分组: " + dGroups.map { "\($0.title)[\($0.periods.joined(separator: ","))]" }.joined(separator: " "))
         print("  节次=\(dPeriods.count)  网格=\(DefaultData.personalGrid.count)行×\(DefaultData.personalGrid.first?.count ?? 0)列  内容全空=\(dGridEmpty)  判定=\(dOk ? "✓" : "✗")")
