@@ -46,6 +46,11 @@ struct ScheduleBarApp {
             EarlyStudyCheck.run()
             return
         }
+        // 格子「双击进编辑 → 拿到键盘焦点」自检（程序化触发 + 日志实测）：--selftest-cell-focus
+        if args.contains("--selftest-cell-focus") {
+            CellFocusCheck.run()
+            return
+        }
         // 「我的课表」页面离屏渲染（真实数据副本）：--render-personal <输出目录>
         if let i = args.firstIndex(of: "--render-personal"), i + 1 < args.count {
             PersonalEditCheck.render(outDir: args[i + 1])

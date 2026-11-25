@@ -94,7 +94,7 @@ struct EditableGridCell: View {
                     .overlay(RoundedRectangle(cornerRadius: 5).stroke(tint.opacity(0.9), lineWidth: 1.5))
                     .onAppear {
                         draft = text
-                        DispatchQueue.main.async { focused = true }
+                        requestFocus()
                     }
                     .onChange(of: focused) { isFocused in
                         if !isFocused { commit() }
@@ -155,6 +155,34 @@ struct EditableGridCell: View {
         if isSelected { return 2 }
         if isHighlighted { return 1.5 }
         return 0.5
+    }
+
+    /// 与课表 `ScheduleCell.requestFocus()` 同一套补焦点流程。
+    ///
+    /// ⚠️ 面板是 `.accessory` + NSPopover。窗口不是 key 时，单把 `@FocusState` 置 true
+    ///    **不会**让输入框真的成为第一响应者：双击后格子有描边、有光标，敲字却全无反应，
+    ///    而且因为 focused 从未变过 true，失焦回调也不触发，编辑态就一直卡在那儿
+    ///    （2026-11-25 用户报「座次表里面无法双击输入学生姓名」，截图正是这个状态）。
+    ///    课表单元格早就有这段补偿，座位/工位/教室/师资共用的本控件漏了。
+    ///
+    /// 先补「App 激活 + 面板窗口 key」，再置焦点；0.1 秒后再补一次（幂等）。
+    /// 补偿那次要求这一刻仍在编辑态，避免用户已经点到别的格子时把焦点抢回来。
+    private func requestFocus() {
+        DispatchQueue.main.async {
+            DragSessionGuard.ensureInteractive(nil, reason: "格子编辑")
+            // 取证（用户约定：看运行时实测数字，不靠截图猜）
+            let app = NSApplication.shared
+            DragSessionGuard.log("格子编辑焦点：App激活=\(app.isActive) "
+                + "key窗口=\(app.keyWindow != nil) 面板显示=\(AppDelegate.sharedPopover?.isShown == true)")
+            focused = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard editing else { return }
+            DragSessionGuard.ensureInteractive(nil, reason: "格子编辑补焦点")
+            DragSessionGuard.log("格子编辑补焦点：仍在编辑态=\(editing) "
+                + "key窗口=\(NSApplication.shared.keyWindow != nil)")
+            focused = true
+        }
     }
 
     private func commit() {
