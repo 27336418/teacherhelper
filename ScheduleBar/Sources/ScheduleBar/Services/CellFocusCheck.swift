@@ -83,10 +83,6 @@ enum CellFocusCheck {
 
         let full = (try? String(contentsOfFile: logPath, encoding: .utf8)) ?? ""
         let tail = String(full.dropFirst(min(before, full.count)))
-        print("  运行时日志新增：")
-        for line in tail.split(separator: "\n") where line.contains("格子编辑") {
-            print("    \(line)")
-        }
 
         check("编辑态真的渲染出了输入框", findTextField(host) != nil)
         check("进编辑时执行了补焦点流程（第一次）",
@@ -97,6 +93,37 @@ enum CellFocusCheck {
               tail.contains("App激活=") && tail.contains("key窗口="))
         check("程序化触发后仍是编辑态", probe.editing)
         print("  实测：App激活=\(app.isActive)  key窗口=\(app.keyWindow != nil)")
+
+        // 模拟键盘输入：找到 SwiftUI TextField 背后的 NSTextField，用 field editor 插入中文
+        var inserted = false
+        if let field = findTextField(host) {
+            win.makeFirstResponder(field)
+            pump(0.15)
+            if let editor = field.currentEditor() {
+                editor.insertText("朱星橙")
+                inserted = true
+            }
+        }
+        pump(0.35)
+        print("  实测：模拟输入=\(inserted)  当前 text=\(probe.text.debugDescription)")
+
+        // 模拟「点另一个格子」：外部把 editingKey 换成别的格子 → 本格 editing 变 false
+        probe.editing = false
+        pump(0.4)
+        let full2 = (try? String(contentsOfFile: logPath, encoding: .utf8)) ?? ""
+        let tail2 = String(full2.dropFirst(min(before, full2.count)))
+        if inserted {
+            check("切换格子后姓名仍在（兜底提交生效）", probe.text == "朱星橙",
+                  "落盘=\(probe.text.debugDescription)")
+            check("日志证明走的是编辑态兜底写回",
+                  tail2.contains("格子编辑态兜底：isEditing=false 写回=true draft长=3"))
+        } else {
+            print("  （离屏环境无法模拟键击；提交路径改由日志核对）")
+        }
+        print("  运行时日志（本轮全部）：")
+        for line in tail2.split(separator: "\n") where line.contains("格子编辑") {
+            print("    \(line)")
+        }
 
         print("———————————————————————————")
         print("格子编辑焦点自检：\(pass) 通过 / \(fail) 失败")

@@ -104,6 +104,20 @@ struct EditableGridCell: View {
                 displayCell
             }
         }
+        // ⚠️ 提交不能只靠「失焦」：非激活浮窗里 @FocusState 不同步，点别的格子时
+        //    focused 未必先变 false，于是 draft 随 TextField 一起被丢掉 ——
+        //    用户看到的是「字打进去了、一点别的格子就空了」（2026-11-25 录屏实证）。
+        //    编辑态一结束就兜底写回，与失焦提交互为保险，两者都幂等。
+        .onChange(of: editing) { isEditing in
+            let willWrite = !isEditing && draft != text
+            if willWrite {
+                text = draft
+                onSave()
+            }
+            // 取证：「字打进去了却没保存」时，看这行就能知道 draft 里当时有没有东西
+            DragSessionGuard.log("格子编辑态兜底：isEditing=\(isEditing) "
+                + "写回=\(willWrite) draft长=\(draft.count)")
+        }
     }
 
     /// 显示态：接管编辑态时只挂「单击」手势（点击即响应，无判定延迟）；
